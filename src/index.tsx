@@ -138,7 +138,7 @@ app.get('/', (c) => {
       <section class="hero" aria-labelledby="hero-heading">
         <p class="hero__badge">새로워진 Easy Image Editor</p>
         <h1 class="hero__heading" id="hero-heading">
-          모던한 워크플로우를 위한 직관적 멀티 이미지 편집 스튜디오
+          멀티 이미지 편집 스튜디오
         </h1>
         <p class="hero__subtitle">
           최대 50장의 이미지를 한 번에 업로드하고 배경 제거, 여백 크롭, 노이즈 제거, 리사이즈,
@@ -150,6 +150,9 @@ app.get('/', (c) => {
           </button>
           <button class="btn btn--ghost" type="button" data-action="load-sample">
             데모 이미지 체험
+          </button>
+          <button class="btn btn--outline" type="button" data-action="show-login">
+            로그인
           </button>
         </div>
         <ul class="hero__highlights" role="list">
@@ -167,6 +170,44 @@ app.get('/', (c) => {
           </li>
         </ul>
       </section>
+
+      <div class="login-modal" data-role="login-modal" aria-hidden="true">
+        <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
+        <div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+          <header class="login-modal__header">
+            <h2 class="login-modal__title" id="login-modal-title">Easy Image Editor 로그인</h2>
+            <button class="login-modal__close" type="button" data-action="close-login" aria-label="로그인 창 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="login-modal__subtitle">원하는 로그인 방식을 선택해 계속 진행하세요.</p>
+          <div class="login-modal__providers">
+            <button class="login-modal__provider login-modal__provider--google" type="button" data-action="login-google">
+              <i class="ri-google-fill" aria-hidden="true"></i>
+              Google 계정으로 계속하기
+            </button>
+          </div>
+          <div class="login-modal__divider" role="presentation">
+            <span>또는</span>
+          </div>
+          <form class="login-modal__form" data-role="login-email-form">
+            <label class="login-modal__label" for="loginEmail">이메일 로그인</label>
+            <input
+              id="loginEmail"
+              name="email"
+              type="email"
+              placeholder="example@email.com"
+              required
+              autocomplete="email"
+              class="login-modal__input"
+            />
+            <button class="login-modal__submit" type="submit" data-action="login-email">
+              1회용 코드 받기
+            </button>
+            <p class="login-modal__hint">입력한 이메일로 1회용 로그인을 위한 인증 코드를 전송해 드립니다.</p>
+          </form>
+        </div>
+      </div>
 
       <section class="workspace" aria-label="이미지 작업 영역">
         <div class="workspace__column workspace__column--left">
@@ -353,10 +394,45 @@ app.get('/', (c) => {
           <nav class="site-footer__links" aria-label="법적 고지">
             <a href="/privacy">개인정보 처리방침</a>
             <a href="/terms">이용약관</a>
+            <a href="/cookies">쿠키 정책</a>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>
       </footer>
+
+      <div class="cookie-banner" data-role="cookie-banner" aria-hidden="true">
+        <div class="cookie-banner__content" role="dialog" aria-modal="true" aria-labelledby="cookie-banner-title">
+          <div class="cookie-banner__header">
+            <h2 class="cookie-banner__title" id="cookie-banner-title">쿠키 사용에 대한 안내</h2>
+            <p class="cookie-banner__description">
+              더 나은 편집 경험을 제공하기 위해 필수 쿠키와 선택 쿠키를 사용합니다. 필수 쿠키는 서비스 기능에 반드시 필요하며,
+              선택 쿠키는 분석 및 기능 개선에 활용됩니다.
+            </p>
+          </div>
+          <div class="cookie-banner__options">
+            <label class="cookie-banner__option">
+              <input type="checkbox" checked disabled />
+              <span>필수 쿠키 (기본 기능 제공을 위해 항상 활성화)</span>
+            </label>
+            <label class="cookie-banner__option">
+              <input type="checkbox" data-role="cookie-analytics" />
+              <span>분석 쿠키 (이용 통계 및 UX 개선용)</span>
+            </label>
+            <label class="cookie-banner__option">
+              <input type="checkbox" data-role="cookie-marketing" />
+              <span>마케팅 쿠키 (향후 캠페인 최적화용)</span>
+            </label>
+            <label class="cookie-banner__option cookie-banner__option--confirm">
+              <input type="checkbox" data-role="cookie-confirm" />
+              <span>쿠키 정책을 확인했으며 안내에 동의합니다.</span>
+            </label>
+          </div>
+          <div class="cookie-banner__actions">
+            <a class="cookie-banner__link" href="/cookies" target="_blank" rel="noopener">쿠키 정책 자세히 보기</a>
+            <button class="cookie-banner__button" type="button" data-action="accept-cookies" disabled>동의하고 계속하기</button>
+          </div>
+        </div>
+      </div>
     </main>
   )
 })
@@ -507,6 +583,81 @@ app.get('/terms', (c) => {
         <p>
           본 약관은 대한민국 법령을 준거법으로 하며, 서비스와 이용자 간 분쟁이 발생할 경우 상호 협의를 통해 해결합니다.
           합의가 이루어지지 않는 경우 민사소송법상의 관할 법원에 제소할 수 있습니다.
+        </p>
+      </section>
+
+      <footer class="legal-page__footer">
+        <p class="legal-page__contact">
+          문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
+        </p>
+        <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
+        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+      </footer>
+    </main>
+  )
+})
+
+app.get('/cookies', (c) => {
+  const currentYear = new Date().getFullYear()
+
+  return c.render(
+    <main class="legal-page" aria-labelledby="cookies-heading">
+      <header class="legal-page__header">
+        <p class="legal-page__eyebrow">Cookie Policy</p>
+        <h1 class="legal-page__title" id="cookies-heading">
+          Easy Image Editor 쿠키 정책
+        </h1>
+        <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
+        <p class="legal-page__lead">
+          본 쿠키 정책은 Easy Image Editor(이하 “서비스”)가 이용자의 디바이스에 저장하는 쿠키의 종류와 사용 목적,
+          관리 방법을 안내하기 위해 마련되었습니다.
+        </p>
+      </header>
+
+      <section class="legal-section" aria-labelledby="cookies-what">
+        <h2 id="cookies-what">1. 쿠키란 무엇인가요?</h2>
+        <p>
+          쿠키는 웹사이트 방문 시 브라우저에 저장되는 소량의 텍스트 파일로, 서비스 기능 제공과 이용자 경험 개선을 위해
+          사용됩니다. 쿠키는 이용자를 식별하거나 개인 정보를 저장하지 않습니다.
+        </p>
+      </section>
+
+      <section class="legal-section" aria-labelledby="cookies-types">
+        <h2 id="cookies-types">2. 사용 중인 쿠키의 종류</h2>
+        <ul>
+          <li>
+            <strong>필수 쿠키</strong>: 로그인 유지, 작업 내역 저장 등 기본 기능을 제공하기 위해 항상 활성화됩니다.
+          </li>
+          <li>
+            <strong>분석 쿠키</strong>: 기능 개선과 오류 파악을 위해 이용 패턴을 익명으로 수집합니다. 이용자가 직접 동의한 경우에만 사용합니다.
+          </li>
+          <li>
+            <strong>마케팅 쿠키</strong>: 신규 기능 또는 프로모션을 안내하기 위한 정보 수집에 활용되며, 추후 캠페인 목적에 한해 사용됩니다.
+          </li>
+        </ul>
+      </section>
+
+      <section class="legal-section" aria-labelledby="cookies-control">
+        <h2 id="cookies-control">3. 쿠키 관리 방법</h2>
+        <ul>
+          <li>브라우저 설정에서 쿠키 저장을 차단하거나 삭제할 수 있습니다. 단, 필수 쿠키를 차단할 경우 일부 기능이 제한될 수 있습니다.</li>
+          <li>서비스 내 쿠키 배너에서 분석/마케팅 쿠키 사용 여부를 언제든지 변경할 수 있습니다.</li>
+          <li>이미 동의한 선택 쿠키는 브라우저 저장소 삭제 시 초기화됩니다.</li>
+        </ul>
+      </section>
+
+      <section class="legal-section" aria-labelledby="cookies-retention">
+        <h2 id="cookies-retention">4. 쿠키 보관 기간</h2>
+        <p>
+          필수 쿠키는 세션 종료 시까지 또는 서비스 이용을 위해 필요한 기간 동안 보관됩니다. 선택 쿠키는 최대 12개월 동안 유지하며,
+          기간 만료 후 자동으로 삭제되거나 재동의를 요청합니다.
+        </p>
+      </section>
+
+      <section class="legal-section" aria-labelledby="cookies-contact">
+        <h2 id="cookies-contact">5. 문의</h2>
+        <p>
+          쿠키 정책에 관한 문의는 <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a> 로 연락 주시면 신속히 안내드리겠습니다.
         </p>
       </section>
 

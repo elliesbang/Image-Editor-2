@@ -40,6 +40,13 @@ const elements = {
   analysisKeywords: document.querySelector('[data-role="analysis-keywords"]'),
   analysisSummary: document.querySelector('[data-role="analysis-summary"]'),
   analysisButton: document.querySelector('[data-action="analyze-current"]'),
+  loginModal: document.querySelector('[data-role="login-modal"]'),
+  loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
+  cookieBanner: document.querySelector('[data-role="cookie-banner"]'),
+  cookieAnalytics: document.querySelector('[data-role="cookie-analytics"]'),
+  cookieMarketing: document.querySelector('[data-role="cookie-marketing"]'),
+  cookieConfirm: document.querySelector('[data-role="cookie-confirm"]'),
+  cookieAcceptButton: document.querySelector('[data-action="accept-cookies"]'),
 }
 
 elements.previewCtx = elements.previewCanvas?.getContext('2d') ?? null
@@ -130,6 +137,134 @@ function updateResultActionAvailability() {
   })
   if (elements.resultDeleteSelected instanceof HTMLButtonElement) {
     elements.resultDeleteSelected.disabled = selectedCount === 0
+  }
+}
+
+function openLoginModal() {
+  if (!elements.loginModal) return
+  elements.loginModal.classList.add('is-active')
+  elements.loginModal.setAttribute('aria-hidden', 'false')
+  document.body.classList.add('is-modal-open')
+  const emailInput = elements.loginEmailForm?.querySelector('input[name="email"]')
+  if (emailInput instanceof HTMLInputElement) {
+    window.requestAnimationFrame(() => emailInput.focus())
+  }
+}
+
+function closeLoginModal() {
+  if (!elements.loginModal) return
+  elements.loginModal.classList.remove('is-active')
+  elements.loginModal.setAttribute('aria-hidden', 'true')
+  document.body.classList.remove('is-modal-open')
+}
+
+function handleGoogleLogin() {
+  closeLoginModal()
+  setStatus('Google 로그인 연동은 준비 중입니다. 곧 지원될 예정이에요!', 'info')
+}
+
+function handleEmailLogin(event) {
+  event.preventDefault()
+  if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
+  const formData = new FormData(elements.loginEmailForm)
+  const email = String(formData.get('email') || '').trim()
+  if (!email) {
+    setStatus('이메일을 입력해주세요.', 'danger')
+    return
+  }
+  elements.loginEmailForm.reset()
+  closeLoginModal()
+  setStatus(`${email} 주소로 1회용 로그인 코드를 발송할 준비가 완료되었습니다.`, 'success')
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && elements.loginModal?.classList.contains('is-active')) {
+    closeLoginModal()
+  }
+}
+
+function showCookieBanner() {
+  if (!elements.cookieBanner) return
+  elements.cookieBanner.classList.add('is-visible')
+  elements.cookieBanner.setAttribute('aria-hidden', 'false')
+}
+
+function hideCookieBanner() {
+  if (!elements.cookieBanner) return
+  elements.cookieBanner.classList.remove('is-visible')
+  elements.cookieBanner.setAttribute('aria-hidden', 'true')
+}
+
+function readCookieConsent() {
+  try {
+    const value = window.localStorage.getItem('cookieConsent')
+    if (!value) return null
+    return JSON.parse(value)
+  } catch (error) {
+    console.warn('쿠키 동의 정보를 불러오지 못했습니다.', error)
+    return null
+  }
+}
+
+function writeCookieConsent(consent) {
+  try {
+    window.localStorage.setItem('cookieConsent', JSON.stringify(consent))
+  } catch (error) {
+    console.warn('쿠키 동의 정보를 저장하지 못했습니다.', error)
+  }
+}
+
+function updateCookieAcceptState() {
+  const confirmChecked = elements.cookieConfirm instanceof HTMLInputElement && elements.cookieConfirm.checked
+  if (elements.cookieAcceptButton instanceof HTMLButtonElement) {
+    elements.cookieAcceptButton.disabled = !confirmChecked
+  }
+}
+
+function initCookieBanner() {
+  if (!elements.cookieBanner) return
+  const savedConsent = readCookieConsent()
+
+  if (elements.cookieAnalytics instanceof HTMLInputElement && savedConsent) {
+    elements.cookieAnalytics.checked = Boolean(savedConsent.analytics)
+  }
+
+  if (elements.cookieMarketing instanceof HTMLInputElement && savedConsent) {
+    elements.cookieMarketing.checked = Boolean(savedConsent.marketing)
+  }
+
+  if (elements.cookieConfirm instanceof HTMLInputElement) {
+    elements.cookieConfirm.checked = Boolean(savedConsent)
+  }
+
+  if (!savedConsent) {
+    showCookieBanner()
+  } else {
+    hideCookieBanner()
+  }
+
+  updateCookieAcceptState()
+
+  if (elements.cookieConfirm instanceof HTMLInputElement) {
+    elements.cookieConfirm.addEventListener('change', updateCookieAcceptState)
+  }
+
+  if (elements.cookieAcceptButton instanceof HTMLButtonElement) {
+    elements.cookieAcceptButton.addEventListener('click', () => {
+      if (!(elements.cookieConfirm instanceof HTMLInputElement) || !elements.cookieConfirm.checked) {
+        setStatus('쿠키 정책에 동의해야 계속 이용할 수 있습니다.', 'danger')
+        return
+      }
+      const consent = {
+        essential: true,
+        analytics: elements.cookieAnalytics instanceof HTMLInputElement ? elements.cookieAnalytics.checked : false,
+        marketing: elements.cookieMarketing instanceof HTMLInputElement ? elements.cookieMarketing.checked : false,
+        timestamp: new Date().toISOString(),
+      }
+      writeCookieConsent(consent)
+      hideCookieBanner()
+      setStatus('쿠키 설정이 저장되었습니다.', 'success')
+    })
   }
 }
 
@@ -1220,6 +1355,10 @@ function renderUploads() {
       const selected = state.selectedUploads.has(upload.id)
       return `
         <div class="asset-card ${selected ? 'is-selected' : ''}" data-type="upload" data-id="${upload.id}">
+          <div class="asset-card__selection-indicator" aria-hidden="true">
+            <span class="asset-card__selection-icon">✔</span>
+            <span class="asset-card__selection-label">선택됨</span>
+          </div>
           <label class="asset-card__checkbox">
             <input type="checkbox" aria-label="이미지 선택" data-role="upload-checkbox" ${selected ? 'checked' : ''} />
           </label>
@@ -1252,6 +1391,10 @@ function renderResults() {
       const selected = state.selectedResults.has(result.id)
       return `
         <div class="asset-card ${selected ? 'is-selected' : ''}" data-type="result" data-id="${result.id}">
+          <div class="asset-card__selection-indicator" aria-hidden="true">
+            <span class="asset-card__selection-icon">✔</span>
+            <span class="asset-card__selection-label">선택됨</span>
+          </div>
           <label class="asset-card__checkbox">
             <input type="checkbox" aria-label="결과 선택" data-role="result-checkbox" ${selected ? 'checked' : ''} />
           </label>
@@ -1517,25 +1660,48 @@ async function processDenoise(upload) {
 }
 
 async function processResize(upload, targetWidth, previousOperations = []) {
-  const { canvas } = await canvasFromDataUrl(upload.dataUrl)
-  if (targetWidth >= canvas.width) {
-    const blob = await canvasToBlob(canvas, 'image/png', 0.95)
-    return {
-      blob,
-      width: canvas.width,
-      height: canvas.height,
-      operations: [...previousOperations, '리사이즈(원본 유지)'],
-      name: `${baseName(upload.name)}__resized-${canvas.width}px.png`,
+  let source = typeof upload.dataUrl === 'string' && upload.dataUrl ? upload.dataUrl : null
+
+  if (!source && typeof upload.objectUrl === 'string' && upload.objectUrl) {
+    source = upload.objectUrl
+  }
+
+  if (!source && upload.blob instanceof Blob) {
+    const fromBlob = await blobToDataUrl(upload.blob)
+    if (typeof fromBlob === 'string') {
+      source = fromBlob
     }
   }
-  const { canvas: resized } = resizeCanvas(canvas, targetWidth)
-  const blob = await canvasToBlob(resized, 'image/png', 0.95)
+
+  if (!source) {
+    throw new Error('리사이즈할 이미지 데이터를 찾지 못했습니다.')
+  }
+
+  const normalizedSource = await ensureDataUrl(source)
+  const { canvas } = await canvasFromDataUrl(normalizedSource)
+  const normalizedWidth = Math.max(1, Math.round(targetWidth))
+  const history = Array.isArray(previousOperations) ? [...previousOperations] : []
+
+  let workingCanvas = canvas
+  let operationLabel = '리사이즈'
+
+  if (normalizedWidth !== canvas.width) {
+    const { canvas: resizedCanvas } = resizeCanvas(canvas, normalizedWidth)
+    workingCanvas = resizedCanvas
+    operationLabel = normalizedWidth > canvas.width ? '리사이즈(확대)' : '리사이즈(축소)'
+  } else {
+    operationLabel = '리사이즈(동일 너비)'
+  }
+
+  const blob = await canvasToBlob(workingCanvas, 'image/png', 0.95)
+  history.push(operationLabel)
+
   return {
     blob,
-    width: resized.width,
-    height: resized.height,
-    operations: [...previousOperations, '리사이즈'],
-    name: `${baseName(upload.name)}__resized-${resized.width}px.png`,
+    width: workingCanvas.width,
+    height: workingCanvas.height,
+    operations: history,
+    name: `${baseName(upload.name)}__resized-${workingCanvas.width}px.png`,
   }
 }
 
@@ -1620,8 +1786,15 @@ async function runOperation(operation) {
         } else {
           const resultItem = target.payload
           const pseudoUpload = {
-            ...resultItem,
+            id: resultItem.id,
+            name: resultItem.name,
+            size: resultItem.size,
+            type: resultItem.blob?.type || 'image/png',
             dataUrl: resultItem.objectUrl,
+            objectUrl: resultItem.objectUrl,
+            blob: resultItem.blob,
+            width: resultItem.width,
+            height: resultItem.height,
           }
           const previousOps = Array.isArray(resultItem.operations) ? resultItem.operations : []
           // eslint-disable-next-line no-await-in-loop
@@ -1840,6 +2013,32 @@ function attachEventListeners() {
     elements.sampleButton.addEventListener('click', fetchSampleImage)
   }
 
+  document.querySelectorAll('[data-action="show-login"]').forEach((button) => {
+    if (button instanceof HTMLButtonElement) {
+      button.addEventListener('click', openLoginModal)
+    }
+  })
+
+  document.querySelectorAll('[data-action="close-login"]').forEach((button) => {
+    if (button instanceof HTMLButtonElement) {
+      button.addEventListener('click', closeLoginModal)
+    }
+  })
+
+  const loginBackdrop = elements.loginModal?.querySelector('[data-action="close-login"]')
+  if (loginBackdrop instanceof HTMLElement) {
+    loginBackdrop.addEventListener('click', closeLoginModal)
+  }
+
+  const googleLoginButton = document.querySelector('[data-action="login-google"]')
+  if (googleLoginButton instanceof HTMLButtonElement) {
+    googleLoginButton.addEventListener('click', handleGoogleLogin)
+  }
+
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.addEventListener('submit', handleEmailLogin)
+  }
+
   if (elements.analysisButton instanceof HTMLButtonElement) {
     elements.analysisButton.addEventListener('click', analyzeCurrentImage)
   }
@@ -1913,12 +2112,15 @@ function attachEventListeners() {
       }
     })
   })
+
+  document.addEventListener('keydown', handleGlobalKeydown)
 }
 
 function init() {
   updateOperationAvailability()
   updateResultActionAvailability()
   attachEventListeners()
+  initCookieBanner()
   renderUploads()
   renderResults()
   displayAnalysisFor(null)
