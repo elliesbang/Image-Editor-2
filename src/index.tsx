@@ -2,10 +2,133 @@ import { Hono } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
 import { renderer } from './renderer'
 
-const app = new Hono()
+type Bindings = {
+  OPENAI_API_KEY?: string
+}
+
+const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/static/*', serveStatic({ root: './public' }))
 app.use(renderer)
+
+app.post('/api/analyze', async (c) => {
+  const env = c.env
+
+  if (!env.OPENAI_API_KEY) {
+    return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
+  }
+
+  let payload: { image?: string; name?: string } | null = null
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+  }
+
+  if (!payload || typeof payload.image !== 'string' || !payload.image.startsWith('data:image')) {
+    return c.json({ error: 'IMAGE_DATA_URL_REQUIRED' }, 400)
+  }
+
+  const requestedName = typeof payload.name === 'string' && payload.name.trim().length > 0 ? payload.name.trim() : '이미지'
+  const dataUrl = payload.image
+  const base64Source = dataUrl.replace(/^data:[^;]+;base64,/, '')
+
+  const systemPrompt = `당신은 한국어 기반의 시각 콘텐츠 마케터입니다. 이미지를 분석하여 SEO에 최적화된 메타데이터를 작성하세요.
+반드시 JSON 포맷으로만 응답하고, 형식은 다음과 같습니다:
+{
+  "title": "SEO 최적화 제목 (60자 이내)",
+  "summary": "이미지 특징과 활용 맥락을 간결히 설명한 문장 (120자 이내)",
+  "keywords": ["키워드1", "키워드2", ..., "키워드25"]
+}
+조건:
+- keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
+- 제목은 한국어로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
+- 요약은 이미지의 메시지, 분위기, 활용처를 한 문장으로 설명합니다.
+- 필요 시 색상, 분위기, 활용 매체 등을 키워드에 조합합니다.`
+
+  const userInstruction = `다음 이미지를 분석하여 한국어 키워드 25개와 SEO 제목, 요약을 JSON 형식으로 작성해 주세요.
+이미지 파일명: ${requestedName}`
+
+  try {
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.7,
+        max_tokens: 500,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: userInstruction },
+              { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Source}` } },
+            ],
+          },
+        ],
+      }),
+    })
+
+    if (!openaiResponse.ok) {
+      const errorText = await openaiResponse.text()
+      return c.json({ error: 'OPENAI_REQUEST_FAILED', detail: errorText.slice(0, 4000) }, 502)
+    }
+
+    const completion = await openaiResponse.json()
+    const messageContent = completion?.choices?.[0]?.message?.content
+
+    if (!messageContent) {
+      return c.json({ error: 'OPENAI_EMPTY_RESPONSE' }, 502)
+    }
+
+    const contentString = Array.isArray(messageContent)
+      ? messageContent
+          .map((part: any) => {
+            if (typeof part === 'string') return part
+            if (typeof part?.text === 'string') return part.text
+            return ''
+          })
+          .join('')
+          .trim()
+      : typeof messageContent === 'string'
+        ? messageContent.trim()
+        : ''
+
+    if (!contentString) {
+      return c.json({ error: 'OPENAI_INVALID_CONTENT' }, 502)
+    }
+
+    let parsed: { title?: string; summary?: string; keywords?: string[] }
+    try {
+      parsed = JSON.parse(contentString)
+    } catch (error) {
+      return c.json({ error: 'OPENAI_PARSE_ERROR', detail: contentString.slice(0, 4000) }, 502)
+    }
+
+    if (!parsed || typeof parsed.title !== 'string' || typeof parsed.summary !== 'string' || !Array.isArray(parsed.keywords)) {
+      return c.json({ error: 'OPENAI_INVALID_STRUCTURE', detail: contentString.slice(0, 4000) }, 502)
+    }
+
+    const keywords = parsed.keywords.filter((keyword) => typeof keyword === 'string').slice(0, 25)
+
+    if (keywords.length !== 25) {
+      return c.json({ error: 'OPENAI_KEYWORD_COUNT_MISMATCH', detail: contentString.slice(0, 4000) }, 502)
+    }
+
+    return c.json({
+      title: parsed.title.trim(),
+      summary: parsed.summary.trim(),
+      keywords,
+    })
+  } catch (error) {
+    console.error('[api/analyze] error', error)
+    return c.json({ error: 'OPENAI_UNHANDLED_ERROR' }, 502)
+  }
+})
 
 app.get('/', (c) => {
   const currentYear = new Date().getFullYear()

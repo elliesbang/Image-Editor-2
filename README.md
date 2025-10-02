@@ -32,6 +32,7 @@
 | `/privacy` | 개인정보 처리방침 |
 | `/terms` | 이용약관 |
 | `/api/health` | 상태 점검(JSON: `{ status: "ok" }`) |
+| `POST /api/analyze` | OpenAI 기반 이미지 키워드·제목 생성(JSON) |
 
 > Cloudflare Pages 배포 전이므로 프로덕션 URL은 미정입니다. 배포 후 실제 Pages 도메인을 업데이트하세요.
 
@@ -46,6 +47,12 @@
 - 모든 편집 처리는 브라우저(클라이언트) 메모리와 Canvas에서 수행
 - 서버/데이터베이스를 사용하지 않으며 파일은 다운로드 시점에만 생성
 - 추후 외부 API 연동 시 Cloudflare KV/D1/R2 또는 서드파티 REST API를 통해 확장 예정
+
+## 환경 변수 & 시크릿
+- **OPENAI_API_KEY**: OpenAI GPT-4/4o 계정의 API 키
+  - 로컬/샌드박스 개발용: 프로젝트 루트에 `.dev.vars` 파일을 생성하고 `OPENAI_API_KEY="sk-..."` 형태로 추가 (gitignore 처리됨)
+  - Cloudflare Pages 배포용: `npx wrangler pages secret put OPENAI_API_KEY --project-name <project-name>` 명령으로 시크릿 등록
+  - 프런트엔드에서는 키를 직접 노출하지 않고 `/api/analyze` 서버 엔드포인트를 통해 OpenAI에 요청합니다.
 
 ## 로컬/샌드박스 개발 방법
 ```bash

@@ -142,6 +142,27 @@ async function readFileAsDataUrl(file) {
   })
 }
 
+async function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = (event) => reject(event)
+    reader.readAsDataURL(blob)
+  })
+}
+
+async function ensureDataUrl(src) {
+  if (typeof src === 'string' && src.startsWith('data:')) {
+    return src
+  }
+  const response = await fetch(src)
+  if (!response.ok) throw new Error('이미지를 불러오지 못했습니다.')
+  const blob = await response.blob()
+  const dataUrl = await blobToDataUrl(blob)
+  if (typeof dataUrl !== 'string') throw new Error('이미지를 변환하는 중 문제가 발생했습니다.')
+  return dataUrl
+}
+
 async function loadImage(src) {
   return new Promise((resolve, reject) => {
     const image = new Image()
@@ -1122,23 +1143,69 @@ async function analyzeCurrentImage() {
     return
   }
 
+  setStatus('이미지를 분석하는 중입니다…', 'info', 0)
+
   try {
-    setStatus('이미지를 분석하는 중입니다…', 'info', 0)
     const source = type === 'upload' ? item.dataUrl : item.objectUrl
-    const { canvas, ctx } = await canvasFromDataUrl(source)
+    const dataUrl = await ensureDataUrl(source)
+    const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
     const surface = prepareAnalysisSurface(canvas, ctx)
     if (!surface.ctx) throw new Error('분석용 캔버스를 준비하지 못했습니다.')
-    const analysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
+    const scaledDataUrl = surface.canvas.toDataURL('image/png', 0.92)
+
+    let analysis
+    let usedFallback = false
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ image: scaledDataUrl, name: item.name }),
+      })
+
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.error || `OpenAI API 오류(${response.status})`)
+      }
+
+      const payload = await response.json()
+      if (!payload || typeof payload.title !== 'string' || typeof payload.summary !== 'string' || !Array.isArray(payload.keywords)) {
+        throw new Error('API 응답 구조가 올바르지 않습니다.')
+      }
+      if (payload.keywords.length !== 25) {
+        throw new Error('키워드 개수가 25개가 아닙니다.')
+      }
+      analysis = {
+        title: payload.title.trim(),
+        summary: payload.summary.trim(),
+        keywords: payload.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean).slice(0, 25),
+      }
+    } catch (apiError) {
+      console.warn('OpenAI 분석 실패, 로컬 분석으로 대체합니다.', apiError)
+      analysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
+      usedFallback = true
+    }
+
     const key = getAnalysisKey(state.preview)
     if (key) {
       state.analysis.set(key, analysis)
     }
     displayAnalysisFor(state.preview)
+
     const statusHeadline = analysis.title || analysis.keywords.slice(0, 3).join(', ')
-    setStatus(
-      statusHeadline ? `키워드 분석 완료: ${statusHeadline}` : '키워드 분석이 완료되었습니다.',
-      statusHeadline ? 'success' : 'info',
-    )
+    if (usedFallback) {
+      setStatus(
+        statusHeadline ? `로컬 분석으로 키워드 생성: ${statusHeadline}` : '로컬 분석으로 키워드를 생성했습니다.',
+        'danger',
+      )
+    } else {
+      setStatus(
+        statusHeadline ? `키워드 분석 완료: ${statusHeadline}` : '키워드 분석이 완료되었습니다.',
+        statusHeadline ? 'success' : 'info',
+      )
+    }
   } catch (error) {
     console.error(error)
     setStatus('이미지 분석 중 오류가 발생했습니다.', 'danger')
