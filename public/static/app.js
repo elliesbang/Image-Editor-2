@@ -1,15 +1,41 @@
 const MAX_FILES = 50
-const SAMPLE_IMAGE_URL =
-  'https://images.unsplash.com/photo-1618005198919-d3d4b5a92eee?auto=format&fit=crop&w=1600&q=80'
+const MAX_SVG_BYTES = 150 * 1024
+const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
+const FREEMIUM_INITIAL_CREDITS = 30
+const CREDIT_COSTS = {
+  operation: 1,
+  resize: 1,
+  svg: 2,
+  download: 1,
+  downloadAll: 2,
+  analysis: 1,
+}
+const STAGE_FLOW = ['upload', 'refine', 'export']
 
 const state = {
   uploads: [],
   results: [],
   selectedUploads: new Set(),
   selectedResults: new Set(),
-  preview: null,
+  activeTarget: null,
   processing: false,
   analysis: new Map(),
+  user: {
+    isLoggedIn: false,
+    name: '',
+    email: '',
+    plan: 'public',
+    credits: 0,
+    totalUsed: 0,
+  },
+  auth: {
+    step: 'idle',
+    pendingEmail: '',
+    code: '',
+    expiresAt: 0,
+    attempts: 0,
+  },
+  stage: 'upload',
 }
 
 const elements = {
@@ -19,21 +45,17 @@ const elements = {
   resultList: document.querySelector('#resultList'),
   status: document.querySelector('[data-role="status"]'),
   heroTriggers: document.querySelectorAll('[data-trigger="file"]'),
-  sampleButton: document.querySelector('[data-action="load-sample"]'),
   operationButtons: document.querySelectorAll('[data-operation]'),
   resizeInput: document.querySelector('#resizeWidth'),
   resultDownloadButtons: document.querySelectorAll('[data-result-download]'),
   svgButton: document.querySelector('[data-result-operation="svg"]'),
+  svgColorSelect: document.querySelector('#svgColorCount'),
   uploadSelectAll: document.querySelector('[data-action="upload-select-all"]'),
   uploadClear: document.querySelector('[data-action="upload-clear"]'),
   uploadDeleteSelected: document.querySelector('[data-action="upload-delete-selected"]'),
   resultSelectAll: document.querySelector('[data-action="result-select-all"]'),
   resultClear: document.querySelector('[data-action="result-clear"]'),
   resultDeleteSelected: document.querySelector('[data-action="result-delete-selected"]'),
-  previewCanvas: document.querySelector('#previewCanvas'),
-  previewEmpty: document.querySelector('[data-role="preview-empty"]'),
-  previewHint: document.querySelector('[data-role="preview-hint"]'),
-  previewMeta: document.querySelector('[data-role="preview-meta"]'),
   analysisPanel: document.querySelector('[data-role="analysis-panel"]'),
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
@@ -42,16 +64,31 @@ const elements = {
   analysisButton: document.querySelector('[data-action="analyze-current"]'),
   loginModal: document.querySelector('[data-role="login-modal"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
+  loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
+  loginEmailCodeInput: document.querySelector('[data-role="login-email-code"]'),
+  loginEmailSubmit: document.querySelector('[data-role="login-email-submit"]'),
+  loginEmailResend: document.querySelector('[data-role="login-email-resend"]'),
+  loginEmailHelper: document.querySelector('[data-role="login-email-helper"]'),
   cookieBanner: document.querySelector('[data-role="cookie-banner"]'),
   cookieAnalytics: document.querySelector('[data-role="cookie-analytics"]'),
   cookieMarketing: document.querySelector('[data-role="cookie-marketing"]'),
   cookieConfirm: document.querySelector('[data-role="cookie-confirm"]'),
   cookieAcceptButton: document.querySelector('[data-action="accept-cookies"]'),
+  creditDisplay: document.querySelector('[data-role="credit-display"]'),
+  creditLabel: document.querySelector('[data-role="credit-label"]'),
+  creditCount: document.querySelector('[data-role="credit-count"]'),
+  headerAuthButton: document.querySelector('[data-role="header-auth"]'),
+  stageIndicator: document.querySelector('[data-role="stage-indicator"]'),
+  stageItems: document.querySelectorAll('[data-role="stage-indicator"] .stage__item'),
+  stageMessage: document.querySelector('[data-role="stage-message"]'),
+  stageStatus: document.querySelector('[data-role="stage-status"]'),
+  operationsGate: document.querySelector('[data-role="operations-gate"]'),
+  resultsGate: document.querySelector('[data-role="results-gate"]'),
+  resultsCreditCount: document.querySelector('[data-role="results-credit-count"]'),
 }
 
-elements.previewCtx = elements.previewCanvas?.getContext('2d') ?? null
-
 let statusTimer = null
+let imageTracerReadyPromise = null
 
 function uuid() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random()}`
@@ -101,6 +138,430 @@ function toggleProcessing(isProcessing) {
   if (elements.analysisButton instanceof HTMLButtonElement) {
     elements.analysisButton.disabled = isProcessing
   }
+
+  if (elements.svgButton instanceof HTMLButtonElement) {
+    if (isProcessing) {
+      elements.svgButton.disabled = true
+    } else {
+      const hasSvgSelection = state.selectedResults.size > 0 || state.selectedUploads.size > 0
+      elements.svgButton.disabled = !hasSvgSelection
+    }
+  }
+
+  if (elements.svgColorSelect instanceof HTMLSelectElement) {
+    elements.svgColorSelect.disabled = isProcessing
+  }
+
+  if (!isProcessing) {
+    updateResultActionAvailability()
+  }
+}
+
+function getCreditCost(action, count = 1) {
+  const base = CREDIT_COSTS[action] ?? 0
+  return base * Math.max(1, count)
+}
+
+function creditStateFromBalance(credits) {
+  if (credits <= 0) return 'danger'
+  if (credits <= 2) return 'warning'
+  return 'success'
+}
+
+function findItemByTarget(target) {
+  if (!target) return null
+  const collection = target.type === 'upload' ? state.uploads : state.results
+  return collection.find((item) => item.id === target.id) || null
+}
+
+function normalizeTarget(target) {
+  if (!target || typeof target !== 'object') return null
+  const { type, id } = target
+  if ((type !== 'upload' && type !== 'result') || typeof id !== 'string' || !id) return null
+  const collection = type === 'upload' ? state.uploads : state.results
+  return collection.some((item) => item.id === id) ? { type, id } : null
+}
+
+function firstFromSet(value) {
+  if (!(value instanceof Set) || value.size === 0) return null
+  const iterator = value.values()
+  const result = iterator.next()
+  return result.done ? null : result.value
+}
+
+function resolveActiveTarget(preferred) {
+  const candidates = []
+  if (preferred) candidates.push(preferred)
+  if (state.activeTarget) candidates.push(state.activeTarget)
+  const primaryResult = firstFromSet(state.selectedResults)
+  if (primaryResult) candidates.push({ type: 'result', id: primaryResult })
+  const primaryUpload = firstFromSet(state.selectedUploads)
+  if (primaryUpload) candidates.push({ type: 'upload', id: primaryUpload })
+  if (state.results.length > 0) candidates.push({ type: 'result', id: state.results[0].id })
+  if (state.uploads.length > 0) candidates.push({ type: 'upload', id: state.uploads[0].id })
+
+  for (const candidate of candidates) {
+    const normalized = normalizeTarget(candidate)
+    if (normalized) {
+      return normalized
+    }
+  }
+
+  return null
+}
+
+function updateHeaderState() {
+  const loggedIn = state.user.isLoggedIn
+  const credits = Math.max(0, state.user.credits)
+
+  if (elements.creditDisplay instanceof HTMLElement) {
+    elements.creditDisplay.dataset.state = loggedIn ? creditStateFromBalance(credits) : 'locked'
+  }
+
+  if (elements.creditLabel instanceof HTMLElement) {
+    elements.creditLabel.textContent = loggedIn ? 'Freemium · 잔여 크레딧' : '로그인하고 무료 30 크레딧 받기'
+  }
+
+  if (elements.creditCount instanceof HTMLElement) {
+    elements.creditCount.textContent = `${credits}`
+  }
+
+  if (elements.headerAuthButton instanceof HTMLButtonElement) {
+    elements.headerAuthButton.textContent = loggedIn ? '로그아웃' : '로그인'
+    elements.headerAuthButton.dataset.action = loggedIn ? 'logout' : 'show-login'
+  }
+
+  if (elements.resultsCreditCount instanceof HTMLElement) {
+    elements.resultsCreditCount.textContent = `${credits}`
+  }
+}
+
+function setGateContent(element, { state, title, copy }) {
+  if (!(element instanceof HTMLElement)) return
+  element.dataset.state = state
+  const titleElement = element.querySelector('.gate__title, .results-gate__title')
+  if (titleElement) {
+    titleElement.textContent = title
+  }
+  const copyElement = element.querySelector('.gate__copy, .results-gate__copy')
+  if (copyElement) {
+    copyElement.innerHTML = copy
+  }
+}
+
+function updateOperationsGate() {
+  const gate = elements.operationsGate
+  if (!(gate instanceof HTMLElement)) return
+
+  const loggedIn = state.user.isLoggedIn
+  const credits = Math.max(0, state.user.credits)
+
+  let stateName = 'unlocked'
+  let title = '작업 실행 크레딧 안내'
+  let copy = `현재 잔여 크레딧: <strong>${credits}</strong> · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
+
+  if (!loggedIn) {
+    stateName = 'locked'
+    title = '로그인 후 도구를 실행해 주세요.'
+    copy = `실행 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 드립니다.`
+  } else if (credits <= 0) {
+    stateName = 'danger'
+    title = '크레딧이 부족합니다.'
+    copy = '크레딧을 충전한 뒤 다시 시도해주세요.'
+  } else if (credits <= 2) {
+    stateName = 'warning'
+    title = '잔여 크레딧이 적습니다.'
+    copy = `남은 크레딧 <strong>${credits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 사용됩니다.`
+  }
+
+  setGateContent(gate, { state: stateName, title, copy })
+
+  const loginButton = gate.querySelector('[data-role="operations-gate-login"]')
+  if (loginButton instanceof HTMLButtonElement) {
+    loginButton.hidden = loggedIn
+    if (loginButton.parentElement instanceof HTMLElement) {
+      loginButton.parentElement.hidden = loggedIn
+    }
+  }
+}
+
+function updateResultsGate() {
+  const gate = elements.resultsGate
+  if (!(gate instanceof HTMLElement)) return
+
+  const loggedIn = state.user.isLoggedIn
+  const credits = Math.max(0, state.user.credits)
+  const hasResults = state.results.length > 0
+
+  let stateName = 'unlocked'
+  let title = '결과 저장 준비 완료'
+  let copy = `남은 크레딧 <strong>${credits}</strong>개 · PNG→SVG 변환 ${CREDIT_COSTS.svg} 크레딧, 다운로드 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
+
+  if (!hasResults) {
+    stateName = 'locked'
+    title = '처리 결과를 먼저 만들어보세요.'
+    copy = '좌측 도구로 결과를 생성하면 다운로드와 PNG→SVG 변환을 사용할 수 있어요.'
+  } else if (!loggedIn) {
+    stateName = 'locked'
+    title = '로그인 후 결과를 저장할 수 있어요.'
+    copy = `다운로드/벡터 변환 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 받습니다.`
+  } else if (credits <= 0) {
+    stateName = 'danger'
+    title = '크레딧이 부족합니다.'
+    copy = '크레딧을 충전한 뒤 다운로드하거나 변환을 시도하세요.'
+  } else if (credits <= 1) {
+    stateName = 'warning'
+    title = '잔여 크레딧이 1개 이하입니다.'
+    copy = `남은 크레딧 <strong>${credits}</strong>개 · PNG→SVG 변환은 이미지당 ${CREDIT_COSTS.svg} 크레딧이 필요합니다.`
+  }
+
+  setGateContent(gate, { state: stateName, title, copy })
+
+  const loginButton = gate.querySelector('[data-role="results-gate-login"]')
+  if (loginButton instanceof HTMLButtonElement) {
+    loginButton.hidden = loggedIn
+    if (loginButton.parentElement instanceof HTMLElement) {
+      loginButton.parentElement.hidden = loggedIn
+    }
+  }
+
+  if (elements.resultsCreditCount instanceof HTMLElement) {
+    elements.resultsCreditCount.textContent = `${credits}`
+  }
+}
+
+function updateAccessGates() {
+  updateOperationsGate()
+  updateResultsGate()
+}
+
+function getStageMessage(stageName) {
+  const loggedIn = state.user.isLoggedIn
+  const credits = Math.max(0, state.user.credits)
+
+  switch (stageName) {
+    case 'upload':
+      return loggedIn
+        ? `업로드한 이미지를 선택하고 다음 단계를 준비하세요. 현재 잔여 크레딧은 ${credits}개입니다.`
+        : `로그인 전에 업로드 목록을 확인할 수 있어요. 계정을 연결하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 즉시 지급됩니다.`
+    case 'refine':
+      return loggedIn
+        ? `도구 실행 시 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개로 편집을 진행해보세요.`
+        : `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
+    case 'export':
+      return loggedIn
+        ? `다운로드는 항목당 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개입니다.`
+        : '로그인 후 결과를 다운로드하거나 PNG→SVG 변환을 이용할 수 있어요.'
+    default:
+      return ''
+  }
+}
+
+function updateStageUI() {
+  const stageIndex = STAGE_FLOW.indexOf(state.stage)
+
+  if (elements.stageItems && typeof elements.stageItems.forEach === 'function') {
+    elements.stageItems.forEach((item) => {
+      if (!(item instanceof HTMLElement)) return
+      const order = Number(item.dataset.stage) - 1
+      const relation = order < stageIndex ? 'complete' : order === stageIndex ? 'active' : 'locked'
+      item.dataset.state = relation
+      item.classList.toggle('is-active', relation === 'active')
+    })
+  }
+
+  if (elements.stageMessage instanceof HTMLElement) {
+    elements.stageMessage.textContent = getStageMessage(state.stage)
+  }
+}
+
+function setStage(stageName) {
+  if (!STAGE_FLOW.includes(stageName)) return
+  if (state.stage !== stageName) {
+    state.stage = stageName
+  }
+  updateStageUI()
+}
+
+function recomputeStage() {
+  let nextStage = 'upload'
+  if (state.results.length > 0) {
+    nextStage = 'export'
+  } else if (state.uploads.length > 0) {
+    nextStage = 'refine'
+  }
+  setStage(nextStage)
+  updateAccessGates()
+}
+
+function refreshAccessStates() {
+  updateHeaderState()
+  updateAccessGates()
+  updateStageUI()
+}
+
+function ensureActionAllowed(action, options = {}) {
+  const count = options.count ?? 1
+  const gateKey = options.gate === 'results' ? 'results' : 'operations'
+  const cost = getCreditCost(action, count)
+
+  if (!state.user.isLoggedIn) {
+    setStatus('로그인 후 이용 가능한 기능입니다.', 'danger')
+    refreshAccessStates()
+    openLoginModal()
+    return false
+  }
+
+  if (cost > 0 && state.user.credits < cost) {
+    setStatus('크레딧이 부족합니다. 충전 후 다시 시도해주세요.', 'danger')
+    const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
+    if (gateElement instanceof HTMLElement) {
+      gateElement.dataset.state = 'danger'
+    }
+    refreshAccessStates()
+    return false
+  }
+
+  if (cost > 0 && state.user.credits <= 2) {
+    const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
+    if (gateElement instanceof HTMLElement && gateElement.dataset.state !== 'danger') {
+      gateElement.dataset.state = 'warning'
+      updateAccessGates()
+    }
+  }
+
+  return true
+}
+
+function consumeCredits(action, count = 1) {
+  const cost = getCreditCost(action, count)
+  if (cost <= 0) return
+  state.user.credits = Math.max(0, state.user.credits - cost)
+  state.user.totalUsed += cost
+  refreshAccessStates()
+}
+
+function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS } = {}) {
+  const normalizedName = typeof name === 'string' && name.trim().length > 0 ? name.trim() : '크리에이터'
+  state.user.isLoggedIn = true
+  state.user.name = normalizedName
+  state.user.email = typeof email === 'string' ? email : state.user.email
+  state.user.plan = 'freemium'
+  state.user.credits = Math.max(state.user.credits, credits)
+  state.user.totalUsed = 0
+  refreshAccessStates()
+}
+
+function handleLogout() {
+  state.user.isLoggedIn = false
+  state.user.name = ''
+  state.user.email = ''
+  state.user.plan = 'public'
+  state.user.credits = 0
+  state.user.totalUsed = 0
+  refreshAccessStates()
+  setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
+  resetLoginFlow()
+}
+
+function setLoginHelper(message) {
+  if (elements.loginEmailHelper instanceof HTMLElement) {
+    elements.loginEmailHelper.textContent = message
+  }
+}
+
+function updateLoginFormState(step) {
+  state.auth.step = step
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.dataset.state = step
+  }
+  if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
+    elements.loginEmailSubmit.textContent = step === 'code' ? '코드 확인 후 로그인' : '인증 코드 받기'
+    elements.loginEmailSubmit.disabled = false
+  }
+  if (elements.loginEmailResend instanceof HTMLButtonElement) {
+    elements.loginEmailResend.hidden = step !== 'code'
+    elements.loginEmailResend.disabled = step !== 'code'
+  }
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    elements.loginEmailInput.readOnly = step === 'code'
+  }
+  if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+    elements.loginEmailCodeInput.disabled = step !== 'code'
+    if (step !== 'code') {
+      elements.loginEmailCodeInput.value = ''
+    }
+  }
+}
+
+function resetLoginFlow() {
+  state.auth.step = 'idle'
+  state.auth.pendingEmail = ''
+  state.auth.code = ''
+  state.auth.expiresAt = 0
+  state.auth.attempts = 0
+
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.reset()
+    elements.loginEmailForm.dataset.state = 'idle'
+  }
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    elements.loginEmailInput.readOnly = false
+  }
+  if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+    elements.loginEmailCodeInput.disabled = true
+    elements.loginEmailCodeInput.value = ''
+  }
+  if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
+    elements.loginEmailSubmit.textContent = '인증 코드 받기'
+    elements.loginEmailSubmit.disabled = false
+  }
+  if (elements.loginEmailResend instanceof HTMLButtonElement) {
+    elements.loginEmailResend.hidden = true
+    elements.loginEmailResend.disabled = true
+  }
+  setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+}
+
+function generateVerificationCode() {
+  return `${Math.floor(100000 + Math.random() * 900000)}`
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+function startEmailVerification(email) {
+  const normalizedEmail = email.trim().toLowerCase()
+  state.auth.pendingEmail = normalizedEmail
+  state.auth.code = generateVerificationCode()
+  state.auth.expiresAt = Date.now() + 5 * 60 * 1000
+  state.auth.attempts = 0
+
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    elements.loginEmailInput.value = normalizedEmail
+  }
+
+  updateLoginFormState('code')
+
+  if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+    window.requestAnimationFrame(() => elements.loginEmailCodeInput.focus())
+  }
+
+  const helperMessage = `입력한 주소(${normalizedEmail})로 인증 코드를 전송했습니다. 5분 내에 6자리 코드를 입력하세요. (샌드박스 테스트용 코드: ${state.auth.code})`
+  setLoginHelper(helperMessage)
+  setStatus(`${normalizedEmail} 주소로 인증 코드를 전송했습니다. 이메일을 확인한 뒤 코드를 입력해주세요.`, 'info')
+}
+
+function isVerificationCodeValid(code) {
+  if (!state.auth.code || Date.now() > state.auth.expiresAt) {
+    return { valid: false, reason: 'expired' }
+  }
+  if (code !== state.auth.code) {
+    state.auth.attempts += 1
+    return { valid: false, reason: 'mismatch' }
+  }
+  return { valid: true }
 }
 
 function updateOperationAvailability() {
@@ -138,16 +599,20 @@ function updateResultActionAvailability() {
   if (elements.resultDeleteSelected instanceof HTMLButtonElement) {
     elements.resultDeleteSelected.disabled = selectedCount === 0
   }
+  if (elements.svgButton instanceof HTMLButtonElement) {
+    const hasSvgSelection = selectedCount > 0 || state.selectedUploads.size > 0
+    elements.svgButton.disabled = state.processing || !hasSvgSelection
+  }
 }
 
 function openLoginModal() {
   if (!elements.loginModal) return
+  resetLoginFlow()
   elements.loginModal.classList.add('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'false')
   document.body.classList.add('is-modal-open')
-  const emailInput = elements.loginEmailForm?.querySelector('input[name="email"]')
-  if (emailInput instanceof HTMLInputElement) {
-    window.requestAnimationFrame(() => emailInput.focus())
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    window.requestAnimationFrame(() => elements.loginEmailInput.focus())
   }
 }
 
@@ -156,25 +621,114 @@ function closeLoginModal() {
   elements.loginModal.classList.remove('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'true')
   document.body.classList.remove('is-modal-open')
+  resetLoginFlow()
 }
 
 function handleGoogleLogin() {
+  applyLoginProfile({ name: 'Google 사용자' })
   closeLoginModal()
-  setStatus('Google 로그인 연동은 준비 중입니다. 곧 지원될 예정이에요!', 'info')
+  setStatus(`Google 계정을 연결했다고 가정하고 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 충전했습니다.`, 'success')
+}
+
+function handleEmailResend(event) {
+  event.preventDefault()
+  const currentEmail =
+    state.auth.pendingEmail ||
+    (elements.loginEmailInput instanceof HTMLInputElement ? elements.loginEmailInput.value.trim() : '')
+  if (!currentEmail) {
+    setStatus('이메일을 먼저 입력해주세요.', 'danger')
+    updateLoginFormState('idle')
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+    return
+  }
+  if (!isValidEmail(currentEmail)) {
+    setStatus('유효한 이메일 주소인지 확인해주세요.', 'danger')
+    updateLoginFormState('idle')
+    return
+  }
+  startEmailVerification(currentEmail)
+  setStatus(`${currentEmail} 주소로 새로운 인증 코드를 전송했습니다.`, 'success')
 }
 
 function handleEmailLogin(event) {
   event.preventDefault()
   if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
-  const formData = new FormData(elements.loginEmailForm)
-  const email = String(formData.get('email') || '').trim()
+
+  if (state.auth.step === 'code') {
+    if (!(elements.loginEmailCodeInput instanceof HTMLInputElement)) return
+    const submittedCode = elements.loginEmailCodeInput.value.trim()
+    if (!submittedCode) {
+      setStatus('이메일로 받은 인증 코드를 입력해주세요.', 'danger')
+      return
+    }
+    const result = isVerificationCodeValid(submittedCode)
+    if (!result.valid) {
+      if (result.reason === 'expired') {
+        setStatus('인증 코드가 만료되었습니다. 새 코드를 요청해주세요.', 'danger')
+        state.auth.pendingEmail = ''
+        state.auth.code = ''
+        state.auth.expiresAt = 0
+        updateLoginFormState('idle')
+        setLoginHelper('인증 코드가 만료되었습니다. 이메일을 확인한 뒤 다시 요청해주세요.')
+        if (elements.loginEmailInput instanceof HTMLInputElement) {
+          elements.loginEmailInput.focus()
+        }
+        return
+      }
+      if (result.reason === 'mismatch') {
+        const remaining = Math.max(0, 5 - state.auth.attempts)
+        const helper =
+          remaining > 0
+            ? `코드가 일치하지 않습니다. 다시 입력해주세요. (남은 시도 ${remaining}회)`
+            : '인증 코드를 여러 번 잘못 입력했습니다. 새 코드를 요청해주세요.'
+        setLoginHelper(helper)
+        setStatus('인증 코드가 일치하지 않습니다.', 'danger')
+        if (remaining <= 0) {
+          state.auth.pendingEmail = ''
+          state.auth.code = ''
+          state.auth.expiresAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+        } else if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+          elements.loginEmailCodeInput.select()
+        }
+        return
+      }
+    }
+
+    const email = state.auth.pendingEmail
+    if (!email) {
+      setStatus('이메일 정보를 확인할 수 없습니다. 다시 시도해주세요.', 'danger')
+      state.auth.pendingEmail = ''
+      state.auth.code = ''
+      state.auth.expiresAt = 0
+      updateLoginFormState('idle')
+      setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+      return
+    }
+    const nickname = email.includes('@') ? email.split('@')[0] : email
+    applyLoginProfile({ name: nickname, email })
+    closeLoginModal()
+    setStatus(`${email} 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`, 'success')
+    return
+  }
+
+  const email =
+    elements.loginEmailInput instanceof HTMLInputElement ? elements.loginEmailInput.value.trim() : ''
   if (!email) {
     setStatus('이메일을 입력해주세요.', 'danger')
     return
   }
-  elements.loginEmailForm.reset()
-  closeLoginModal()
-  setStatus(`${email} 주소로 1회용 로그인 코드를 발송할 준비가 완료되었습니다.`, 'success')
+  if (!isValidEmail(email)) {
+    setStatus('유효한 이메일 주소인지 확인해주세요.', 'danger')
+    return
+  }
+  startEmailVerification(email)
 }
 
 function handleGlobalKeydown(event) {
@@ -265,6 +819,291 @@ function initCookieBanner() {
       hideCookieBanner()
       setStatus('쿠키 설정이 저장되었습니다.', 'success')
     })
+  }
+}
+
+function injectViewBoxAttribute(svgString, width, height) {
+  if (!svgString.includes('viewBox')) {
+    return svgString.replace('<svg ', `<svg viewBox="0 0 ${width} ${height}" `)
+  }
+  return svgString
+}
+
+function ensureScriptElement(src, dataLib) {
+  let script = document.querySelector(`script[data-lib="${dataLib}"]`)
+  if (!script) {
+    script = document.createElement('script')
+    script.src = src
+    script.defer = true
+    script.dataset.lib = dataLib
+    document.head.appendChild(script)
+  }
+  return script
+}
+
+function waitForCondition(condition, timeout = 10000, interval = 60) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now()
+    const check = () => {
+      try {
+        const result = condition()
+        if (result) {
+          resolve(result)
+          return
+        }
+      } catch (error) {
+        reject(error)
+        return
+      }
+
+      if (Date.now() - start >= timeout) {
+        reject(new Error('Timeout'))
+        return
+      }
+
+      window.setTimeout(check, interval)
+    }
+    check()
+  })
+}
+
+function ensureImageTracerReady() {
+  if (window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function') {
+    return Promise.resolve(true)
+  }
+
+  if (!imageTracerReadyPromise) {
+    ensureScriptElement(IMAGETRACER_SRC, 'imagetracer')
+    imageTracerReadyPromise = waitForCondition(
+      () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
+      12000,
+      80,
+    )
+  }
+
+  return imageTracerReadyPromise
+}
+
+async function resolveDataUrlForTarget(target) {
+  if (target.type === 'upload') {
+    return ensureDataUrl(target.item.dataUrl)
+  }
+
+  if (target.item.blob instanceof Blob) {
+    const inline = await blobToDataUrl(target.item.blob)
+    if (typeof inline === 'string') {
+      return ensureDataUrl(inline)
+    }
+  }
+
+  return ensureDataUrl(target.item.objectUrl)
+}
+
+async function convertTargetToSvg(target, desiredColors) {
+  await ensureImageTracerReady()
+
+  if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
+    return { success: false, message: 'SVG 변환 엔진을 불러오지 못했습니다.' }
+  }
+
+  try {
+    const dataUrl = await resolveDataUrlForTarget(target)
+    const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
+    const width = canvas.width
+    const height = canvas.height
+    const imageData = ctx.getImageData(0, 0, width, height)
+
+    const baseColors = Number.isFinite(desiredColors) ? desiredColors : 4
+    const clampedColors = Math.max(1, Math.min(8, Math.round(baseColors)))
+
+    let options = {
+      numberofcolors: clampedColors,
+      pathomit: 4,
+      ltres: 1,
+      qtres: 1,
+      colorsampling: 0,
+      colorquantcycles: 3,
+      blurradius: 0,
+      blurdelta: 20,
+      strokewidth: 0,
+      linefilter: true,
+      scale: 1,
+      viewbox: false,
+    }
+
+    const adjustments = [
+      (opts) => ({ ...opts, pathomit: opts.pathomit + 8 }),
+      (opts) => ({ ...opts, qtres: opts.qtres * 1.35 }),
+      (opts) => ({ ...opts, ltres: opts.ltres * 1.3 }),
+      (opts) => (opts.numberofcolors > 1 ? { ...opts, numberofcolors: opts.numberofcolors - 1 } : opts),
+      (opts) => ({ ...opts, pathomit: opts.pathomit + 16, qtres: opts.qtres * 1.6 }),
+    ]
+
+    let svgString = ''
+    let svgBlob = null
+    let sizeOk = false
+    let reducedColors = false
+
+    for (let step = 0; step <= adjustments.length; step += 1) {
+      svgString = window.ImageTracer.imagedataToSVG(imageData, options)
+      svgString = injectViewBoxAttribute(svgString, width, height)
+      svgBlob = new Blob([svgString], { type: 'image/svg+xml' })
+      if (svgBlob.size <= MAX_SVG_BYTES) {
+        sizeOk = true
+        break
+      }
+      if (step === adjustments.length) {
+        break
+      }
+      const nextOptions = adjustments[step](options)
+      if (nextOptions.numberofcolors < options.numberofcolors) {
+        reducedColors = true
+      }
+      options = nextOptions
+    }
+
+    if (!sizeOk || !svgBlob) {
+      return { success: false, message: 'SVG 파일이 150KB 이하로 압축되지 않았습니다.' }
+    }
+
+    const finalColors = options.numberofcolors
+    const operations = Array.isArray(target.item.operations) ? [...target.item.operations] : []
+    operations.push(`SVG 변환(${finalColors}색)`)
+
+    const filenameBase = baseName(target.item.name || 'image')
+    const resultName = `${filenameBase}__vector-${finalColors}c.svg`
+
+    return {
+      success: true,
+      blob: svgBlob,
+      width,
+      height,
+      name: resultName,
+      operations,
+      colors: finalColors,
+      reducedColors,
+    }
+  } catch (error) {
+    console.error('SVG 변환 중 오류', error)
+    return { success: false, message: 'SVG 변환 과정에서 오류가 발생했습니다.' }
+  }
+}
+
+async function convertSelectionsToSvg() {
+  if (state.processing) return
+
+  const resultIds = Array.from(state.selectedResults)
+  const uploadIds = Array.from(state.selectedUploads)
+
+  if (resultIds.length === 0 && uploadIds.length === 0) {
+    setStatus('SVG로 변환할 이미지를 선택해주세요.', 'danger')
+    return
+  }
+
+  const targetCount = resultIds.length + uploadIds.length
+  if (!ensureActionAllowed('svg', { count: Math.max(1, targetCount), gate: 'results' })) {
+    return
+  }
+
+  setStage('export')
+
+  toggleProcessing(true)
+  setStatus('SVG 변환 엔진을 불러오는 중입니다…', 'info', 0)
+
+  try {
+    await ensureImageTracerReady()
+  } catch (error) {
+    console.error('ImageTracer load error', error)
+    toggleProcessing(false)
+    setStatus('SVG 변환 엔진을 불러오는 중 문제가 발생했습니다. 새로고침 후 다시 시도해주세요.', 'danger')
+    return
+  }
+
+  if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
+    toggleProcessing(false)
+    setStatus('SVG 변환 엔진을 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.', 'danger')
+    return
+  }
+
+  let colorCount = 4
+  if (elements.svgColorSelect instanceof HTMLSelectElement) {
+    const parsed = parseInt(elements.svgColorSelect.value, 10)
+    if (!Number.isNaN(parsed)) {
+      colorCount = parsed
+    }
+  }
+
+  setStatus('SVG로 변환하는 중입니다…', 'info', 0)
+
+  const conversions = []
+  const targets = []
+
+  for (const id of resultIds) {
+    const resultItem = state.results.find((item) => item.id === id)
+    if (resultItem) {
+      targets.push({ type: 'result', item: resultItem })
+    }
+  }
+
+  for (const id of uploadIds) {
+    const uploadItem = state.uploads.find((item) => item.id === id)
+    if (uploadItem) {
+      targets.push({ type: 'upload', item: uploadItem })
+    }
+  }
+
+  const failures = []
+  const colorAdjustments = []
+
+  try {
+    for (const target of targets) {
+      // eslint-disable-next-line no-await-in-loop
+      const conversion = await convertTargetToSvg(target, colorCount)
+      if (!conversion.success || !conversion.blob) {
+        console.warn('SVG 변환 실패:', target.item?.name || '(이름 없음)', conversion.message)
+        failures.push({
+          name: target.item.name,
+          message: conversion.message || '알 수 없는 이유로 실패했습니다.',
+        })
+        continue
+      }
+
+      const sourceReference = target.item
+      const resultPayload = {
+        blob: conversion.blob,
+        width: conversion.width,
+        height: conversion.height,
+        operations: conversion.operations,
+        name: conversion.name,
+        type: 'image/svg+xml',
+      }
+
+      appendResult(sourceReference, resultPayload)
+      conversions.push(conversion)
+      if (conversion.reducedColors) {
+        colorAdjustments.push(conversion)
+      }
+    }
+  } finally {
+    toggleProcessing(false)
+    recomputeStage()
+  }
+
+  if (conversions.length > 0) {
+    consumeCredits('svg', conversions.length)
+    let message = `${conversions.length}개의 이미지를 SVG로 변환했습니다.`
+    if (colorAdjustments.length > 0) {
+      message += ` (용량 제한으로 색상 수를 자동 조정한 항목 ${colorAdjustments.length}개)`
+    }
+    if (failures.length > 0) {
+      message += ` · 실패 ${failures.length}개는 콘솔 로그를 확인해주세요.`
+      setStatus(message, 'info')
+    } else {
+      setStatus(message, 'success')
+    }
+  } else if (failures.length > 0) {
+    const firstFailure = failures[0]
+    setStatus(`SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
   }
 }
 
@@ -681,12 +1520,16 @@ function displayAnalysisFor(target) {
     !elements.analysisKeywords ||
     !elements.analysisSummary ||
     !elements.analysisHeadline
-  )
+  ) {
     return
+  }
+
+  const normalizedTarget = resolveActiveTarget(target)
+  state.activeTarget = normalizedTarget
 
   const button = elements.analysisButton instanceof HTMLButtonElement ? elements.analysisButton : null
   if (button) {
-    button.disabled = state.processing
+    button.disabled = state.processing || !normalizedTarget
   }
 
   const resetView = (hintText) => {
@@ -697,15 +1540,17 @@ function displayAnalysisFor(target) {
     elements.analysisSummary.textContent = ''
   }
 
-  if (!target) {
-    resetView('이미지를 업로드하고 “분석 실행” 버튼으로 25개의 SEO 키워드를 받아보세요.')
+  if (!normalizedTarget) {
+    resetView('이미지를 선택하면 25개의 SEO 키워드와 요약이 표시됩니다.')
     return
   }
 
-  const data = state.analysis.get(getAnalysisKey(target))
+  const item = findItemByTarget(normalizedTarget)
+  const data = state.analysis.get(getAnalysisKey(normalizedTarget))
 
   if (!data) {
-    resetView('“분석 실행” 버튼을 눌러 25개의 키워드와 제목을 생성해 보세요.')
+    const nameHint = item?.name ? ` (${item.name})` : ''
+    resetView(`“분석 실행” 버튼을 눌러 선택한 이미지${nameHint}의 키워드를 생성하세요.`)
     return
   }
 
@@ -1263,21 +2108,27 @@ function analyzeCanvasForKeywords(canvas, ctx) {
 }
 
 async function analyzeCurrentImage() {
-  if (!state.preview) {
+  const target = resolveActiveTarget()
+  if (!target) {
     setStatus('먼저 분석할 이미지를 선택해주세요.', 'danger')
     return
   }
 
-  const { type, id } = state.preview
-  const sourceCollection = type === 'upload' ? state.uploads : state.results
-  const item = sourceCollection.find((entry) => entry.id === id)
+  const item = findItemByTarget(target)
 
   if (!item) {
     setStatus('선택한 이미지를 찾을 수 없습니다.', 'danger')
-    displayAnalysisFor(null)
+    displayAnalysisFor()
     return
   }
 
+  const { type, id } = target
+
+  if (!ensureActionAllowed('analysis', { gate: 'results', count: 1 })) {
+    return
+  }
+
+  setStage('export')
   setStatus('이미지를 분석하는 중입니다…', 'info', 0)
 
   try {
@@ -1291,6 +2142,7 @@ async function analyzeCurrentImage() {
     let analysis
     let usedFallback = false
 
+    let fallbackReason = ''
     try {
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -1302,7 +2154,8 @@ async function analyzeCurrentImage() {
 
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.error || `OpenAI API 오류(${response.status})`)
+        const reason = typeof detail?.error === 'string' && detail.error ? detail.error : `OpenAI API 오류(${response.status})`
+        throw new Error(reason)
       }
 
       const payload = await response.json()
@@ -1318,23 +2171,33 @@ async function analyzeCurrentImage() {
         keywords: payload.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean).slice(0, 25),
       }
     } catch (apiError) {
-      console.warn('OpenAI 분석 실패, 로컬 분석으로 대체합니다.', apiError)
+      fallbackReason = apiError instanceof Error ? apiError.message : String(apiError)
+      console.warn('OpenAI 분석 실패, 로컬 분석으로 대체합니다.', fallbackReason)
       analysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
       usedFallback = true
     }
 
-    const key = getAnalysisKey(state.preview)
+    const key = getAnalysisKey(target)
     if (key) {
       state.analysis.set(key, analysis)
     }
-    displayAnalysisFor(state.preview)
+    displayAnalysisFor(target)
+    consumeCredits('analysis', 1)
 
     const statusHeadline = analysis.title || analysis.keywords.slice(0, 3).join(', ')
     if (usedFallback) {
-      setStatus(
-        statusHeadline ? `로컬 분석으로 키워드 생성: ${statusHeadline}` : '로컬 분석으로 키워드를 생성했습니다.',
-        'danger',
-      )
+      const baseMessage = statusHeadline
+        ? `로컬 분석으로 키워드 생성: ${statusHeadline}`
+        : '로컬 분석으로 키워드를 생성했습니다.'
+      let reasonMessage = ''
+      if (fallbackReason) {
+        if (fallbackReason.includes('OPENAI_API_KEY_NOT_CONFIGURED')) {
+          reasonMessage = ' (OpenAI API 키가 설정되지 않았습니다.)'
+        } else {
+          reasonMessage = ` (사유: ${fallbackReason})`
+        }
+      }
+      setStatus(`${baseMessage}${reasonMessage}`, 'danger')
     } else {
       setStatus(
         statusHeadline ? `키워드 분석 완료: ${statusHeadline}` : '키워드 분석이 완료되었습니다.',
@@ -1362,7 +2225,7 @@ function renderUploads() {
           <label class="asset-card__checkbox">
             <input type="checkbox" aria-label="이미지 선택" data-role="upload-checkbox" ${selected ? 'checked' : ''} />
           </label>
-          <div class="asset-card__thumb" data-action="preview-upload">
+          <div class="asset-card__thumb">
             <img src="${upload.dataUrl}" alt="${upload.name}" loading="lazy" />
           </div>
           <div class="asset-card__meta">
@@ -1370,7 +2233,6 @@ function renderUploads() {
             <span class="asset-card__info">${upload.width}×${upload.height}px · ${formatBytes(upload.size)}</span>
           </div>
           <div class="asset-card__actions">
-            <button class="asset-card__button" type="button" data-action="preview-upload">미리보기</button>
             <button class="asset-card__button asset-card__delete" type="button" data-action="delete-upload">삭제</button>
           </div>
         </div>
@@ -1398,7 +2260,7 @@ function renderResults() {
           <label class="asset-card__checkbox">
             <input type="checkbox" aria-label="결과 선택" data-role="result-checkbox" ${selected ? 'checked' : ''} />
           </label>
-          <div class="asset-card__thumb" data-action="preview-result">
+          <div class="asset-card__thumb">
             <img src="${result.objectUrl}" alt="${result.name}" loading="lazy" />
           </div>
           <div class="asset-card__meta">
@@ -1407,7 +2269,6 @@ function renderResults() {
             <span class="asset-card__info">${result.operations.join(' · ')}</span>
           </div>
           <div class="asset-card__actions">
-            <button class="asset-card__button" type="button" data-action="preview-result">미리보기</button>
             <button class="asset-card__button" type="button" data-action="download-result">다운로드</button>
             <button class="asset-card__button asset-card__delete" type="button" data-action="delete-result">삭제</button>
           </div>
@@ -1419,87 +2280,6 @@ function renderResults() {
   elements.resultList.innerHTML = cards || ''
   ensureGridState(elements.resultList, state.results.length)
   updateResultActionAvailability()
-}
-
-async function renderPreview(target) {
-  if (!elements.previewCanvas || !elements.previewCtx || !elements.previewEmpty || !elements.previewMeta) return
-
-  if (!target) {
-    elements.previewCtx.clearRect(0, 0, elements.previewCanvas.width, elements.previewCanvas.height)
-    elements.previewCanvas.classList.remove('is-visible')
-    elements.previewEmpty.classList.remove('is-hidden')
-    elements.previewMeta.innerHTML = '<span class="meta__placeholder">파일을 선택하면 상세 정보가 표시됩니다.</span>'
-    state.preview = null
-    displayAnalysisFor(null)
-    return
-  }
-
-  let item
-  let src
-
-  if (target.type === 'upload') {
-    item = state.uploads.find((upload) => upload.id === target.id)
-    if (!item) {
-      elements.previewCanvas.classList.remove('is-visible')
-      elements.previewEmpty.classList.remove('is-hidden')
-      elements.previewCtx.clearRect(0, 0, elements.previewCanvas.width, elements.previewCanvas.height)
-      elements.previewMeta.innerHTML = '<span class="meta__placeholder">파일을 선택하면 상세 정보가 표시됩니다.</span>'
-      state.preview = null
-      displayAnalysisFor(null)
-      return
-    }
-    src = item.dataUrl
-  } else {
-    item = state.results.find((result) => result.id === target.id)
-    if (!item) {
-      elements.previewCanvas.classList.remove('is-visible')
-      elements.previewEmpty.classList.remove('is-hidden')
-      elements.previewCtx.clearRect(0, 0, elements.previewCanvas.width, elements.previewCanvas.height)
-      elements.previewMeta.innerHTML = '<span class="meta__placeholder">파일을 선택하면 상세 정보가 표시됩니다.</span>'
-      state.preview = null
-      displayAnalysisFor(null)
-      return
-    }
-    src = item.objectUrl
-  }
-
-  state.preview = target
-  displayAnalysisFor(target)
-
-  try {
-    const image = await loadImage(src)
-    const canvasWidth = elements.previewCanvas.width
-    const canvasHeight = elements.previewCanvas.height
-    elements.previewCtx.clearRect(0, 0, canvasWidth, canvasHeight)
-
-    const ratio = Math.min(canvasWidth / image.width, canvasHeight / image.height, 1)
-    const renderedWidth = image.width * ratio
-    const renderedHeight = image.height * ratio
-    const dx = (canvasWidth - renderedWidth) / 2
-    const dy = (canvasHeight - renderedHeight) / 2
-
-    elements.previewCtx.drawImage(image, dx, dy, renderedWidth, renderedHeight)
-    elements.previewCanvas.classList.add('is-visible')
-    elements.previewEmpty.classList.add('is-hidden')
-
-    elements.previewMeta.innerHTML = `
-      <span>${item.name}</span>
-      <span>${item.width}×${item.height}px · ${formatBytes(item.size)}</span>
-    `
-  } catch (error) {
-    console.error(error)
-    elements.previewCanvas.classList.remove('is-visible')
-    elements.previewEmpty.classList.remove('is-hidden')
-    elements.previewCtx.clearRect(0, 0, elements.previewCanvas.width, elements.previewCanvas.height)
-    elements.previewMeta.innerHTML = '<span class="meta__placeholder">파일을 선택하면 상세 정보가 표시됩니다.</span>'
-    setStatus('미리보기를 불러오지 못했습니다.', 'danger')
-    state.preview = null
-    displayAnalysisFor(null)
-  }
-}
-
-function setPreview(target) {
-  renderPreview(target)
 }
 
 async function ingestFiles(fileList) {
@@ -1546,9 +2326,10 @@ async function ingestFiles(fileList) {
     newUploads.forEach((upload) => state.selectedUploads.add(upload.id))
     renderUploads()
     updateOperationAvailability()
+    recomputeStage()
 
     if (newUploads.length > 0) {
-      setPreview({ type: 'upload', id: newUploads[newUploads.length - 1].id })
+      displayAnalysisFor({ type: 'upload', id: newUploads[newUploads.length - 1].id })
       setStatus(`${newUploads.length}개의 이미지를 불러왔어요.${skipped > 0 ? ` (${skipped}개는 제한으로 건너뛰었습니다.)` : ''}`, 'success')
     }
   } catch (error) {
@@ -1563,15 +2344,14 @@ function deleteUploads(ids) {
     if (ids.includes(upload.id)) {
       state.selectedUploads.delete(upload.id)
       removeAnalysisFor('upload', upload.id)
-      if (state.preview && state.preview.type === 'upload' && state.preview.id === upload.id) {
-        setPreview(null)
-      }
       return false
     }
     return true
   })
   renderUploads()
   updateOperationAvailability()
+  recomputeStage()
+  displayAnalysisFor()
   setStatus(`${ids.length}개의 업로드 이미지를 삭제했습니다.`, 'info')
 }
 
@@ -1582,9 +2362,6 @@ function deleteResults(ids) {
       URL.revokeObjectURL(result.objectUrl)
       state.selectedResults.delete(result.id)
       removeAnalysisFor('result', result.id)
-      if (state.preview && state.preview.type === 'result' && state.preview.id === result.id) {
-        setPreview(null)
-      }
       return false
     }
     return true
@@ -1592,6 +2369,8 @@ function deleteResults(ids) {
   renderResults()
   updateResultActionAvailability()
   updateOperationAvailability()
+  recomputeStage()
+  displayAnalysisFor()
   setStatus(`${ids.length}개의 처리 결과를 삭제했습니다.`, 'info')
 }
 
@@ -1722,6 +2501,7 @@ function appendResult(upload, result) {
   renderResults()
   updateResultActionAvailability()
   updateOperationAvailability()
+  recomputeStage()
 }
 
 async function runOperation(operation) {
@@ -1739,6 +2519,13 @@ async function runOperation(operation) {
     return
   }
 
+  const targetCount = operation === 'resize' ? uploadIds.length + resultIds.length : uploadIds.length
+  if (!ensureActionAllowed(operation === 'resize' ? 'resize' : 'operation', { count: Math.max(1, targetCount), gate: 'operations' })) {
+    return
+  }
+
+  setStage('refine')
+
   toggleProcessing(true)
   setStatus('이미지를 처리하는 중입니다…', 'info', 0)
 
@@ -1750,6 +2537,7 @@ async function runOperation(operation) {
   }
 
   let targetWidth = null
+  let processedCount = 0
   if (operation === 'resize') {
     if (!(elements.resizeInput instanceof HTMLInputElement)) {
       setStatus('리사이즈 입력값을 확인해주세요.', 'danger')
@@ -1782,6 +2570,9 @@ async function runOperation(operation) {
           const upload = target.payload
           // eslint-disable-next-line no-await-in-loop
           const resizeResult = await processResize(upload, targetWidth)
+          if (resizeResult && resizeResult.blob) {
+            processedCount += 1
+          }
           appendResult(upload, resizeResult)
         } else {
           const resultItem = target.payload
@@ -1799,6 +2590,9 @@ async function runOperation(operation) {
           const previousOps = Array.isArray(resultItem.operations) ? resultItem.operations : []
           // eslint-disable-next-line no-await-in-loop
           const resizeResult = await processResize(pseudoUpload, targetWidth, previousOps)
+          if (resizeResult && resizeResult.blob) {
+            processedCount += 1
+          }
           appendResult(resultItem, resizeResult)
         }
       }
@@ -1814,8 +2608,15 @@ async function runOperation(operation) {
         if (!upload) continue
         // eslint-disable-next-line no-await-in-loop
         const result = await handler(upload)
+        if (result && result.blob) {
+          processedCount += 1
+        }
         appendResult(upload, result)
       }
+    }
+
+    if (processedCount > 0) {
+      consumeCredits(operation === 'resize' ? 'resize' : 'operation', processedCount)
     }
 
     const successMessage =
@@ -1839,15 +2640,17 @@ function handleUploadListClick(event) {
     if (!id) return
     if (checkbox.checked) {
       state.selectedUploads.add(id)
+      displayAnalysisFor({ type: 'upload', id })
     } else {
       state.selectedUploads.delete(id)
+      displayAnalysisFor()
     }
     card.classList.toggle('is-selected', checkbox.checked)
     updateOperationAvailability()
     return
   }
 
-  const button = event.target.closest('button[data-action], .asset-card__thumb[data-action]')
+  const button = event.target.closest('button[data-action]')
   if (!button) return
   const card = button.closest('[data-type="upload"]')
   if (!card) return
@@ -1855,9 +2658,6 @@ function handleUploadListClick(event) {
   if (!id) return
 
   const action = button.dataset.action
-  if (action === 'preview-upload') {
-    setPreview({ type: 'upload', id })
-  }
   if (action === 'delete-upload') {
     deleteUploads([id])
   }
@@ -1873,8 +2673,10 @@ function handleResultListClick(event) {
     if (!id) return
     if (checkbox.checked) {
       state.selectedResults.add(id)
+      displayAnalysisFor({ type: 'result', id })
     } else {
       state.selectedResults.delete(id)
+      displayAnalysisFor()
     }
     card.classList.toggle('is-selected', checkbox.checked)
     updateResultActionAvailability()
@@ -1882,7 +2684,7 @@ function handleResultListClick(event) {
     return
   }
 
-  const button = event.target.closest('button[data-action], .asset-card__thumb[data-action]')
+  const button = event.target.closest('button[data-action]')
   if (!button) return
   const card = button.closest('[data-type="result"]')
   if (!card) return
@@ -1892,9 +2694,6 @@ function handleResultListClick(event) {
   if (!result) return
 
   const action = button.dataset.action
-  if (action === 'preview-result') {
-    setPreview({ type: 'result', id })
-  }
   if (action === 'download-result') {
     downloadResults([id])
   }
@@ -1903,30 +2702,18 @@ function handleResultListClick(event) {
   }
 }
 
-async function fetchSampleImage() {
-  try {
-    setStatus('샘플 이미지를 불러오는 중입니다…', 'info', 0)
-    const response = await fetch(SAMPLE_IMAGE_URL)
-    if (!response.ok) throw new Error('샘플 이미지를 가져오지 못했습니다.')
-    const blob = await response.blob()
-    const sampleFile = new File([blob], `sample-${Date.now()}.jpg`, { type: blob.type })
-    await ingestFiles([sampleFile])
-  } catch (error) {
-    console.error(error)
-    setStatus('샘플 이미지를 불러오지 못했습니다.', 'danger')
-  }
-}
-
 function selectAllUploads() {
   state.uploads.forEach((upload) => state.selectedUploads.add(upload.id))
   renderUploads()
   updateOperationAvailability()
+  updateResultActionAvailability()
 }
 
 function clearUploadsSelection() {
   state.selectedUploads.clear()
   renderUploads()
   updateOperationAvailability()
+  updateResultActionAvailability()
 }
 
 function selectAllResults() {
@@ -1943,10 +2730,17 @@ function clearResultsSelection() {
   updateOperationAvailability()
 }
 
-async function downloadResults(ids) {
+async function downloadResults(ids, mode = 'selected') {
   const targets = ids.map((id) => state.results.find((result) => result.id === id)).filter(Boolean)
   if (targets.length === 0) {
     setStatus('다운로드할 결과를 선택해주세요.', 'danger')
+    return
+  }
+
+  setStage('export')
+
+  const actionType = mode === 'all' ? 'downloadAll' : 'download'
+  if (!ensureActionAllowed(actionType, { count: Math.max(1, targets.length), gate: 'results' })) {
     return
   }
 
@@ -1966,6 +2760,7 @@ async function downloadResults(ids) {
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
+    consumeCredits(actionType, targets.length)
     setStatus(`${targets.length}개의 결과를 ZIP으로 다운로드했습니다.`, 'success')
   } catch (error) {
     console.error(error)
@@ -2009,15 +2804,16 @@ function attachEventListeners() {
     trigger.addEventListener('click', () => elements.fileInput?.click())
   })
 
-  if (elements.sampleButton) {
-    elements.sampleButton.addEventListener('click', fetchSampleImage)
+  if (elements.headerAuthButton instanceof HTMLButtonElement) {
+    elements.headerAuthButton.addEventListener('click', () => {
+      const action = elements.headerAuthButton.dataset.action
+      if (action === 'logout') {
+        handleLogout()
+      } else {
+        openLoginModal()
+      }
+    })
   }
-
-  document.querySelectorAll('[data-action="show-login"]').forEach((button) => {
-    if (button instanceof HTMLButtonElement) {
-      button.addEventListener('click', openLoginModal)
-    }
-  })
 
   document.querySelectorAll('[data-action="close-login"]').forEach((button) => {
     if (button instanceof HTMLButtonElement) {
@@ -2025,7 +2821,16 @@ function attachEventListeners() {
     }
   })
 
-  const loginBackdrop = elements.loginModal?.querySelector('[data-action="close-login"]')
+  const logoutButton = document.querySelector('[data-action="logout"]')
+  if (logoutButton instanceof HTMLButtonElement) {
+    logoutButton.addEventListener('click', handleLogout)
+  }
+
+  if (elements.loginEmailResend instanceof HTMLButtonElement) {
+    elements.loginEmailResend.addEventListener('click', handleEmailResend)
+  }
+
+  const loginBackdrop = elements.loginModal?.querySelector('.login-modal__backdrop')
   if (loginBackdrop instanceof HTMLElement) {
     loginBackdrop.addEventListener('click', closeLoginModal)
   }
@@ -2037,6 +2842,17 @@ function attachEventListeners() {
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
     elements.loginEmailForm.addEventListener('submit', handleEmailLogin)
+  }
+
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    elements.loginEmailInput.addEventListener('input', () => {
+      if (state.auth.step !== 'code') {
+        const value = elements.loginEmailInput.value.trim()
+        if (!value) {
+          setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+        }
+      }
+    })
   }
 
   if (elements.analysisButton instanceof HTMLButtonElement) {
@@ -2051,14 +2867,12 @@ function attachEventListeners() {
     if (!(button instanceof HTMLButtonElement)) return
     const operation = button.dataset.operation
     if (!operation) return
-    if (operation === 'svg') {
-      button.addEventListener('click', () => {
-        setStatus('PNG → SVG 변환 기능은 준비 중입니다.', 'info')
-      })
-      return
-    }
     button.addEventListener('click', () => runOperation(operation))
   })
+
+  if (elements.svgButton instanceof HTMLButtonElement) {
+    elements.svgButton.addEventListener('click', convertSelectionsToSvg)
+  }
 
   if (elements.uploadList) {
     elements.uploadList.addEventListener('click', handleUploadListClick)
@@ -2106,12 +2920,21 @@ function attachEventListeners() {
         return
       }
       if (mode === 'all') {
-        downloadResults(state.results.map((result) => result.id))
+        downloadResults(state.results.map((result) => result.id), 'all')
       } else {
-        downloadResults(Array.from(state.selectedResults))
+        downloadResults(Array.from(state.selectedResults), mode)
       }
     })
   })
+
+  document
+    .querySelectorAll('[data-role="operations-gate-login"], [data-role="results-gate-login"]')
+    .forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) return
+      button.addEventListener('click', () => {
+        openLoginModal()
+      })
+    })
 
   document.addEventListener('keydown', handleGlobalKeydown)
 }
@@ -2121,10 +2944,11 @@ function init() {
   updateResultActionAvailability()
   attachEventListeners()
   initCookieBanner()
+  resetLoginFlow()
   renderUploads()
   renderResults()
   displayAnalysisFor(null)
-  setPreview(null)
+  refreshAccessStates()
 }
 
 document.addEventListener('DOMContentLoaded', init)

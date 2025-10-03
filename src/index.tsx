@@ -135,26 +135,43 @@ app.get('/', (c) => {
 
   return c.render(
     <main class="page">
+      <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
+        <div class="app-header__left">
+          <a class="app-header__logo" href="/" aria-label="Easy Image Editor 홈">
+            <span class="app-header__brand">Easy Image Editor</span>
+            <span class="app-header__tag">크레딧 프리미엄 베타</span>
+          </a>
+        </div>
+        <div class="app-header__right">
+          <div class="app-header__credit" data-role="credit-display" data-state="locked">
+            <span class="app-header__credit-label" data-role="credit-label">로그인하고 무료 30 크레딧 받기</span>
+            <span class="app-header__credit-value">
+              <strong data-role="credit-count">0</strong> 크레딧
+            </span>
+          </div>
+          <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
+            로그인
+          </button>
+        </div>
+      </header>
+
       <section class="hero" aria-labelledby="hero-heading">
-        <p class="hero__badge">새로워진 Easy Image Editor</p>
+        <p class="hero__badge">크레딧 기반 Freemium 베타</p>
         <h1 class="hero__heading" id="hero-heading">
           멀티 이미지 편집 스튜디오
         </h1>
         <p class="hero__subtitle">
           최대 50장의 이미지를 한 번에 업로드하고 배경 제거, 여백 크롭, 노이즈 제거, 리사이즈,
-          PNG → SVG 벡터 변환까지 한 곳에서 처리하세요.
+          PNG → SVG 벡터 변환까지 한 곳에서 처리하세요. 로그인하면 무료 30 크레딧으로 모든 기능을 바로 사용할 수 있어요.
         </p>
         <div class="hero__actions">
           <button class="btn btn--primary" type="button" data-trigger="file">
             이미지 업로드
           </button>
-          <button class="btn btn--ghost" type="button" data-action="load-sample">
-            데모 이미지 체험
-          </button>
-          <button class="btn btn--outline" type="button" data-action="show-login">
-            로그인
-          </button>
         </div>
+        <p class="hero__credit-hint">
+          로그인 없이 편집 프로세스를 탐색하고, 계정을 연결하면 <strong>무료 30 크레딧</strong>이 충전됩니다.
+        </p>
         <ul class="hero__highlights" role="list">
           <li>
             <strong>AI 없이도 깔끔한 배경 제거</strong>
@@ -169,6 +186,37 @@ app.get('/', (c) => {
             <span>PNG → SVG(1~6색) 변환과 ZIP 다운로드 지원</span>
           </li>
         </ul>
+      </section>
+
+      <section class="stage" aria-label="작업 단계 안내">
+        <ol class="stage__list" data-role="stage-indicator">
+          <li class="stage__item is-active" data-stage="1">
+            <span class="stage__step">1</span>
+            <div class="stage__meta">
+              <span class="stage__title">업로드 &amp; 선택</span>
+              <span class="stage__copy">이미지를 추가하고 비교하기</span>
+            </div>
+          </li>
+          <li class="stage__item" data-stage="2">
+            <span class="stage__step">2</span>
+            <div class="stage__meta">
+              <span class="stage__title">보정 &amp; 변환</span>
+              <span class="stage__copy">배경 제거·크롭·SVG 변환</span>
+            </div>
+          </li>
+          <li class="stage__item" data-stage="3">
+            <span class="stage__step">3</span>
+            <div class="stage__meta">
+              <span class="stage__title">다운로드</span>
+              <span class="stage__copy">결과 저장 및 키워드 분석</span>
+            </div>
+          </li>
+        </ol>
+        <div class="stage__status" data-role="stage-status">
+          <div class="stage__status-text" data-role="stage-message">
+            로그인하면 30개의 무료 크레딧이 자동으로 충전됩니다.
+          </div>
+        </div>
       </section>
 
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
@@ -190,27 +238,49 @@ app.get('/', (c) => {
           <div class="login-modal__divider" role="presentation">
             <span>또는</span>
           </div>
-          <form class="login-modal__form" data-role="login-email-form">
+          <form class="login-modal__form" data-role="login-email-form" data-state="idle">
             <label class="login-modal__label" for="loginEmail">이메일 로그인</label>
-            <input
-              id="loginEmail"
-              name="email"
-              type="email"
-              placeholder="example@email.com"
-              required
-              autocomplete="email"
-              class="login-modal__input"
-            />
-            <button class="login-modal__submit" type="submit" data-action="login-email">
-              1회용 코드 받기
-            </button>
-            <p class="login-modal__hint">입력한 이메일로 1회용 로그인을 위한 인증 코드를 전송해 드립니다.</p>
+            <div class="login-modal__field-group">
+              <input
+                id="loginEmail"
+                name="email"
+                type="email"
+                placeholder="example@email.com"
+                required
+                autocomplete="email"
+                class="login-modal__input"
+                data-role="login-email-input"
+              />
+              <button class="login-modal__submit" type="submit" data-role="login-email-submit">
+                인증 코드 받기
+              </button>
+            </div>
+            <div class="login-modal__code-group">
+              <input
+                id="loginEmailCode"
+                name="code"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                placeholder="6자리 인증 코드"
+                class="login-modal__input login-modal__input--code"
+                data-role="login-email-code"
+                disabled
+              />
+              <button class="login-modal__resend" type="button" data-role="login-email-resend" hidden>
+                코드 다시 보내기
+              </button>
+            </div>
+            <p class="login-modal__helper" data-role="login-email-helper">
+              이메일 주소를 입력하면 인증 코드를 보내드립니다.
+            </p>
           </form>
         </div>
       </div>
 
       <section class="workspace" aria-label="이미지 작업 영역">
-        <div class="workspace__column workspace__column--left">
+        <div class="workspace__row workspace__row--top">
           <article class="panel panel--upload" aria-label="원본 이미지 관리">
             <header class="panel__header panel__header--stack">
               <div>
@@ -243,8 +313,8 @@ app.get('/', (c) => {
                 <p class="dropzone__hint">최대 50개 · PNG, JPG, JPEG, WebP 지원 · 최대 12MB</p>
               </div>
             </div>
-            <p class="panel__hint">이미지를 업로드하면 자동으로 선택되며, 좌측 도구에서 일괄 처리를 실행할 수 있습니다.</p>
-            <div class="asset-grid" id="uploadList" data-empty-text="아직 업로드한 이미지가 없습니다."></div>
+            <p class="panel__hint">업로드된 이미지는 아래 썸네일 리스트에서 한눈에 확인하고 선택할 수 있습니다.</p>
+            <div class="asset-grid asset-grid--compact" id="uploadList" data-empty-text="아직 업로드한 이미지가 없습니다."></div>
           </article>
 
           <article class="panel panel--operations" aria-label="일괄 처리 도구">
@@ -255,6 +325,18 @@ app.get('/', (c) => {
               </div>
               <p class="panel__caption">업로드 목록에서 이미지를 선택한 뒤 아래 기능을 실행하세요.</p>
             </header>
+            <div class="gate gate--operations" data-role="operations-gate" data-state="locked">
+              <i class="ri-shield-keyhole-line gate__icon" aria-hidden="true"></i>
+              <div class="gate__body">
+                <p class="gate__title">이미지 처리에는 크레딧이 필요합니다.</p>
+                <p class="gate__copy">
+                  실행 시 잔여 크레딧이 차감되며, 로그인하면 <strong>무료 30 크레딧</strong>이 자동으로 지급됩니다.
+                </p>
+                <div class="gate__actions">
+                  <button class="btn btn--outline btn--sm" type="button" data-role="operations-gate-login">로그인하고 무료 크레딧 받기</button>
+                </div>
+              </div>
+            </div>
             <div class="operations-grid">
               <button class="btn btn--primary" type="button" data-operation="remove-bg">
                 <i class="ri-brush-3-line" aria-hidden="true"></i>
@@ -285,51 +367,7 @@ app.get('/', (c) => {
           </article>
         </div>
 
-        <div class="workspace__column workspace__column--right">
-          <article class="panel panel--preview" aria-label="미리보기 영역">
-            <header class="panel__header panel__header--stack">
-              <div>
-                <span class="panel__eyebrow">Preview</span>
-                <h2 class="panel__title">선택한 이미지</h2>
-              </div>
-              <p class="panel__caption" data-role="preview-hint">
-                업로드 또는 처리 결과 목록에서 이미지를 선택하면 이곳에 표시됩니다.
-              </p>
-            </header>
-            <div class="preview-surface">
-              <canvas
-                id="previewCanvas"
-                class="preview-canvas"
-                width="1200"
-                height="800"
-                role="img"
-                aria-label="선택한 이미지 미리보기"
-              ></canvas>
-              <div class="preview-empty" data-role="preview-empty">
-                <div class="preview-empty__icon" aria-hidden="true">🖼️</div>
-                <p class="preview-empty__title">현재 선택된 이미지가 없습니다.</p>
-                <p class="preview-empty__body">좌측 목록에서 이미지를 선택하거나 새 이미지를 업로드해 주세요.</p>
-              </div>
-            </div>
-            <footer class="panel__footer panel__footer--stack">
-              <div class="meta" data-role="preview-meta">
-                <span class="meta__placeholder">파일을 선택하면 상세 정보가 표시됩니다.</span>
-              </div>
-              <div class="analysis" data-role="analysis-panel">
-                <div class="analysis__header">
-                  <span class="analysis__title">키워드 분석</span>
-                  <button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">
-                    분석 실행
-                  </button>
-                </div>
-                <p class="analysis__hint" data-role="analysis-hint">이미지를 업로드하고 “분석 실행” 버튼으로 25개의 SEO 키워드를 받아보세요.</p>
-                <p class="analysis__headline" data-role="analysis-title"></p>
-                <ul class="analysis__keywords" data-role="analysis-keywords"></ul>
-                <p class="analysis__summary" data-role="analysis-summary"></p>
-              </div>
-            </footer>
-          </article>
-
+        <div class="workspace__row workspace__row--bottom">
           <article class="panel panel--results" aria-label="처리 결과 관리">
             <header class="panel__header panel__header--stack">
               <div>
@@ -360,7 +398,31 @@ app.get('/', (c) => {
                 <button class="btn btn--primary" type="button" data-result-download="all">전체 다운로드</button>
               </div>
             </div>
-            <div class="asset-grid asset-grid--results" id="resultList" data-empty-text="처리된 이미지가 이곳에 표시됩니다."></div>
+            <div class="gate results-gate" data-role="results-gate" data-state="locked">
+              <i class="ri-lock-2-line results-gate__icon" aria-hidden="true"></i>
+              <div class="results-gate__body">
+                <p class="results-gate__title">로그인 후 결과 저장이 가능합니다.</p>
+                <p class="results-gate__copy">
+                  벡터 변환/다운로드 시 크레딧이 차감돼요. 남은 크레딧: <strong data-role="results-credit-count">0</strong>
+                </p>
+              </div>
+              <div class="results-gate__actions">
+                <button class="btn btn--outline btn--sm" type="button" data-role="results-gate-login">로그인하고 무료 30 크레딧 받기</button>
+              </div>
+            </div>
+            <div class="asset-grid asset-grid--results asset-grid--compact" id="resultList" data-empty-text="처리된 이미지가 이곳에 표시됩니다."></div>
+            <section class="analysis" data-role="analysis-panel">
+              <div class="analysis__header">
+                <span class="analysis__title">키워드 분석</span>
+                <button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">
+                  분석 실행
+                </button>
+              </div>
+              <p class="analysis__hint" data-role="analysis-hint">분석할 결과 이미지를 선택하고 “분석 실행” 버튼을 눌러보세요.</p>
+              <p class="analysis__headline" data-role="analysis-title"></p>
+              <ul class="analysis__keywords" data-role="analysis-keywords"></ul>
+              <p class="analysis__summary" data-role="analysis-summary"></p>
+            </section>
           </article>
         </div>
       </section>
