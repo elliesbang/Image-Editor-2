@@ -1,15 +1,795 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
 
 type Bindings = {
   OPENAI_API_KEY?: string
+  ADMIN_EMAIL?: string
+  ADMIN_PASSWORD_HASH?: string
+  SESSION_SECRET?: string
+  CHALLENGE_KV?: KVNamespace
+  GOOGLE_CLIENT_ID?: string
+  GOOGLE_CLIENT_SECRET?: string
+  GOOGLE_REDIRECT_URI?: string
+}
+
+type ChallengeSubmission = {
+  day: number
+  type: 'image' | 'url'
+  value: string
+  submittedAt: string
+}
+
+type ChallengeParticipant = {
+  email: string
+  name?: string
+  plan: 'michina'
+  startDate: string
+  endDate: string
+  createdAt: string
+  updatedAt: string
+  submissions: Record<string, ChallengeSubmission>
+  completed: boolean
+  completedAt?: string
+}
+
+type ChallengeSummary = ChallengeParticipant & {
+  totalSubmissions: number
+  missingDays: number
+}
+
+type AdminSessionPayload = {
+  sub: string
+  role: 'admin'
+  exp: number
+}
+
+const ADMIN_SESSION_COOKIE = 'admin_session'
+const PARTICIPANT_KEY_PREFIX = 'participant:'
+const REQUIRED_SUBMISSIONS = 15
+const CHALLENGE_DURATION_BUSINESS_DAYS = 15
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
+
+const inMemoryStore = new Map<string, string>()
+
+function encodeKey(email: string) {
+  return `${PARTICIPANT_KEY_PREFIX}${email.toLowerCase()}`
+}
+
+function isValidEmail(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
+}
+
+function toHex(buffer: ArrayBuffer) {
+  return Array.from(new Uint8Array(buffer))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+async function sha256(input: string) {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(input)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return toHex(digest)
+}
+
+type GoogleIdTokenPayload = {
+  aud?: string
+  email?: string
+  email_verified?: boolean | string
+  name?: string
+  given_name?: string
+  picture?: string
+  exp?: number | string
+  iss?: string
+  sub?: string
+}
+
+function normalizeBase64UrlSegment(segment: string) {
+  const normalized = segment.replace(/-/g, '+').replace(/_/g, '/')
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
+  return normalized + padding
+}
+
+function decodeGoogleIdToken(token: string): GoogleIdTokenPayload | null {
+  const parts = token.split('.')
+  if (parts.length !== 3) {
+    return null
+  }
+  const payloadSegment = normalizeBase64UrlSegment(parts[1])
+  try {
+    const decoded = atob(payloadSegment)
+    return JSON.parse(decoded) as GoogleIdTokenPayload
+  } catch (error) {
+    console.error('[auth/google] Failed to decode id_token payload', error)
+    return null
+  }
+}
+
+function isGoogleEmailVerified(value: unknown) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'string') {
+    return value.toLowerCase() === 'true'
+  }
+  return false
+}
+
+function addBusinessDays(start: Date, days: number) {
+  const target = new Date(start)
+  let added = 0
+  while (added < days) {
+    target.setDate(target.getDate() + 1)
+    const day = target.getUTCDay()
+    if (day !== 0 && day !== 6) {
+      added += 1
+    }
+  }
+  return target
+}
+
+async function kvGet(env: Bindings, key: string) {
+  if (env.CHALLENGE_KV) {
+    return env.CHALLENGE_KV.get(key)
+  }
+  return inMemoryStore.get(key) ?? null
+}
+
+async function kvPut(env: Bindings, key: string, value: string) {
+  if (env.CHALLENGE_KV) {
+    await env.CHALLENGE_KV.put(key, value)
+    return
+  }
+  inMemoryStore.set(key, value)
+}
+
+async function kvDelete(env: Bindings, key: string) {
+  if (env.CHALLENGE_KV) {
+    await env.CHALLENGE_KV.delete(key)
+    return
+  }
+  inMemoryStore.delete(key)
+}
+
+async function listParticipantKeys(env: Bindings) {
+  if (env.CHALLENGE_KV) {
+    const keys: string[] = []
+    let cursor: string | undefined
+    do {
+      const result = await env.CHALLENGE_KV.list({ prefix: PARTICIPANT_KEY_PREFIX, cursor })
+      for (const entry of result.keys) {
+        keys.push(entry.name)
+      }
+      cursor = result.list_complete ? undefined : result.cursor
+    } while (cursor)
+    return keys
+  }
+  return Array.from(inMemoryStore.keys()).filter((key) => key.startsWith(PARTICIPANT_KEY_PREFIX))
+}
+
+async function getParticipant(env: Bindings, email: string) {
+  const key = encodeKey(email)
+  const stored = await kvGet(env, key)
+  if (!stored) return null
+  try {
+    const parsed = JSON.parse(stored) as ChallengeParticipant
+    if (!parsed.email) return null
+    return parsed
+  } catch (error) {
+    console.error('[challenge] Failed to parse participant data', error)
+    return null
+  }
+}
+
+async function saveParticipant(env: Bindings, participant: ChallengeParticipant) {
+  participant.updatedAt = new Date().toISOString()
+  await kvPut(env, encodeKey(participant.email), JSON.stringify(participant))
+}
+
+async function listParticipants(env: Bindings) {
+  const keys = await listParticipantKeys(env)
+  const participants: ChallengeSummary[] = []
+  for (const key of keys) {
+    const stored = await kvGet(env, key)
+    if (!stored) continue
+    try {
+      const participant = JSON.parse(stored) as ChallengeParticipant
+      const totalSubmissions = Object.keys(participant.submissions ?? {}).length
+      const missingDays = Math.max(0, REQUIRED_SUBMISSIONS - totalSubmissions)
+      participants.push({
+        ...participant,
+        totalSubmissions,
+        missingDays,
+      })
+    } catch (error) {
+      console.error('[challenge] Failed to parse participant record', error)
+    }
+  }
+  return participants
+}
+
+async function upsertParticipants(env: Bindings, entries: { email: string; name?: string; endDate?: string }[]) {
+  const now = new Date()
+  const startISO = now.toISOString()
+  const defaultEnd = addBusinessDays(now, CHALLENGE_DURATION_BUSINESS_DAYS).toISOString()
+
+  for (const entry of entries) {
+    const email = entry.email.trim().toLowerCase()
+    if (!isValidEmail(email)) {
+      continue
+    }
+
+    const existing = await getParticipant(env, email)
+    if (existing) {
+      existing.name = entry.name?.trim() || existing.name
+      existing.plan = 'michina'
+      existing.endDate = entry.endDate || existing.endDate
+      await saveParticipant(env, existing)
+      continue
+    }
+
+    const participant: ChallengeParticipant = {
+      email,
+      name: entry.name?.trim() || undefined,
+      plan: 'michina',
+      startDate: startISO,
+      endDate: entry.endDate || defaultEnd,
+      createdAt: startISO,
+      updatedAt: startISO,
+      submissions: {},
+      completed: false,
+    }
+    await saveParticipant(env, participant)
+  }
+}
+
+async function recordSubmission(env: Bindings, email: string, submission: ChallengeSubmission) {
+  const participant = await getParticipant(env, email)
+  if (!participant) {
+    return null
+  }
+  const key = String(submission.day)
+  participant.submissions[key] = submission
+  await saveParticipant(env, participant)
+  return participant
+}
+
+async function evaluateCompletions(env: Bindings) {
+  const keys = await listParticipantKeys(env)
+  const updated: ChallengeParticipant[] = []
+  for (const key of keys) {
+    const stored = await kvGet(env, key)
+    if (!stored) continue
+    let participant: ChallengeParticipant | null = null
+    try {
+      participant = JSON.parse(stored) as ChallengeParticipant
+    } catch (error) {
+      console.error('[challenge] Failed to parse participant record for completion check', error)
+      continue
+    }
+    if (!participant || participant.completed) {
+      continue
+    }
+    if (Object.keys(participant.submissions ?? {}).length >= REQUIRED_SUBMISSIONS) {
+      participant.completed = true
+      participant.completedAt = new Date().toISOString()
+      await saveParticipant(env, participant)
+      updated.push(participant)
+    }
+  }
+  return updated
+}
+
+async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
+  const env = c.env
+  const secret = env.SESSION_SECRET
+  if (!secret) {
+    return null
+  }
+  const token = getCookie(c, ADMIN_SESSION_COOKIE)
+  if (!token) {
+    return null
+  }
+  try {
+    const payload = (await verify(token, secret)) as AdminSessionPayload
+    if (payload.role !== 'admin' || !payload.sub) {
+      return null
+    }
+    return payload.sub
+  } catch (error) {
+    console.error('[auth] Failed to verify admin session', error)
+    return null
+  }
+}
+
+async function createAdminSession(c: Context<{ Bindings: Bindings }>, email: string) {
+  const env = c.env
+  const secret = env.SESSION_SECRET
+  if (!secret) {
+    throw new Error('SESSION_SECRET_NOT_CONFIGURED')
+  }
+  const normalizedEmail = email.trim().toLowerCase()
+  const expiresInSeconds = 60 * 60 * 8
+  const exp = Math.floor(Date.now() / 1000) + expiresInSeconds
+  const token = await sign({ sub: normalizedEmail, role: 'admin', exp }, secret)
+  setCookie(c, ADMIN_SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: true,
+    path: '/',
+    maxAge: expiresInSeconds,
+  })
+  return exp
+}
+
+function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
+  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/' })
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+app.use('*', async (c, next) => {
+  await next()
+
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://apis.google.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net",
+    "img-src 'self' data: blob: https://lh3.googleusercontent.com",
+    "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net",
+    "connect-src 'self' https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com",
+    "frame-src 'self' https://accounts.google.com",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "base-uri 'self'",
+  ].join('; ')
+
+  c.res.headers.set('Content-Security-Policy', csp)
+  c.res.headers.set('Strict-Transport-Security', 'max-age=15552000; includeSubDomains; preload')
+  c.res.headers.set('X-Content-Type-Options', 'nosniff')
+  c.res.headers.set('X-Frame-Options', 'DENY')
+  c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+  c.res.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  c.res.headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+})
+
 app.use('/static/*', serveStatic({ root: './public' }))
 app.use(renderer)
+
+app.get('/api/auth/session', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
+})
+
+app.post('/api/auth/admin/login', async (c) => {
+  let payload: { email?: string; password?: string } | undefined
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+  }
+
+  const env = c.env
+  const configuredEmail = env.ADMIN_EMAIL?.trim().toLowerCase()
+  const configuredHash = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase()
+  const secret = env.SESSION_SECRET
+
+  if (!configuredEmail || !configuredHash || !secret) {
+    return c.json({ error: 'ADMIN_AUTH_NOT_CONFIGURED' }, 500)
+  }
+
+  const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  const password = typeof payload?.password === 'string' ? payload.password : ''
+
+  if (!isValidEmail(email) || !password) {
+    return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
+  }
+
+  if (email !== configuredEmail) {
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
+  }
+
+  const computedHash = await sha256(password)
+  if (computedHash.toLowerCase() !== configuredHash) {
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
+  }
+
+  const exp = await createAdminSession(c, email)
+  return c.json({ ok: true, expiresAt: exp })
+})
+
+app.post('/api/auth/admin/logout', async (c) => {
+  clearAdminSession(c)
+  return c.json({ ok: true })
+})
+
+app.post('/api/auth/google', async (c) => {
+  let payload: { code?: string } | undefined
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+  }
+
+  const code = typeof payload?.code === 'string' ? payload.code.trim() : ''
+  if (!code) {
+    return c.json({ error: 'AUTH_CODE_REQUIRED' }, 400)
+  }
+
+  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+  const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
+  const redirectUri = c.env.GOOGLE_REDIRECT_URI?.trim() || DEFAULT_GOOGLE_REDIRECT_URI
+
+  if (!clientId || !clientSecret) {
+    return c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 500)
+  }
+
+  try {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    })
+
+    if (!tokenResponse.ok) {
+      const detail = await tokenResponse.text().catch(() => '')
+      return c.json(
+        { error: 'GOOGLE_TOKEN_EXCHANGE_FAILED', detail: detail.slice(0, 4000) },
+        502,
+      )
+    }
+
+    const tokenJson = (await tokenResponse.json()) as {
+      id_token?: string
+      expires_in?: number
+      scope?: string
+      token_type?: string
+      refresh_token?: string
+    }
+
+    const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
+    if (!idToken) {
+      return c.json({ error: 'GOOGLE_ID_TOKEN_MISSING' }, 502)
+    }
+
+    const idPayload = decodeGoogleIdToken(idToken)
+    if (!idPayload) {
+      return c.json({ error: 'GOOGLE_ID_TOKEN_INVALID' }, 502)
+    }
+
+    if (idPayload.aud !== clientId) {
+      return c.json({ error: 'GOOGLE_ID_TOKEN_AUDIENCE_MISMATCH' }, 401)
+    }
+
+    if (
+      idPayload.iss &&
+      idPayload.iss !== 'https://accounts.google.com' &&
+      idPayload.iss !== 'accounts.google.com'
+    ) {
+      return c.json({ error: 'GOOGLE_ID_TOKEN_ISSUER_INVALID' }, 401)
+    }
+
+    const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
+    if (!isValidEmail(email)) {
+      return c.json({ error: 'GOOGLE_EMAIL_INVALID' }, 400)
+    }
+
+    if (!isGoogleEmailVerified(idPayload.email_verified)) {
+      return c.json({ error: 'GOOGLE_EMAIL_NOT_VERIFIED' }, 403)
+    }
+
+    const expiresAt =
+      typeof idPayload.exp === 'number'
+        ? idPayload.exp
+        : typeof idPayload.exp === 'string'
+          ? Number(idPayload.exp)
+          : undefined
+
+    return c.json({
+      ok: true,
+      profile: {
+        email,
+        name: idPayload.name ?? idPayload.given_name ?? '',
+        picture: idPayload.picture ?? '',
+        expiresAt: expiresAt && Number.isFinite(expiresAt) ? expiresAt : null,
+      },
+    })
+  } catch (error) {
+    console.error('[auth/google] Unexpected error', error)
+    return c.json({ error: 'GOOGLE_AUTH_UNEXPECTED_ERROR' }, 502)
+  }
+})
+
+app.get('/auth/google/callback', (c) => {
+  return c.html(`<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>Google 인증 완료</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      .card {
+        padding: 24px 32px;
+        border-radius: 18px;
+        background: rgba(15, 23, 42, 0.86);
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        text-align: center;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.4);
+      }
+      .card h1 {
+        margin: 0 0 12px;
+        font-size: 1.25rem;
+      }
+      .card p {
+        margin: 0;
+        font-size: 0.95rem;
+        color: rgba(226, 232, 240, 0.82);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card" role="alert" aria-live="polite">
+      <h1>Google 인증이 완료되었습니다.</h1>
+      <p>이 창은 잠시 후 자동으로 닫힙니다.</p>
+    </div>
+    <script>
+      setTimeout(() => {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: 'google-auth-callback' }, '*')
+        }
+        window.close()
+      }, 600)
+    </script>
+  </body>
+</html>`)
+})
+
+app.post('/api/admin/challenge/import', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+
+  let payload: {
+    participants?: Array<string | { email?: string; name?: string; endDate?: string }>
+    endDate?: string
+  }
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+  }
+
+  const entries: { email: string; name?: string; endDate?: string }[] = []
+  const overrideEndISO = typeof payload?.endDate === 'string' && !Number.isNaN(Date.parse(payload.endDate))
+    ? new Date(payload.endDate).toISOString()
+    : undefined
+
+  for (const item of payload?.participants ?? []) {
+    if (typeof item === 'string') {
+      const email = item.trim().toLowerCase()
+      if (isValidEmail(email)) {
+        entries.push({ email, endDate: overrideEndISO })
+      }
+      continue
+    }
+    if (typeof item === 'object' && item) {
+      const email = typeof item.email === 'string' ? item.email.trim().toLowerCase() : ''
+      if (!isValidEmail(email)) continue
+      const endDate = typeof item.endDate === 'string' && !Number.isNaN(Date.parse(item.endDate))
+        ? new Date(item.endDate).toISOString()
+        : overrideEndISO
+      const name = typeof item.name === 'string' ? item.name.trim() : undefined
+      entries.push({ email, name, endDate: endDate })
+    }
+  }
+
+  if (entries.length === 0) {
+    return c.json({ error: 'NO_VALID_PARTICIPANTS' }, 400)
+  }
+
+  await upsertParticipants(c.env, entries)
+  const participants = await listParticipants(c.env)
+
+  return c.json({
+    ok: true,
+    imported: entries.length,
+    total: participants.length,
+  })
+})
+
+app.get('/api/admin/challenge/participants', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const participants = await listParticipants(c.env)
+  return c.json({ participants })
+})
+
+app.post('/api/admin/challenge/run-completion-check', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const updated = await evaluateCompletions(c.env)
+  return c.json({ ok: true, newlyCompleted: updated.length })
+})
+
+app.get('/api/admin/challenge/completions', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const participants = await listParticipants(c.env)
+  const completed = participants.filter((participant) => participant.completed)
+  const format = c.req.query('format')
+  if (format === 'csv') {
+    const headers = ['email', 'name', 'startDate', 'endDate', 'completedAt', 'totalSubmissions']
+    const rows = completed.map((participant) => [
+      participant.email,
+      participant.name ?? '',
+      participant.startDate,
+      participant.endDate,
+      participant.completedAt ?? '',
+      String(Object.keys(participant.submissions ?? {}).length),
+    ])
+    const csv = [headers, ...rows]
+      .map((columns) => columns.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(','))
+      .join('\n')
+    return new Response(csv, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    })
+  }
+
+  return c.json({ completed })
+})
+
+app.get('/api/challenge/profile', async (c) => {
+  const email = c.req.query('email')
+  if (!isValidEmail(email)) {
+    return c.json({ error: 'INVALID_EMAIL' }, 400)
+  }
+  const participant = await getParticipant(c.env, email)
+  if (!participant) {
+    return c.json({ exists: false })
+  }
+  const totalSubmissions = Object.keys(participant.submissions ?? {}).length
+  const missingDays = Math.max(0, REQUIRED_SUBMISSIONS - totalSubmissions)
+  return c.json({
+    exists: true,
+    participant: {
+      email: participant.email,
+      name: participant.name,
+      plan: participant.plan,
+      startDate: participant.startDate,
+      endDate: participant.endDate,
+      submissions: participant.submissions,
+      completed: participant.completed,
+      completedAt: participant.completedAt ?? null,
+      totalSubmissions,
+      missingDays,
+      required: REQUIRED_SUBMISSIONS,
+    },
+  })
+})
+
+app.post('/api/challenge/submit', async (c) => {
+  let payload: {
+    email?: string
+    day?: number
+    type?: 'image' | 'url'
+    value?: string
+  }
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+  }
+
+  const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  const day = typeof payload?.day === 'number' ? Math.floor(payload.day) : NaN
+  const submissionType = payload?.type === 'image' || payload?.type === 'url' ? payload.type : null
+  const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
+
+  if (!isValidEmail(email) || Number.isNaN(day) || day < 1 || day > REQUIRED_SUBMISSIONS || !submissionType || !value) {
+    return c.json({ error: 'INVALID_SUBMISSION' }, 400)
+  }
+
+  const participant = await getParticipant(c.env, email)
+  if (!participant || participant.plan !== 'michina') {
+    return c.json({ error: 'PARTICIPANT_NOT_FOUND' }, 404)
+  }
+
+  const submission: ChallengeSubmission = {
+    day,
+    type: submissionType,
+    value,
+    submittedAt: new Date().toISOString(),
+  }
+
+  const updated = await recordSubmission(c.env, email, submission)
+  if (!updated) {
+    return c.json({ error: 'PARTICIPANT_NOT_FOUND' }, 404)
+  }
+
+  if (!updated.completed && Object.keys(updated.submissions ?? {}).length >= REQUIRED_SUBMISSIONS) {
+    updated.completed = true
+    updated.completedAt = new Date().toISOString()
+    await saveParticipant(c.env, updated)
+  }
+
+  const totalSubmissions = Object.keys(updated.submissions ?? {}).length
+  const missingDays = Math.max(0, REQUIRED_SUBMISSIONS - totalSubmissions)
+
+  return c.json({
+    ok: true,
+    participant: {
+      email: updated.email,
+      name: updated.name,
+      plan: updated.plan,
+      startDate: updated.startDate,
+      endDate: updated.endDate,
+      submissions: updated.submissions,
+      completed: updated.completed,
+      completedAt: updated.completedAt ?? null,
+      totalSubmissions,
+      missingDays,
+      required: REQUIRED_SUBMISSIONS,
+    },
+  })
+})
+
+app.get('/api/challenge/certificate', async (c) => {
+  const email = c.req.query('email')
+  if (!isValidEmail(email)) {
+    return c.json({ error: 'INVALID_EMAIL' }, 400)
+  }
+  const participant = await getParticipant(c.env, email)
+  if (!participant || !participant.completed) {
+    return c.json({ error: 'CERTIFICATE_NOT_AVAILABLE' }, 404)
+  }
+  return c.json({
+    email: participant.email,
+    name: participant.name ?? participant.email.split('@')[0],
+    startDate: participant.startDate,
+    endDate: participant.endDate,
+    completedAt: participant.completedAt ?? participant.updatedAt,
+    plan: participant.plan,
+    totalSubmissions: Object.keys(participant.submissions ?? {}).length,
+    required: REQUIRED_SUBMISSIONS,
+  })
+})
 
 app.post('/api/analyze', async (c) => {
   const env = c.env
@@ -144,11 +924,15 @@ app.get('/', (c) => {
         </div>
         <div class="app-header__right">
           <div class="app-header__credit" data-role="credit-display" data-state="locked">
+            <span class="app-header__plan-badge" data-role="plan-badge">게스트 모드</span>
             <span class="app-header__credit-label" data-role="credit-label">로그인하고 무료 30 크레딧 받기</span>
             <span class="app-header__credit-value">
               <strong data-role="credit-count">0</strong> 크레딧
             </span>
           </div>
+          <button class="btn btn--outline btn--sm" type="button" data-role="admin-login">
+            관리자
+          </button>
           <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
             로그인
           </button>
@@ -271,6 +1055,45 @@ app.get('/', (c) => {
             <p class="login-modal__helper" data-role="login-email-helper">
               이메일 주소를 입력하면 인증 코드를 보내드립니다.
             </p>
+          </form>
+        </div>
+      </div>
+
+      <div class="admin-modal" data-role="admin-modal" aria-hidden="true">
+        <div class="admin-modal__backdrop" data-action="close-admin" aria-hidden="true"></div>
+        <div class="admin-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="admin-modal-title">
+          <header class="admin-modal__header">
+            <h2 class="admin-modal__title" id="admin-modal-title">관리자 보안 로그인</h2>
+            <button class="admin-modal__close" type="button" data-action="close-admin" aria-label="관리자 로그인 창 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="admin-modal__subtitle">등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.</p>
+          <form class="admin-modal__form" data-role="admin-login-form">
+            <label class="admin-modal__label" for="adminEmail">관리자 이메일</label>
+            <input
+              id="adminEmail"
+              name="adminEmail"
+              type="email"
+              required
+              autocomplete="email"
+              class="admin-modal__input"
+              data-role="admin-email"
+              placeholder="admin@example.com"
+            />
+            <label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>
+            <input
+              id="adminPassword"
+              name="adminPassword"
+              type="password"
+              required
+              autocomplete="current-password"
+              class="admin-modal__input"
+              data-role="admin-password"
+              placeholder="비밀번호"
+            />
+            <p class="admin-modal__helper" data-role="admin-login-message"></p>
+            <button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>
           </form>
         </div>
       </div>
@@ -429,6 +1252,113 @@ app.get('/', (c) => {
         </div>
       </section>
 
+      <section class="challenge" aria-label="미치나 플랜 챌린지" data-role="challenge-section">
+        <header class="challenge__header">
+          <div>
+            <span class="challenge__eyebrow">Michina Plan</span>
+            <h2 class="challenge__title">미치나 플랜 챌린지 트래킹</h2>
+          </div>
+          <p class="challenge__description">
+            총 3주 · 15회 제출 챌린지를 한눈에 관리하세요. 관리자는 참가자 명단을 업로드하고, 챌린저는 일일 과제를 제출하며 진행률을 확인할 수 있습니다.
+          </p>
+        </header>
+        <div class="challenge__panels">
+          <article class="challenge-card challenge-card--admin" data-role="admin-dashboard" hidden>
+            <header class="challenge-card__header">
+              <h3>관리자 대시보드</h3>
+              <p>명단 업로드부터 완주자 추출까지 통합으로 관리하세요.</p>
+            </header>
+            <section class="challenge-card__section">
+              <h4 class="challenge-card__section-title">참가자 명단 등록</h4>
+              <form class="admin-import" data-role="admin-import-form">
+                <div class="admin-import__grid">
+                  <label class="admin-import__label" for="adminImportFile">CSV 업로드</label>
+                  <input id="adminImportFile" type="file" accept=".csv,.txt" data-role="admin-import-file" />
+                  <label class="admin-import__label" for="adminImportManual">수동 입력</label>
+                  <textarea
+                    id="adminImportManual"
+                    class="admin-import__textarea"
+                    placeholder="이메일,이름 형식으로 한 줄씩 입력하세요."
+                    data-role="admin-import-manual"
+                  ></textarea>
+                  <label class="admin-import__label" for="adminImportEnd">챌린지 종료일(선택)</label>
+                  <input id="adminImportEnd" type="date" data-role="admin-import-enddate" />
+                </div>
+                <p class="admin-import__hint">등록 즉시 미치나 플랜 권한이 부여되고 15영업일 만료일이 자동 설정됩니다.</p>
+                <button class="btn btn--primary admin-import__submit" type="submit">명단 등록</button>
+              </form>
+            </section>
+            <section class="challenge-card__section">
+              <div class="admin-actions">
+                <button class="btn btn--ghost btn--sm" type="button" data-role="admin-refresh">현황 새로고침</button>
+                <button class="btn btn--outline btn--sm" type="button" data-role="admin-run-completion">완주 판별 실행</button>
+                <button class="btn btn--ghost btn--sm" type="button" data-role="admin-download-completion">완주자 CSV 다운로드</button>
+                <button class="btn btn--ghost btn--sm" type="button" data-role="admin-logout">관리자 세션 종료</button>
+              </div>
+              <div class="challenge-table-wrapper">
+                <table class="challenge-table" data-role="admin-participants-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">참가자</th>
+                      <th scope="col">진행률</th>
+                      <th scope="col">미제출</th>
+                      <th scope="col">기간</th>
+                      <th scope="col">상태</th>
+                    </tr>
+                  </thead>
+                  <tbody data-role="admin-participants-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </article>
+
+          <article class="challenge-card challenge-card--participant" data-role="challenge-dashboard" hidden>
+            <header class="challenge-card__header">
+              <h3>나의 챌린지 현황</h3>
+              <p data-role="challenge-summary">미치나 플랜에 참여하면 일일 제출 현황을 여기에서 확인할 수 있습니다.</p>
+            </header>
+            <section class="challenge-card__section">
+              <div class="challenge-progress" data-role="challenge-progress"></div>
+              <form class="challenge-submit" data-role="challenge-submit-form">
+                <div class="challenge-submit__grid">
+                  <label class="challenge-submit__label" for="challengeDay">Day 선택</label>
+                  <select id="challengeDay" data-role="challenge-day">
+                    {Array.from({ length: 15 }).map((_, index) => (
+                      <option value={index + 1}>Day {index + 1}</option>
+                    ))}
+                  </select>
+                  <label class="challenge-submit__label" for="challengeUrl">제출 URL</label>
+                  <input id="challengeUrl" type="url" placeholder="https://" data-role="challenge-url" />
+                  <label class="challenge-submit__label" for="challengeFile">이미지 업로드</label>
+                  <input id="challengeFile" type="file" accept="image/*" data-role="challenge-file" />
+                </div>
+                <p class="challenge-submit__hint" data-role="challenge-submit-hint">URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.</p>
+                <button class="btn btn--primary challenge-submit__button" type="submit">제출 저장</button>
+              </form>
+            </section>
+            <section class="challenge-card__section">
+              <h4 class="challenge-card__section-title">일별 제출 현황</h4>
+              <ul class="challenge-days" data-role="challenge-days"></ul>
+            </section>
+            <section class="challenge-card__section challenge-card__section--certificate" data-role="challenge-certificate" hidden>
+              <div class="certificate__header">
+                <h4>수료증이 도착했습니다!</h4>
+                <p>완주를 축하드립니다. 아래 수료증을 확인하고 PNG로 다운로드하세요.</p>
+              </div>
+              <div class="certificate__preview" data-role="certificate-preview"></div>
+              <button class="btn btn--outline certificate__download" type="button" data-role="certificate-download">수료증 다운로드 (PNG)</button>
+            </section>
+          </article>
+
+          <article class="challenge-card challenge-card--locked" data-role="challenge-locked">
+            <header class="challenge-card__header">
+              <h3>미치나 플랜 참가 안내</h3>
+            </header>
+            <p>관리자에게 참가자 명단 등록을 요청하면 챌린지 기능이 열립니다. 등록 후에는 일일 제출과 진행률을 실시간으로 확인할 수 있어요.</p>
+          </article>
+        </div>
+      </section>
+
       <footer class="site-footer" aria-label="사이트 하단">
         <div class="site-footer__inner">
           <div class="site-footer__brand">
@@ -479,6 +1409,12 @@ app.get('/', (c) => {
           </div>
         </div>
       </div>
+      <script type="application/json" data-role="app-config">
+        {JSON.stringify({
+          googleClientId: c.env.GOOGLE_CLIENT_ID ?? '',
+          googleRedirectUri: c.env.GOOGLE_REDIRECT_URI ?? '',
+        })}
+      </script>
     </main>
   )
 })

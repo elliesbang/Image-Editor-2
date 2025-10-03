@@ -28,6 +28,17 @@ const state = {
     credits: 0,
     totalUsed: 0,
   },
+  admin: {
+    isLoggedIn: false,
+    email: '',
+    participants: [],
+  },
+  challenge: {
+    profile: null,
+    certificate: null,
+    loading: false,
+    submitting: false,
+  },
   auth: {
     step: 'idle',
     pendingEmail: '',
@@ -36,6 +47,132 @@ const state = {
     attempts: 0,
   },
   stage: 'upload',
+}
+
+const runtime = {
+  config: null,
+  google: {
+    codeClient: null,
+    deferred: null,
+  },
+}
+
+function hasUnlimitedAccess() {
+  return state.admin.isLoggedIn || state.user.plan === 'michina'
+}
+
+function formatCreditsValue(value) {
+  if (hasUnlimitedAccess()) return '∞'
+  const numeric = typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
+  return `${numeric}`
+}
+
+function getPlanLabel() {
+  if (state.admin.isLoggedIn) return '관리자 테스트 모드'
+  if (state.user.plan === 'michina') return '미치나 챌린저'
+  if (state.user.plan === 'freemium') return 'Freemium'
+  return '게스트'
+}
+
+function getAppConfig() {
+  if (runtime.config) {
+    return runtime.config
+  }
+  const script = document.querySelector('script[data-role="app-config"]')
+  if (!script) {
+    runtime.config = {}
+    return runtime.config
+  }
+  try {
+    runtime.config = JSON.parse(script.textContent || '{}') || {}
+  } catch (error) {
+    console.error('앱 설정을 불러오지 못했습니다.', error)
+    runtime.config = {}
+  }
+  return runtime.config
+}
+
+function waitForGoogleSdk(timeout = 8000) {
+  const start = Date.now()
+  return new Promise((resolve, reject) => {
+    if (window.google?.accounts?.oauth2) {
+      resolve(window.google.accounts.oauth2)
+      return
+    }
+    const timer = window.setInterval(() => {
+      if (window.google?.accounts?.oauth2) {
+        window.clearInterval(timer)
+        resolve(window.google.accounts.oauth2)
+        return
+      }
+      if (Date.now() - start > timeout) {
+        window.clearInterval(timer)
+        reject(new Error('GOOGLE_SDK_TIMEOUT'))
+      }
+    }, 120)
+  })
+}
+
+function createDeferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return {
+    promise,
+    resolve,
+    reject,
+  }
+}
+
+async function ensureGoogleClient() {
+  const config = getAppConfig()
+  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+  if (!clientId) {
+    throw new Error('GOOGLE_CLIENT_ID_MISSING')
+  }
+
+  await waitForGoogleSdk().catch((error) => {
+    throw error
+  })
+
+  const oauth2 = window.google?.accounts?.oauth2
+  if (!oauth2 || typeof oauth2.initCodeClient !== 'function') {
+    throw new Error('GOOGLE_SDK_UNAVAILABLE')
+  }
+
+  if (!runtime.google.codeClient) {
+    const redirectConfig =
+      typeof config.googleRedirectUri === 'string' ? config.googleRedirectUri.trim() : ''
+    const fallbackRedirect = `${window.location.origin.replace(/\/$/, '')}/auth/google/callback`
+    const redirectUri = redirectConfig || fallbackRedirect
+
+    runtime.google.codeClient = oauth2.initCodeClient({
+      client_id: clientId,
+      scope: 'openid email profile',
+      ux_mode: 'popup',
+      prompt: 'select_account',
+      redirect_uri: redirectUri,
+      callback: (response) => {
+        const deferred = runtime.google.deferred
+        if (!deferred) {
+          return
+        }
+        if (response.error) {
+          deferred.reject(new Error(response.error))
+        } else if (response.code) {
+          deferred.resolve(response.code)
+        } else {
+          deferred.reject(new Error('GOOGLE_CODE_MISSING'))
+        }
+        runtime.google.deferred = null
+      },
+    })
+  }
+
+  return runtime.google.codeClient
 }
 
 const elements = {
@@ -60,6 +197,37 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  adminLoginButton: document.querySelector('[data-role="admin-login"]'),
+  adminModal: document.querySelector('[data-role="admin-modal"]'),
+  adminLoginForm: document.querySelector('[data-role="admin-login-form"]'),
+  adminEmailInput: document.querySelector('[data-role="admin-email"]'),
+  adminPasswordInput: document.querySelector('[data-role="admin-password"]'),
+  adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
+  adminDashboard: document.querySelector('[data-role="admin-dashboard"]'),
+  adminImportForm: document.querySelector('[data-role="admin-import-form"]'),
+  adminImportFile: document.querySelector('[data-role="admin-import-file"]'),
+  adminImportManual: document.querySelector('[data-role="admin-import-manual"]'),
+  adminImportEndDate: document.querySelector('[data-role="admin-import-enddate"]'),
+  adminParticipantsBody: document.querySelector('[data-role="admin-participants-body"]'),
+  adminRunCompletionButton: document.querySelector('[data-role="admin-run-completion"]'),
+  adminRefreshButton: document.querySelector('[data-role="admin-refresh"]'),
+  adminDownloadCompletion: document.querySelector('[data-role="admin-download-completion"]'),
+  adminLogoutButton: document.querySelector('[data-role="admin-logout"]'),
+  planBadge: document.querySelector('[data-role="plan-badge"]'),
+  challengeSection: document.querySelector('[data-role="challenge-section"]'),
+  challengeDashboard: document.querySelector('[data-role="challenge-dashboard"]'),
+  challengeLocked: document.querySelector('[data-role="challenge-locked"]'),
+  challengeSummary: document.querySelector('[data-role="challenge-summary"]'),
+  challengeProgress: document.querySelector('[data-role="challenge-progress"]'),
+  challengeSubmitForm: document.querySelector('[data-role="challenge-submit-form"]'),
+  challengeDaySelect: document.querySelector('[data-role="challenge-day"]'),
+  challengeUrlInput: document.querySelector('[data-role="challenge-url"]'),
+  challengeFileInput: document.querySelector('[data-role="challenge-file"]'),
+  challengeSubmitHint: document.querySelector('[data-role="challenge-submit-hint"]'),
+  challengeDays: document.querySelector('[data-role="challenge-days"]'),
+  challengeCertificate: document.querySelector('[data-role="challenge-certificate"]'),
+  certificatePreview: document.querySelector('[data-role="certificate-preview"]'),
+  certificateDownload: document.querySelector('[data-role="certificate-download"]'),
   analysisKeywords: document.querySelector('[data-role="analysis-keywords"]'),
   analysisSummary: document.querySelector('[data-role="analysis-summary"]'),
   analysisButton: document.querySelector('[data-action="analyze-current"]'),
@@ -213,28 +381,41 @@ function resolveActiveTarget(preferred) {
 }
 
 function updateHeaderState() {
-  const loggedIn = state.user.isLoggedIn
-  const credits = Math.max(0, state.user.credits)
+  const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+  const unlimited = hasUnlimitedAccess()
+  const creditsNumeric = Math.max(0, state.user.credits)
 
   if (elements.creditDisplay instanceof HTMLElement) {
-    elements.creditDisplay.dataset.state = loggedIn ? creditStateFromBalance(credits) : 'locked'
+    elements.creditDisplay.dataset.state = loggedIn
+      ? unlimited
+        ? 'unlimited'
+        : creditStateFromBalance(creditsNumeric)
+      : 'locked'
+  }
+
+  if (elements.planBadge instanceof HTMLElement) {
+    elements.planBadge.textContent = getPlanLabel()
   }
 
   if (elements.creditLabel instanceof HTMLElement) {
-    elements.creditLabel.textContent = loggedIn ? 'Freemium · 잔여 크레딧' : '로그인하고 무료 30 크레딧 받기'
+    elements.creditLabel.textContent = loggedIn
+      ? unlimited
+        ? `${getPlanLabel()} · 무제한 이용`
+        : 'Freemium · 잔여 크레딧'
+      : '로그인하고 무료 30 크레딧 받기'
   }
 
   if (elements.creditCount instanceof HTMLElement) {
-    elements.creditCount.textContent = `${credits}`
+    elements.creditCount.textContent = formatCreditsValue(state.user.credits)
   }
 
   if (elements.headerAuthButton instanceof HTMLButtonElement) {
-    elements.headerAuthButton.textContent = loggedIn ? '로그아웃' : '로그인'
-    elements.headerAuthButton.dataset.action = loggedIn ? 'logout' : 'show-login'
+    elements.headerAuthButton.textContent = state.user.isLoggedIn ? '로그아웃' : '로그인'
+    elements.headerAuthButton.dataset.action = state.user.isLoggedIn ? 'logout' : 'show-login'
   }
 
   if (elements.resultsCreditCount instanceof HTMLElement) {
-    elements.resultsCreditCount.textContent = `${credits}`
+    elements.resultsCreditCount.textContent = formatCreditsValue(state.user.credits)
   }
 }
 
@@ -406,12 +587,17 @@ function ensureActionAllowed(action, options = {}) {
   const count = options.count ?? 1
   const gateKey = options.gate === 'results' ? 'results' : 'operations'
   const cost = getCreditCost(action, count)
+  const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
 
-  if (!state.user.isLoggedIn) {
+  if (!loggedIn) {
     setStatus('로그인 후 이용 가능한 기능입니다.', 'danger')
     refreshAccessStates()
     openLoginModal()
     return false
+  }
+
+  if (hasUnlimitedAccess()) {
+    return true
   }
 
   if (cost > 0 && state.user.credits < cost) {
@@ -437,33 +623,984 @@ function ensureActionAllowed(action, options = {}) {
 
 function consumeCredits(action, count = 1) {
   const cost = getCreditCost(action, count)
-  if (cost <= 0) return
+  if (cost <= 0 || hasUnlimitedAccess()) return
   state.user.credits = Math.max(0, state.user.credits - cost)
   state.user.totalUsed += cost
   refreshAccessStates()
 }
 
-function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS } = {}) {
+function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, plan = 'freemium' } = {}) {
   const normalizedName = typeof name === 'string' && name.trim().length > 0 ? name.trim() : '크리에이터'
   state.user.isLoggedIn = true
   state.user.name = normalizedName
   state.user.email = typeof email === 'string' ? email : state.user.email
-  state.user.plan = 'freemium'
-  state.user.credits = Math.max(state.user.credits, credits)
+  state.user.plan = plan
+  if (plan === 'michina' || plan === 'admin') {
+    state.user.credits = Number.MAX_SAFE_INTEGER
+  } else {
+    state.user.credits = Math.max(state.user.credits, credits)
+  }
   state.user.totalUsed = 0
   refreshAccessStates()
 }
 
-function handleLogout() {
+async function handleLogout() {
+  try {
+    await fetch('/api/auth/admin/logout', { method: 'POST' })
+  } catch (error) {
+    // ignore network errors
+  }
+  state.admin.isLoggedIn = false
+  state.admin.email = ''
+  state.admin.participants = []
   state.user.isLoggedIn = false
   state.user.name = ''
   state.user.email = ''
   state.user.plan = 'public'
   state.user.credits = 0
   state.user.totalUsed = 0
+  state.challenge.profile = null
+  state.challenge.certificate = null
   refreshAccessStates()
+  renderChallengeDashboard()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
   resetLoginFlow()
+  updateAdminUI()
+}
+
+function setAdminMessage(message = '', tone = 'info') {
+  if (!(elements.adminLoginMessage instanceof HTMLElement)) return
+  elements.adminLoginMessage.textContent = message
+  elements.adminLoginMessage.hidden = !message
+  elements.adminLoginMessage.dataset.tone = tone
+}
+
+function openAdminModal() {
+  if (!(elements.adminModal instanceof HTMLElement)) return
+  if (state.admin.isLoggedIn) {
+    if (elements.adminDashboard instanceof HTMLElement) {
+      elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    setStatus('이미 관리자 모드가 활성화되어 있습니다.', 'info')
+    return
+  }
+  setAdminMessage('등록된 관리자만 접근할 수 있습니다.', 'muted')
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.dataset.state = 'idle'
+    elements.adminLoginForm.reset()
+  }
+  if (elements.adminPasswordInput instanceof HTMLInputElement) {
+    elements.adminPasswordInput.value = ''
+  }
+  if (elements.adminEmailInput instanceof HTMLInputElement && state.admin.email) {
+    elements.adminEmailInput.value = state.admin.email
+  }
+  elements.adminModal.classList.add('is-active')
+  elements.adminModal.setAttribute('aria-hidden', 'false')
+  document.body.classList.add('is-modal-open')
+  if (elements.adminEmailInput instanceof HTMLInputElement) {
+    window.requestAnimationFrame(() => elements.adminEmailInput.focus())
+  }
+}
+
+function closeAdminModal() {
+  if (!(elements.adminModal instanceof HTMLElement)) return
+  elements.adminModal.classList.remove('is-active')
+  elements.adminModal.setAttribute('aria-hidden', 'true')
+  document.body.classList.remove('is-modal-open')
+}
+
+function revokeAdminSessionState() {
+  const wasAdmin = state.admin.isLoggedIn
+  state.admin.isLoggedIn = false
+  state.admin.email = ''
+  state.admin.participants = []
+  if (state.user.plan === 'admin') {
+    state.user.isLoggedIn = false
+    state.user.name = ''
+    state.user.email = ''
+    state.user.plan = 'public'
+    state.user.credits = 0
+    state.user.totalUsed = 0
+  }
+  if (wasAdmin) {
+    refreshAccessStates()
+    updateAdminUI()
+  }
+}
+
+async function syncAdminSession() {
+  try {
+    const response = await fetch('/api/auth/session', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      credentials: 'include',
+    })
+    if (!response.ok) {
+      revokeAdminSessionState()
+      return
+    }
+    const payload = await response.json().catch(() => ({}))
+    if (payload && payload.admin) {
+      const email = typeof payload.email === 'string' ? payload.email : ''
+      state.admin.isLoggedIn = true
+      state.admin.email = email
+      applyLoginProfile({ name: '관리자', email, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
+      updateAdminUI()
+      await fetchAdminParticipants()
+      setStatus('관리자 모드가 활성화되어 있습니다.', 'success')
+    } else {
+      revokeAdminSessionState()
+    }
+  } catch (error) {
+    console.warn('관리자 세션 확인 중 오류', error)
+  }
+}
+
+function formatDateLabel(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('ko', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+}
+
+function renderAdminParticipants() {
+  if (!(elements.adminParticipantsBody instanceof HTMLElement)) return
+  if (!state.admin.isLoggedIn) {
+    elements.adminParticipantsBody.innerHTML = '<tr><td colspan="5">관리자 로그인 후 참가자 정보를 확인할 수 있습니다.</td></tr>'
+    return
+  }
+  if (!Array.isArray(state.admin.participants) || state.admin.participants.length === 0) {
+    elements.adminParticipantsBody.innerHTML = '<tr><td colspan="5">등록된 참가자가 없습니다. CSV 업로드 또는 수동 입력으로 참가자를 추가하세요.</td></tr>'
+    return
+  }
+  const rows = state.admin.participants
+    .map((participant) => {
+      const total = Number(participant.totalSubmissions ?? Object.keys(participant.submissions ?? {}).length ?? 0)
+      const required = Number(participant.required ?? 15)
+      const missing = Number(participant.missingDays ?? Math.max(0, required - total))
+      const progress = required > 0 ? Math.min(100, Math.round((total / required) * 100)) : 0
+      const status = participant.completed
+        ? '완주'
+        : missing === 0
+          ? '검토 필요'
+          : `미제출 ${missing}`
+      const statusClass = participant.completed ? 'is-completed' : missing === 0 ? 'is-review' : 'is-active'
+      const range = `${formatDateLabel(participant.startDate)} ~ ${formatDateLabel(participant.endDate)}`
+      const nameLabel = participant.name ? `${participant.name} (${participant.email})` : participant.email
+      return `
+        <tr>
+          <td>${nameLabel}</td>
+          <td>
+            <div class="challenge-progress-bar">
+              <div class="challenge-progress-bar__meter" style="width:${progress}%"></div>
+              <span class="challenge-progress-bar__label">${total}/${required}</span>
+            </div>
+          </td>
+          <td>${missing}</td>
+          <td>${range}</td>
+          <td><span class="challenge-status ${statusClass}">${status}</span></td>
+        </tr>
+      `
+    })
+    .join('')
+  elements.adminParticipantsBody.innerHTML = rows
+}
+
+function updateAdminUI() {
+  const isAdmin = state.admin.isLoggedIn
+  if (elements.adminDashboard instanceof HTMLElement) {
+    elements.adminDashboard.hidden = !isAdmin
+  }
+  if (elements.adminLoginButton instanceof HTMLButtonElement) {
+    elements.adminLoginButton.textContent = isAdmin ? '관리자 패널' : '관리자'
+    elements.adminLoginButton.dataset.mode = isAdmin ? 'panel' : 'login'
+  }
+  if (elements.adminRunCompletionButton instanceof HTMLButtonElement) {
+    elements.adminRunCompletionButton.disabled = !isAdmin
+  }
+  if (elements.adminRefreshButton instanceof HTMLButtonElement) {
+    elements.adminRefreshButton.disabled = !isAdmin
+  }
+  if (elements.adminDownloadCompletion instanceof HTMLButtonElement) {
+    elements.adminDownloadCompletion.disabled = !isAdmin
+  }
+  if (elements.adminLogoutButton instanceof HTMLButtonElement) {
+    elements.adminLogoutButton.disabled = !isAdmin
+  }
+  if (elements.adminImportForm instanceof HTMLFormElement) {
+    elements.adminImportForm.classList.toggle('is-disabled', !isAdmin)
+  }
+  renderAdminParticipants()
+}
+
+function parseManualParticipants(input) {
+  if (typeof input !== 'string' || !input.trim()) return []
+  return input
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [emailRaw, nameRaw, endDateRaw] = line.split(',').map((part) => part.trim())
+      if (!isValidEmail(emailRaw)) {
+        return null
+      }
+      const entry = { email: emailRaw.toLowerCase() }
+      if (nameRaw) entry.name = nameRaw
+      if (endDateRaw && !Number.isNaN(Date.parse(endDateRaw))) {
+        entry.endDate = new Date(endDateRaw).toISOString()
+      }
+      return entry
+    })
+    .filter(Boolean)
+}
+
+function parseCsvParticipants(text) {
+  if (typeof text !== 'string' || !text.trim()) return []
+  const lines = text.split(/\r?\n/).filter((line) => line.trim())
+  if (lines.length === 0) return []
+  const entries = []
+  for (const line of lines) {
+    const sanitized = line.trim()
+    if (!sanitized) continue
+    const parts = sanitized.split(',').map((part) => part.replace(/^"|"$/g, '').trim())
+    if (parts.length === 0) continue
+    const [emailRaw, nameRaw, endDateRaw] = parts
+    if (!isValidEmail(emailRaw) || /email/i.test(emailRaw)) {
+      continue
+    }
+    const entry = { email: emailRaw.toLowerCase() }
+    if (nameRaw) entry.name = nameRaw
+    if (endDateRaw && !Number.isNaN(Date.parse(endDateRaw))) {
+      entry.endDate = new Date(endDateRaw).toISOString()
+    }
+    entries.push(entry)
+  }
+  return entries
+}
+
+function dedupeParticipants(entries) {
+  const map = new Map()
+  for (const entry of entries) {
+    if (!entry || !entry.email) continue
+    if (!map.has(entry.email)) {
+      map.set(entry.email, entry)
+    } else {
+      const existing = map.get(entry.email)
+      map.set(entry.email, {
+        ...existing,
+        ...entry,
+        name: entry.name || existing.name,
+        endDate: entry.endDate || existing.endDate,
+      })
+    }
+  }
+  return Array.from(map.values())
+}
+
+async function fetchAdminParticipants() {
+  if (!state.admin.isLoggedIn) {
+    renderAdminParticipants()
+    return []
+  }
+  try {
+    const response = await fetch('/api/admin/challenge/participants', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      credentials: 'include',
+    })
+    if (response.status === 401) {
+      revokeAdminSessionState()
+      setStatus('관리자 세션이 만료되었습니다. 다시 로그인해 주세요.', 'danger')
+      return []
+    }
+    if (!response.ok) {
+      throw new Error(`participants_fetch_failed_${response.status}`)
+    }
+    const payload = await response.json().catch(() => ({}))
+    if (Array.isArray(payload.participants)) {
+      state.admin.participants = payload.participants
+    } else {
+      state.admin.participants = []
+    }
+    renderAdminParticipants()
+    return state.admin.participants
+  } catch (error) {
+    console.error('참가자 목록을 불러오지 못했습니다.', error)
+    setStatus('참가자 목록을 불러오는 중 오류가 발생했습니다.', 'danger')
+    return []
+  }
+}
+
+async function handleAdminLogin(event) {
+  event.preventDefault()
+  if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
+  if (elements.adminLoginForm.dataset.state === 'loading') return
+
+  const email = elements.adminEmailInput instanceof HTMLInputElement ? elements.adminEmailInput.value.trim().toLowerCase() : ''
+  const password = elements.adminPasswordInput instanceof HTMLInputElement ? elements.adminPasswordInput.value : ''
+
+  if (!isValidEmail(email)) {
+    setAdminMessage('유효한 관리자 이메일을 입력해주세요.', 'danger')
+    if (elements.adminEmailInput instanceof HTMLInputElement) {
+      elements.adminEmailInput.focus()
+    }
+    return
+  }
+  if (!password) {
+    setAdminMessage('비밀번호를 입력해주세요.', 'danger')
+    if (elements.adminPasswordInput instanceof HTMLInputElement) {
+      elements.adminPasswordInput.focus()
+    }
+    return
+  }
+
+  elements.adminLoginForm.dataset.state = 'loading'
+  setAdminMessage('관리자 자격을 확인하는 중입니다…', 'info')
+
+  try {
+    const response = await fetch('/api/auth/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email, password }),
+    })
+    if (!response.ok) {
+      if (response.status === 401) {
+        setAdminMessage('관리자 인증에 실패했습니다. 이메일 또는 비밀번호를 확인하세요.', 'danger')
+      } else if (response.status === 500) {
+        setAdminMessage('관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.', 'danger')
+      } else {
+        setAdminMessage(`관리자 로그인 중 오류(${response.status})가 발생했습니다.`, 'danger')
+      }
+      return
+    }
+    const payload = await response.json().catch(() => ({}))
+    const sessionEmail = typeof payload?.email === 'string' ? payload.email : email
+    state.admin.isLoggedIn = true
+    state.admin.email = sessionEmail
+    applyLoginProfile({ name: '관리자', email: sessionEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
+    refreshAccessStates()
+    closeAdminModal()
+    setStatus('관리자 모드가 활성화되었습니다. 모든 기능을 무제한으로 테스트할 수 있습니다.', 'success')
+    await fetchAdminParticipants()
+    updateAdminUI()
+    if (elements.adminPasswordInput instanceof HTMLInputElement) {
+      elements.adminPasswordInput.value = ''
+    }
+  } catch (error) {
+    console.error('관리자 로그인 중 오류', error)
+    setAdminMessage('네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  } finally {
+    if (elements.adminLoginForm instanceof HTMLFormElement) {
+      elements.adminLoginForm.dataset.state = 'idle'
+    }
+  }
+}
+
+async function handleAdminImport(event) {
+  event.preventDefault()
+  if (!state.admin.isLoggedIn) {
+    setStatus('관리자 로그인 후 사용할 수 있습니다.', 'danger')
+    openAdminModal()
+    return
+  }
+  if (!(elements.adminImportForm instanceof HTMLFormElement)) return
+  if (elements.adminImportForm.dataset.state === 'loading') return
+
+  elements.adminImportForm.dataset.state = 'loading'
+  setStatus('참가자 명단을 등록하는 중입니다…', 'info')
+
+  try {
+    const manualEntries = elements.adminImportManual instanceof HTMLTextAreaElement ? parseManualParticipants(elements.adminImportManual.value) : []
+    let fileEntries = []
+    if (elements.adminImportFile instanceof HTMLInputElement && elements.adminImportFile.files && elements.adminImportFile.files.length > 0) {
+      const file = elements.adminImportFile.files[0]
+      const text = await file.text()
+      fileEntries = parseCsvParticipants(text)
+    }
+
+    const combined = dedupeParticipants([...fileEntries, ...manualEntries])
+    if (combined.length === 0) {
+      setStatus('등록할 유효한 참가자 정보를 찾지 못했습니다.', 'danger')
+      return
+    }
+
+    let endDateIso
+    if (elements.adminImportEndDate instanceof HTMLInputElement && elements.adminImportEndDate.value) {
+      const parsed = new Date(elements.adminImportEndDate.value)
+      if (!Number.isNaN(parsed.getTime())) {
+        endDateIso = parsed.toISOString()
+      }
+    }
+
+    const response = await fetch('/api/admin/challenge/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        participants: combined,
+        endDate: endDateIso,
+      }),
+    })
+
+    if (response.status === 401) {
+      revokeAdminSessionState()
+      setStatus('관리자 세션이 만료되었습니다. 다시 로그인해 주세요.', 'danger')
+      openAdminModal()
+      return
+    }
+
+    if (!response.ok) {
+      const errorDetail = await response.json().catch(() => ({}))
+      const message = typeof errorDetail?.error === 'string' ? errorDetail.error : `오류 코드 ${response.status}`
+      setStatus(`참가자 등록에 실패했습니다. (${message})`, 'danger')
+      return
+    }
+
+    const payload = await response.json().catch(() => ({}))
+    setStatus(`참가자 ${payload?.imported ?? combined.length}명을 등록했습니다.`, 'success')
+    if (elements.adminImportForm instanceof HTMLFormElement) {
+      elements.adminImportForm.reset()
+    }
+    if (elements.adminImportFile instanceof HTMLInputElement) {
+      elements.adminImportFile.value = ''
+    }
+    if (elements.adminImportManual instanceof HTMLTextAreaElement) {
+      elements.adminImportManual.value = ''
+    }
+    await fetchAdminParticipants()
+    updateAdminUI()
+  } catch (error) {
+    console.error('참가자 등록 중 오류', error)
+    setStatus('참가자 명단을 등록하는 중 오류가 발생했습니다.', 'danger')
+  } finally {
+    if (elements.adminImportForm instanceof HTMLFormElement) {
+      elements.adminImportForm.dataset.state = 'idle'
+    }
+  }
+}
+
+async function handleAdminRefresh() {
+  if (!state.admin.isLoggedIn) {
+    openAdminModal()
+    return
+  }
+  await fetchAdminParticipants()
+}
+
+async function handleAdminRunCompletion() {
+  if (!state.admin.isLoggedIn) {
+    setStatus('관리자 로그인 후 사용할 수 있습니다.', 'danger')
+    openAdminModal()
+    return
+  }
+  try {
+    const response = await fetch('/api/admin/challenge/run-completion-check', {
+      method: 'POST',
+      credentials: 'include',
+    })
+    if (response.status === 401) {
+      revokeAdminSessionState()
+      setStatus('관리자 세션이 만료되었습니다. 다시 로그인해 주세요.', 'danger')
+      openAdminModal()
+      return
+    }
+    if (!response.ok) {
+      throw new Error(`completion_check_failed_${response.status}`)
+    }
+    const payload = await response.json().catch(() => ({}))
+    const newlyCompleted = Number(payload.newlyCompleted ?? 0)
+    setStatus(`완주 판별이 완료되었습니다. 새롭게 완주로 판정된 인원 ${newlyCompleted}명`, 'success')
+    await fetchAdminParticipants()
+  } catch (error) {
+    console.error('완주 판별 실행 중 오류', error)
+    setStatus('완주 판별 실행 중 오류가 발생했습니다.', 'danger')
+  }
+}
+
+async function handleAdminDownloadCompletion() {
+  if (!state.admin.isLoggedIn) {
+    setStatus('관리자 로그인 후 사용할 수 있습니다.', 'danger')
+    openAdminModal()
+    return
+  }
+  try {
+    const response = await fetch('/api/admin/challenge/completions?format=csv', {
+      credentials: 'include',
+    })
+    if (response.status === 401) {
+      revokeAdminSessionState()
+      setStatus('관리자 세션이 만료되었습니다. 다시 로그인해 주세요.', 'danger')
+      openAdminModal()
+      return
+    }
+    if (!response.ok) {
+      throw new Error(`csv_download_failed_${response.status}`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `michina-completions-${Date.now()}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    setStatus('완주자 CSV 파일을 다운로드했습니다.', 'success')
+  } catch (error) {
+    console.error('완주자 CSV 다운로드 중 오류', error)
+    setStatus('완주자 CSV를 다운로드하는 중 오류가 발생했습니다.', 'danger')
+  }
+}
+
+function formatSubmissionTimestamp(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('ko', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function clearChallengeSubmissionForm() {
+  if (elements.challengeSubmitForm instanceof HTMLFormElement) {
+    elements.challengeSubmitForm.reset()
+  }
+  if (elements.challengeUrlInput instanceof HTMLInputElement) {
+    elements.challengeUrlInput.value = ''
+  }
+  if (elements.challengeFileInput instanceof HTMLInputElement) {
+    elements.challengeFileInput.value = ''
+  }
+}
+
+function renderChallengeProgress(profile) {
+  if (!(elements.challengeProgress instanceof HTMLElement)) return
+  if (!profile) {
+    elements.challengeProgress.innerHTML = '<p class="challenge-progress__empty">참가자로 등록되면 진행률이 표시됩니다.</p>'
+    return
+  }
+  const required = Number(profile.required ?? 15)
+  const total = Number(profile.totalSubmissions ?? Object.keys(profile.submissions ?? {}).length)
+  const percent = required > 0 ? Math.min(100, Math.round((total / required) * 100)) : 0
+  const remaining = Math.max(0, required - total)
+  const deadline = formatDateLabel(profile.endDate)
+  elements.challengeProgress.innerHTML = `
+    <div class="challenge-progress__bar">
+      <div class="challenge-progress__meter" style="width:${percent}%"></div>
+    </div>
+    <p class="challenge-progress__label">총 ${required}회 중 <strong>${total}</strong>회 제출 완료 (${percent}%)</p>
+    <p class="challenge-progress__meta">남은 제출 <strong>${remaining}</strong>회 · 종료일 ${deadline}</p>
+  `
+}
+
+function renderChallengeDays(profile) {
+  if (!(elements.challengeDays instanceof HTMLElement)) return
+  if (!profile) {
+    elements.challengeDays.innerHTML = ''
+    return
+  }
+  const required = Number(profile.required ?? 15)
+  const submissions = profile.submissions ?? {}
+  const totalSubmitted = Object.keys(submissions).length
+  const nextDay = Math.min(required, totalSubmitted + 1)
+  const items = []
+  for (let day = 1; day <= required; day += 1) {
+    const submission = submissions[String(day)]
+    let statusText = '예정'
+    let className = 'is-upcoming'
+    if (submission) {
+      const typeLabel = submission.type === 'image' ? '이미지' : 'URL'
+      statusText = `${typeLabel} 제출 · ${formatSubmissionTimestamp(submission.submittedAt)}`
+      className = 'is-complete'
+    } else if (profile.completed) {
+      statusText = '완주 완료'
+      className = 'is-complete'
+    } else if (day === nextDay) {
+      statusText = '제출 대기'
+      className = 'is-current'
+    } else if (day < nextDay) {
+      statusText = '기록 없음'
+      className = 'is-pending'
+    }
+    items.push(`
+      <li class="challenge-day ${className}" data-day="${day}">
+        <span class="challenge-day__index">Day ${day}</span>
+        <span class="challenge-day__status">${statusText}</span>
+      </li>
+    `)
+  }
+  elements.challengeDays.innerHTML = items.join('')
+}
+
+function updateChallengeSubmitState(profile) {
+  const isSubmitting = state.challenge.submitting
+  const submitButton = elements.challengeSubmitForm?.querySelector('button[type="submit"]')
+  const controls = [elements.challengeDaySelect, elements.challengeUrlInput, elements.challengeFileInput]
+  if (!(elements.challengeSubmitForm instanceof HTMLFormElement)) return
+  if (!profile) {
+    elements.challengeSubmitForm.dataset.state = 'locked'
+    elements.challengeSubmitForm.hidden = true
+    controls.forEach((control) => {
+      if (control instanceof HTMLElement) control.setAttribute('disabled', 'true')
+    })
+    if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true
+    if (elements.challengeSubmitHint instanceof HTMLElement) {
+      elements.challengeSubmitHint.textContent = '참가자 등록 후 제출 기능을 이용할 수 있습니다.'
+    }
+    return
+  }
+  elements.challengeSubmitForm.hidden = false
+  const isCompleted = Boolean(profile.completed)
+  elements.challengeSubmitForm.dataset.state = isSubmitting ? 'loading' : isCompleted ? 'completed' : 'active'
+  controls.forEach((control) => {
+    if (!(control instanceof HTMLElement)) return
+    if (isSubmitting || isCompleted) {
+      control.setAttribute('disabled', 'true')
+    } else {
+      control.removeAttribute('disabled')
+    }
+  })
+  if (submitButton instanceof HTMLButtonElement) {
+    submitButton.disabled = isSubmitting || isCompleted
+  }
+  if (elements.challengeSubmitHint instanceof HTMLElement) {
+    if (isCompleted) {
+      elements.challengeSubmitHint.textContent = '축하합니다! 이미 완주하셨습니다. 수정이 필요하면 관리자에게 문의하세요.'
+    } else {
+      elements.challengeSubmitHint.textContent = 'URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.'
+    }
+  }
+}
+
+function buildCertificateMarkup(certificate) {
+  if (!certificate) return ''
+  const issueDate = formatDateLabel(certificate.completedAt)
+  const range = `${formatDateLabel(certificate.startDate)} ~ ${formatDateLabel(certificate.endDate)}`
+  const total = Number(certificate.totalSubmissions ?? certificate.required ?? 15)
+  const required = Number(certificate.required ?? total)
+  return `
+    <div class="certificate-card">
+      <div class="certificate-card__inner">
+        <header class="certificate-card__header">
+          <span class="certificate-card__badge">Michina Plan</span>
+          <h3 class="certificate-card__title">Completion Certificate</h3>
+          <p class="certificate-card__subtitle">미치나 플랜 3주 챌린지 수료증</p>
+        </header>
+        <section class="certificate-card__body">
+          <p class="certificate-card__recipient">${certificate.name ?? certificate.email}</p>
+          <p class="certificate-card__statement">위 참가자는 미치나 플랜 3주 챌린지 ${required}회 제출 과제를 모두 수행하여<br />챌린지를 성공적으로 완주했음을 증명합니다.</p>
+          <dl class="certificate-card__stats">
+            <div>
+              <dt>참가 구간</dt>
+              <dd>${range}</dd>
+            </div>
+            <div>
+              <dt>제출 현황</dt>
+              <dd>${total}/${required}회</dd>
+            </div>
+            <div>
+              <dt>완주 일자</dt>
+              <dd>${issueDate}</dd>
+            </div>
+          </dl>
+        </section>
+        <footer class="certificate-card__footer">
+          <div class="certificate-card__issuer">
+            <span class="certificate-card__issuer-label">발급</span>
+            <span class="certificate-card__issuer-name">Ellie’s Bang</span>
+          </div>
+          <div class="certificate-card__serial">${certificate.email}</div>
+        </footer>
+      </div>
+    </div>
+  `
+}
+
+function renderCertificateSection(profile) {
+  if (!(elements.challengeCertificate instanceof HTMLElement)) return
+  if (!profile || !profile.completed) {
+    elements.challengeCertificate.hidden = true
+    if (elements.certificatePreview instanceof HTMLElement) {
+      elements.certificatePreview.innerHTML = ''
+    }
+    if (elements.certificateDownload instanceof HTMLButtonElement) {
+      elements.certificateDownload.disabled = true
+    }
+    return
+  }
+
+  elements.challengeCertificate.hidden = false
+
+  if (!state.challenge.certificate) {
+    if (elements.certificatePreview instanceof HTMLElement) {
+      elements.certificatePreview.innerHTML = '<p class="certificate__loading">수료증 정보를 불러오는 중입니다…</p>'
+    }
+    if (elements.certificateDownload instanceof HTMLButtonElement) {
+      elements.certificateDownload.disabled = true
+    }
+    ensureChallengeCertificate(profile.email)
+    return
+  }
+
+  if (elements.certificatePreview instanceof HTMLElement) {
+    elements.certificatePreview.innerHTML = buildCertificateMarkup(state.challenge.certificate)
+  }
+  if (elements.certificateDownload instanceof HTMLButtonElement) {
+    elements.certificateDownload.disabled = false
+  }
+}
+
+async function ensureChallengeCertificate(email) {
+  if (!isValidEmail(email)) {
+    state.challenge.certificate = null
+    renderCertificateSection(state.challenge.profile)
+    return null
+  }
+  try {
+    const response = await fetch(`/api/challenge/certificate?email=${encodeURIComponent(email)}`, {
+      cache: 'no-store',
+    })
+    if (!response.ok) {
+      throw new Error(`certificate_fetch_failed_${response.status}`)
+    }
+    state.challenge.certificate = await response.json()
+    renderCertificateSection(state.challenge.profile)
+    return state.challenge.certificate
+  } catch (error) {
+    console.error('수료증 정보를 불러오는 중 오류', error)
+    setStatus('수료증 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    return null
+  }
+}
+
+function renderChallengeDashboard() {
+  const profile = state.challenge.profile
+  const isAdmin = state.admin.isLoggedIn
+
+  if (elements.challengeDashboard instanceof HTMLElement) {
+    elements.challengeDashboard.hidden = !profile
+  }
+  if (elements.challengeLocked instanceof HTMLElement) {
+    elements.challengeLocked.hidden = Boolean(profile) || isAdmin
+  }
+
+  if (elements.challengeSummary instanceof HTMLElement) {
+    if (!profile) {
+      elements.challengeSummary.textContent = '참가자 등록 후 일일 제출 현황과 진행률을 확인할 수 있습니다.'
+    } else if (profile.completed) {
+      elements.challengeSummary.textContent = `${profile.name ?? profile.email} 님, ${Number(profile.totalSubmissions ?? Object.keys(profile.submissions ?? {}).length)}/${Number(profile.required ?? 15)}회 제출로 챌린지를 완주하셨습니다!`
+    } else {
+      const required = Number(profile.required ?? 15)
+      const total = Number(profile.totalSubmissions ?? Object.keys(profile.submissions ?? {}).length)
+      const remaining = Math.max(0, required - total)
+      elements.challengeSummary.textContent = `${profile.name ?? profile.email} 님, 총 ${required}회 중 ${total}회 제출 완료 · ${remaining}회 남았습니다.`
+    }
+  }
+
+  renderChallengeProgress(profile)
+  renderChallengeDays(profile)
+  updateChallengeSubmitState(profile)
+  renderCertificateSection(profile)
+}
+
+async function syncChallengeProfile(explicitEmail) {
+  const email = explicitEmail || state.user.email
+  if (!isValidEmail(email)) {
+    state.challenge.profile = null
+    state.challenge.certificate = null
+    renderChallengeDashboard()
+    return null
+  }
+  state.challenge.loading = true
+  try {
+    const response = await fetch(`/api/challenge/profile?email=${encodeURIComponent(email)}`, {
+      cache: 'no-store',
+    })
+    if (!response.ok) {
+      throw new Error(`profile_fetch_failed_${response.status}`)
+    }
+    const payload = await response.json().catch(() => ({}))
+    if (payload && payload.exists && payload.participant) {
+      state.challenge.profile = payload.participant
+      if (state.user.plan !== 'admin') {
+        state.user.plan = payload.participant.plan ?? state.user.plan
+        state.user.email = payload.participant.email
+        if (!state.user.name && payload.participant.name) {
+          state.user.name = payload.participant.name
+        }
+      }
+      renderChallengeDashboard()
+      refreshAccessStates()
+      if (payload.participant.completed) {
+        await ensureChallengeCertificate(payload.participant.email)
+      } else {
+        state.challenge.certificate = null
+      }
+      return state.challenge.profile
+    }
+    state.challenge.profile = null
+    state.challenge.certificate = null
+    if (state.user.plan === 'michina' && state.user.plan !== 'admin') {
+      state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
+      refreshAccessStates()
+    }
+    renderChallengeDashboard()
+    return null
+  } catch (error) {
+    console.error('챌린지 정보를 불러오는 중 오류', error)
+    setStatus('챌린지 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    return null
+  } finally {
+    state.challenge.loading = false
+  }
+}
+
+async function handleChallengeSubmit(event) {
+  event.preventDefault()
+  if (state.challenge.submitting) return
+  const profile = state.challenge.profile
+  if (!profile) {
+    setStatus('미치나 플랜 참가자로 등록된 계정으로 로그인해주세요.', 'danger')
+    return
+  }
+  if (profile.completed) {
+    setStatus('이미 챌린지를 완주했습니다.', 'info')
+    return
+  }
+  if (!(elements.challengeSubmitForm instanceof HTMLFormElement)) return
+
+  let day = elements.challengeDaySelect instanceof HTMLSelectElement ? parseInt(elements.challengeDaySelect.value, 10) : NaN
+  if (!Number.isFinite(day)) {
+    day = 1
+  }
+  const required = Number(profile.required ?? 15)
+  if (day < 1 || day > required) {
+    setStatus('제출할 Day를 선택해주세요.', 'danger')
+    return
+  }
+
+  let type = 'url'
+  let value = elements.challengeUrlInput instanceof HTMLInputElement ? elements.challengeUrlInput.value.trim() : ''
+  if (elements.challengeFileInput instanceof HTMLInputElement && elements.challengeFileInput.files && elements.challengeFileInput.files.length > 0) {
+    const file = elements.challengeFileInput.files[0]
+    if (!file.type.startsWith('image/')) {
+      setStatus('이미지 파일만 업로드할 수 있습니다.', 'danger')
+      return
+    }
+    try {
+      value = await readFileAsDataUrl(file)
+      if (typeof value !== 'string') {
+        setStatus('이미지 파일을 읽는 중 오류가 발생했습니다.', 'danger')
+        return
+      }
+      type = 'image'
+    } catch (error) {
+      console.error('challenge file read error', error)
+      setStatus('이미지 파일을 읽는 중 오류가 발생했습니다.', 'danger')
+      return
+    }
+  }
+
+  if (!value) {
+    setStatus('URL을 입력하거나 이미지를 업로드해주세요.', 'danger')
+    return
+  }
+
+  state.challenge.submitting = true
+  updateChallengeSubmitState(profile)
+  setStatus(`Day ${day} 제출을 저장하는 중입니다…`, 'info')
+
+  try {
+    const response = await fetch('/api/challenge/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: profile.email,
+        day,
+        type,
+        value,
+      }),
+    })
+    if (!response.ok) {
+      throw new Error(`challenge_submit_failed_${response.status}`)
+    }
+    const payload = await response.json().catch(() => ({}))
+    if (payload && payload.ok && payload.participant) {
+      state.challenge.profile = payload.participant
+      state.challenge.certificate = null
+      renderChallengeDashboard()
+      if (payload.participant.completed) {
+        await ensureChallengeCertificate(payload.participant.email)
+        setStatus('모든 과제를 제출하여 챌린지를 완주했습니다! 수료증을 확인하세요.', 'success')
+      } else {
+        setStatus(`Day ${day} 제출이 저장되었습니다.`, 'success')
+      }
+      clearChallengeSubmissionForm()
+    } else {
+      throw new Error('challenge_submit_invalid_payload')
+    }
+  } catch (error) {
+    console.error('챌린지 제출 중 오류', error)
+    setStatus('제출을 저장하는 중 오류가 발생했습니다.', 'danger')
+  } finally {
+    state.challenge.submitting = false
+    updateChallengeSubmitState(state.challenge.profile)
+  }
+}
+
+async function handleCertificateDownload() {
+  const profile = state.challenge.profile
+  if (!profile || !profile.completed) {
+    setStatus('수료증은 챌린지를 완주한 뒤 다운로드할 수 있습니다.', 'danger')
+    return
+  }
+  if (!state.challenge.certificate) {
+    await ensureChallengeCertificate(profile.email)
+    if (!state.challenge.certificate) return
+  }
+  if (!(elements.certificatePreview instanceof HTMLElement)) {
+    setStatus('수료증 미리보기를 찾을 수 없습니다.', 'danger')
+    return
+  }
+  const target = elements.certificatePreview.querySelector('.certificate-card__inner') || elements.certificatePreview
+  if (!target) {
+    setStatus('수료증 미리보기를 찾을 수 없습니다.', 'danger')
+    return
+  }
+  if (typeof window.html2canvas !== 'function') {
+    setStatus('수료증 렌더 도구를 불러오는 중입니다. 잠시 후 다시 시도해주세요.', 'danger')
+    return
+  }
+  try {
+    const canvas = await window.html2canvas(target, {
+      backgroundColor: '#fef568',
+      scale: 2,
+    })
+    const dataUrl = canvas.toDataURL('image/png')
+    const link = document.createElement('a')
+    link.href = dataUrl
+    link.download = `michina-certificate-${Date.now()}.png`
+    link.click()
+    setStatus('수료증 PNG 파일을 다운로드했습니다.', 'success')
+  } catch (error) {
+    console.error('수료증 다운로드 생성 중 오류', error)
+    setStatus('수료증 이미지를 생성하는 중 오류가 발생했습니다.', 'danger')
+  }
+}
+
+function handleChallengeDayClick(event) {
+  const target = event.target instanceof HTMLElement ? event.target.closest('[data-day]') : null
+  if (!target) return
+  const day = parseInt(target.dataset.day ?? '', 10)
+  if (!Number.isFinite(day)) return
+  if (elements.challengeDaySelect instanceof HTMLSelectElement) {
+    elements.challengeDaySelect.value = String(day)
+  }
 }
 
 function setLoginHelper(message) {
@@ -630,10 +1767,137 @@ function closeLoginModal() {
   resetLoginFlow()
 }
 
-function handleGoogleLogin() {
-  applyLoginProfile({ name: 'Google 사용자' })
-  closeLoginModal()
-  setStatus(`Google 계정을 연결했다고 가정하고 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 충전했습니다.`, 'success')
+async function handleGoogleLogin(event) {
+  if (event && typeof event.preventDefault === 'function') {
+    event.preventDefault()
+  }
+
+  const button = event?.currentTarget instanceof HTMLButtonElement ? event.currentTarget : null
+
+  if (button) {
+    button.disabled = true
+    button.setAttribute('data-loading', 'true')
+  }
+
+  try {
+    setStatus('Google 로그인 준비 중입니다…', 'info', 0)
+
+    const codeClient = await ensureGoogleClient()
+    const deferred = createDeferred()
+    runtime.google.deferred = deferred
+
+    try {
+      codeClient.requestCode()
+    } catch (clientError) {
+      runtime.google.deferred = null
+      throw clientError
+    }
+
+    const authCode = await deferred.promise
+
+    setStatus('Google 계정을 확인하고 있습니다…', 'info', 0)
+
+    const response = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ code: authCode }),
+      credentials: 'include',
+    })
+
+    if (!response.ok) {
+      let detail = null
+      try {
+        detail = await response.json()
+      } catch (parseError) {
+        detail = null
+      }
+      const errorCode = detail?.error
+      if (errorCode === 'GOOGLE_EMAIL_NOT_VERIFIED') {
+        throw new Error('GOOGLE_EMAIL_NOT_VERIFIED')
+      }
+      if (errorCode === 'GOOGLE_AUTH_NOT_CONFIGURED') {
+        throw new Error('GOOGLE_CLIENT_ID_MISSING')
+      }
+      if (errorCode === 'GOOGLE_AUTH_NOT_AVAILABLE') {
+        throw new Error('GOOGLE_SDK_UNAVAILABLE')
+      }
+      if (typeof errorCode === 'string' && errorCode.startsWith('GOOGLE_ID_TOKEN_')) {
+        throw new Error(errorCode)
+      }
+      throw new Error('GOOGLE_AUTH_REJECTED')
+    }
+
+    const payload = await response.json().catch(() => ({}))
+    const profile = payload?.profile ?? {}
+    const email = typeof profile.email === 'string' ? profile.email : ''
+    const displayName =
+      typeof profile.name === 'string' && profile.name.trim().length > 0
+        ? profile.name.trim()
+        : email || 'Google 사용자'
+
+    applyLoginProfile({ name: displayName, email: email || undefined, plan: 'freemium' })
+    closeLoginModal()
+    setStatus(
+      `${displayName} Google 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`,
+      'success',
+    )
+
+    if (email) {
+      await syncChallengeProfile(email)
+    }
+  } catch (error) {
+    console.error('Google 로그인 중 오류', error)
+    let message = 'Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.'
+
+    if (error instanceof Error) {
+      switch (error.message) {
+        case 'GOOGLE_CLIENT_ID_MISSING':
+          message = 'Google 로그인 설정이 아직 완료되지 않았습니다. 관리자에게 문의해주세요.'
+          break
+        case 'GOOGLE_EMAIL_NOT_VERIFIED':
+          message = 'Google 계정 이메일 인증이 필요합니다. Google 계정에서 이메일 인증을 완료한 뒤 다시 시도해주세요.'
+          break
+        case 'GOOGLE_EMAIL_INVALID':
+          message = 'Google에서 반환된 이메일 정보를 확인할 수 없습니다. 다른 계정으로 다시 시도해주세요.'
+          break
+        case 'GOOGLE_SDK_TIMEOUT':
+        case 'GOOGLE_SDK_UNAVAILABLE':
+          message = 'Google 로그인 스크립트를 불러오지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도해주세요.'
+          break
+        case 'GOOGLE_CODE_MISSING':
+        case 'GOOGLE_AUTH_REJECTED':
+          message = 'Google 로그인 요청이 취소되었거나 거절되었습니다. 다시 시도해주세요.'
+          break
+        case 'GOOGLE_ID_TOKEN_AUDIENCE_MISMATCH':
+        case 'GOOGLE_ID_TOKEN_ISSUER_INVALID':
+        case 'GOOGLE_ID_TOKEN_INVALID':
+        case 'GOOGLE_ID_TOKEN_MISSING':
+        case 'GOOGLE_TOKEN_EXCHANGE_FAILED':
+        case 'GOOGLE_AUTH_UNEXPECTED_ERROR':
+          message = 'Google 인증 토큰을 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
+          break
+        case 'access_denied':
+        case 'popup_closed_by_user':
+          message = 'Google 로그인 창이 닫혔습니다. 다시 시도해주세요.'
+          break
+        default:
+          if (error.message && error.message.startsWith('clientId')) {
+            message = 'Google 로그인 구성이 올바르지 않습니다. 관리자에게 문의해주세요.'
+          }
+          break
+      }
+    }
+
+    setStatus(message, 'danger')
+  } finally {
+    runtime.google.deferred = null
+    if (button) {
+      button.disabled = false
+      button.removeAttribute('data-loading')
+    }
+  }
 }
 
 function handleEmailResend(event) {
@@ -738,8 +2002,12 @@ function handleEmailLogin(event) {
 }
 
 function handleGlobalKeydown(event) {
-  if (event.key === 'Escape' && elements.loginModal?.classList.contains('is-active')) {
+  if (event.key !== 'Escape') return
+  if (elements.loginModal?.classList.contains('is-active')) {
     closeLoginModal()
+  }
+  if (elements.adminModal?.classList.contains('is-active')) {
+    closeAdminModal()
   }
 }
 
@@ -3011,11 +4279,35 @@ function attachEventListeners() {
     })
   }
 
+  if (elements.adminLoginButton instanceof HTMLButtonElement) {
+    elements.adminLoginButton.addEventListener('click', () => {
+      if (state.admin.isLoggedIn) {
+        if (elements.adminDashboard instanceof HTMLElement) {
+          elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+        setStatus('관리자 대시보드를 확인할 수 있습니다.', 'info')
+      } else {
+        openAdminModal()
+      }
+    })
+  }
+
   document.querySelectorAll('[data-action="close-login"]').forEach((button) => {
     if (button instanceof HTMLButtonElement) {
       button.addEventListener('click', closeLoginModal)
     }
   })
+
+  document.querySelectorAll('[data-action="close-admin"]').forEach((button) => {
+    if (button instanceof HTMLButtonElement) {
+      button.addEventListener('click', closeAdminModal)
+    }
+  })
+
+  const adminBackdrop = elements.adminModal?.querySelector('.admin-modal__backdrop')
+  if (adminBackdrop instanceof HTMLElement) {
+    adminBackdrop.addEventListener('click', closeAdminModal)
+  }
 
   const logoutButton = document.querySelector('[data-action="logout"]')
   if (logoutButton instanceof HTMLButtonElement) {
@@ -3038,6 +4330,30 @@ function attachEventListeners() {
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
     elements.loginEmailForm.addEventListener('submit', handleEmailLogin)
+  }
+
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.addEventListener('submit', handleAdminLogin)
+  }
+
+  if (elements.adminImportForm instanceof HTMLFormElement) {
+    elements.adminImportForm.addEventListener('submit', handleAdminImport)
+  }
+
+  if (elements.adminRefreshButton instanceof HTMLButtonElement) {
+    elements.adminRefreshButton.addEventListener('click', handleAdminRefresh)
+  }
+
+  if (elements.adminRunCompletionButton instanceof HTMLButtonElement) {
+    elements.adminRunCompletionButton.addEventListener('click', handleAdminRunCompletion)
+  }
+
+  if (elements.adminDownloadCompletion instanceof HTMLButtonElement) {
+    elements.adminDownloadCompletion.addEventListener('click', handleAdminDownloadCompletion)
+  }
+
+  if (elements.adminLogoutButton instanceof HTMLButtonElement) {
+    elements.adminLogoutButton.addEventListener('click', handleLogout)
   }
 
   if (elements.loginEmailInput instanceof HTMLInputElement) {
@@ -3149,12 +4465,14 @@ function init() {
   updateOperationAvailability()
   updateResultActionAvailability()
   attachEventListeners()
+  updateAdminUI()
   initCookieBanner()
   resetLoginFlow()
   renderUploads()
   renderResults()
   displayAnalysisFor(null)
   refreshAccessStates()
+  syncAdminSession()
 }
 
 document.addEventListener('DOMContentLoaded', init)
