@@ -1179,6 +1179,46 @@ main.page {
   z-index: 2;
 }
 
+.asset-card__remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(8, 13, 28, 0.75);
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-6px) scale(0.85);
+  transition: opacity var(--transition), transform var(--transition), border-color var(--transition), color var(--transition), background var(--transition);
+  z-index: 3;
+}
+
+.asset-card__remove:hover {
+  color: #fee2e2;
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.16);
+}
+
+.asset-card:hover .asset-card__remove,
+.asset-card__remove:focus-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.asset-card__remove:focus-visible {
+  outline: 2px solid rgba(248, 113, 113, 0.6);
+  outline-offset: 2px;
+}
+
+.asset-card__remove i {
+  pointer-events: none;
+}
+
 .asset-card.is-selected .asset-card__selection-indicator {
   opacity: 1;
   transform: translateY(0) scale(1);

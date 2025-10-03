@@ -152,6 +152,7 @@ function toggleProcessing(isProcessing) {
     elements.svgColorSelect.disabled = isProcessing
   }
 
+  updateOperationAvailability()
   if (!isProcessing) {
     updateResultActionAvailability()
   }
@@ -565,23 +566,27 @@ function isVerificationCodeValid(code) {
 }
 
 function updateOperationAvailability() {
-  if (state.processing) return
   const hasUploadSelection = state.selectedUploads.size > 0
   const hasResultSelection = state.selectedResults.size > 0
   const hasResizeSelection = hasUploadSelection || hasResultSelection
   const resizeValue =
     elements.resizeInput instanceof HTMLInputElement ? elements.resizeInput.value.trim() : ''
+  const isProcessing = state.processing
 
   elements.operationButtons?.forEach((button) => {
     if (!(button instanceof HTMLButtonElement)) return
     const operation = button.dataset.operation
     if (operation === 'svg') return
     if (operation === 'resize') {
-      button.disabled = !hasResizeSelection || !resizeValue
+      button.disabled = isProcessing || !hasResizeSelection || !resizeValue
     } else {
-      button.disabled = !hasUploadSelection
+      button.disabled = isProcessing || !hasUploadSelection
     }
   })
+
+  if (elements.uploadDeleteSelected instanceof HTMLButtonElement) {
+    elements.uploadDeleteSelected.disabled = isProcessing || state.selectedUploads.size === 0
+  }
 }
 
 function updateResultActionAvailability() {
@@ -597,7 +602,7 @@ function updateResultActionAvailability() {
     }
   })
   if (elements.resultDeleteSelected instanceof HTMLButtonElement) {
-    elements.resultDeleteSelected.disabled = selectedCount === 0
+    elements.resultDeleteSelected.disabled = state.processing || selectedCount === 0
   }
   if (elements.svgButton instanceof HTMLButtonElement) {
     const hasSvgSelection = selectedCount > 0 || state.selectedUploads.size > 0
@@ -835,6 +840,7 @@ function ensureScriptElement(src, dataLib) {
     script = document.createElement('script')
     script.src = src
     script.defer = true
+    script.crossOrigin = 'anonymous'
     script.dataset.lib = dataLib
     document.head.appendChild(script)
   }
@@ -873,12 +879,46 @@ function ensureImageTracerReady() {
   }
 
   if (!imageTracerReadyPromise) {
-    ensureScriptElement(IMAGETRACER_SRC, 'imagetracer')
-    imageTracerReadyPromise = waitForCondition(
-      () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
-      12000,
-      80,
-    )
+    const loadPromise = new Promise((resolve, reject) => {
+      const script = ensureScriptElement(IMAGETRACER_SRC, 'imagetracer')
+      if (!script) {
+        reject(new Error('SVG 변환 엔진 스크립트를 초기화하지 못했습니다.'))
+        return
+      }
+
+      const fail = (reason) => {
+        script.removeEventListener('error', onScriptError)
+        if (script.parentElement) {
+          script.parentElement.removeChild(script)
+        }
+        const error = reason instanceof Error ? reason : new Error(String(reason || 'SVG 변환 엔진을 불러오는 중 오류가 발생했습니다.'))
+        reject(error)
+      }
+
+      const onScriptError = (event) => {
+        fail(new Error(`SVG 변환 엔진을 불러오는 중 네트워크 오류가 발생했습니다. (${event?.type || 'error'})`))
+      }
+
+      script.addEventListener('error', onScriptError, { once: true })
+
+      waitForCondition(
+        () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
+        12000,
+        80,
+      )
+        .then(() => {
+          script.removeEventListener('error', onScriptError)
+          resolve(true)
+        })
+        .catch((error) => {
+          fail(error)
+        })
+    })
+
+    imageTracerReadyPromise = loadPromise.catch((error) => {
+      imageTracerReadyPromise = null
+      throw error
+    })
   }
 
   return imageTracerReadyPromise
@@ -1015,7 +1055,8 @@ async function convertSelectionsToSvg() {
   } catch (error) {
     console.error('ImageTracer load error', error)
     toggleProcessing(false)
-    setStatus('SVG 변환 엔진을 불러오는 중 문제가 발생했습니다. 새로고침 후 다시 시도해주세요.', 'danger')
+    const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+    setStatus(`SVG 변환 엔진을 불러오는 중 문제가 발생했습니다.${detail} 새로고침 후 다시 시도해주세요.`, 'danger')
     return
   }
 
@@ -1408,6 +1449,71 @@ function findBoundingBox(imageData, width, height, alphaThreshold = 12, toleranc
   return { top, left, right, bottom }
 }
 
+function findAlphaBounds(imageData, width, height, alphaThreshold = 6) {
+  const { data } = imageData
+  let top = height
+  let left = width
+  let right = -1
+  let bottom = -1
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const alpha = data[(y * width + x) * 4 + 3]
+      if (alpha > alphaThreshold) {
+        if (x < left) left = x
+        if (x > right) right = x
+        if (y < top) top = y
+        if (y > bottom) bottom = y
+      }
+    }
+  }
+
+  if (right === -1 || bottom === -1) {
+    return null
+  }
+
+  return { top, left, right, bottom }
+}
+
+function boundsArea(bounds) {
+  if (!bounds) return 0
+  return Math.max(0, bounds.right - bounds.left + 1) * Math.max(0, bounds.bottom - bounds.top + 1)
+}
+
+function expandBounds(bounds, width, height, padding = 0) {
+  if (!bounds) {
+    return { top: 0, left: 0, right: width - 1, bottom: height - 1 }
+  }
+  const pad = Math.max(0, Math.floor(padding))
+  return {
+    top: Math.max(0, bounds.top - pad),
+    left: Math.max(0, bounds.left - pad),
+    right: Math.min(width - 1, bounds.right + pad),
+    bottom: Math.min(height - 1, bounds.bottom + pad),
+  }
+}
+
+function detectSubjectBounds(imageData, width, height) {
+  const clone = new ImageData(new Uint8ClampedArray(imageData.data), width, height)
+  applyBackgroundRemoval(clone, width, height)
+  const alphaBounds = findAlphaBounds(clone, width, height, 8)
+  if (alphaBounds) {
+    return expandBounds(alphaBounds, width, height, 1)
+  }
+
+  const broad = findBoundingBox(imageData, width, height, 10, 70)
+  const tighter = findBoundingBox(imageData, width, height, 8, 42)
+
+  const broadArea = boundsArea(broad)
+  const tightArea = boundsArea(tighter)
+
+  if (tighter && tightArea > 0 && tightArea <= broadArea * 0.92) {
+    return expandBounds(tighter, width, height, 1)
+  }
+
+  return expandBounds(broad, width, height, 1)
+}
+
 function cropCanvas(canvas, ctx, bounds) {
   const cropWidth = bounds.right - bounds.left + 1
   const cropHeight = bounds.bottom - bounds.top + 1
@@ -1485,23 +1591,6 @@ function canvasToBlob(canvas, type = 'image/png', quality = 0.95) {
 function ensureGridState(listElement, length) {
   if (!listElement) return
   listElement.classList.toggle('is-empty', length === 0)
-}
-
-function resolveCheckbox(event, selector) {
-  const target = event.target
-  if (target instanceof HTMLInputElement && target.matches(selector)) {
-    return target
-  }
-  if (target instanceof HTMLElement) {
-    const label = target.closest('label')
-    if (label) {
-      const input = label.querySelector(selector)
-      if (input instanceof HTMLInputElement) {
-        return input
-      }
-    }
-  }
-  return null
 }
 
 function getAnalysisKey(target) {
@@ -2218,6 +2307,9 @@ function renderUploads() {
       const selected = state.selectedUploads.has(upload.id)
       return `
         <div class="asset-card ${selected ? 'is-selected' : ''}" data-type="upload" data-id="${upload.id}">
+          <button class="asset-card__remove" type="button" aria-label="업로드 이미지 삭제" data-role="upload-remove">
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
           <div class="asset-card__selection-indicator" aria-hidden="true">
             <span class="asset-card__selection-icon">✔</span>
             <span class="asset-card__selection-label">선택됨</span>
@@ -2231,9 +2323,6 @@ function renderUploads() {
           <div class="asset-card__meta">
             <span class="asset-card__name" title="${upload.name}">${upload.name}</span>
             <span class="asset-card__info">${upload.width}×${upload.height}px · ${formatBytes(upload.size)}</span>
-          </div>
-          <div class="asset-card__actions">
-            <button class="asset-card__button asset-card__delete" type="button" data-action="delete-upload">삭제</button>
           </div>
         </div>
       `
@@ -2253,6 +2342,9 @@ function renderResults() {
       const selected = state.selectedResults.has(result.id)
       return `
         <div class="asset-card ${selected ? 'is-selected' : ''}" data-type="result" data-id="${result.id}">
+          <button class="asset-card__remove" type="button" aria-label="결과 삭제" data-role="result-remove">
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
           <div class="asset-card__selection-indicator" aria-hidden="true">
             <span class="asset-card__selection-icon">✔</span>
             <span class="asset-card__selection-label">선택됨</span>
@@ -2270,7 +2362,6 @@ function renderResults() {
           </div>
           <div class="asset-card__actions">
             <button class="asset-card__button" type="button" data-action="download-result">다운로드</button>
-            <button class="asset-card__button asset-card__delete" type="button" data-action="delete-result">삭제</button>
           </div>
         </div>
       `
@@ -2392,7 +2483,7 @@ async function processRemoveBackground(upload) {
 async function processAutoCrop(upload) {
   const { canvas, ctx } = await canvasFromDataUrl(upload.dataUrl)
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const bounds = findBoundingBox(imageData, canvas.width, canvas.height, 12, 60)
+  const bounds = detectSubjectBounds(imageData, canvas.width, canvas.height)
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   return {
@@ -2409,10 +2500,12 @@ async function processRemoveBackgroundAndCrop(upload) {
   let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
   ctx.putImageData(imageData, 0, 0)
-  const bounds = findBoundingBox(imageData, canvas.width, canvas.height, 10, 40)
-  const { canvas: cropped, ctx: croppedCtx } = cropCanvas(canvas, ctx, bounds)
-  const croppedData = croppedCtx.getImageData(0, 0, cropped.width, cropped.height)
-  croppedCtx.putImageData(croppedData, 0, 0)
+
+  const alphaBounds = findAlphaBounds(imageData, canvas.width, canvas.height, 6)
+  const fallbackBounds = findBoundingBox(imageData, canvas.width, canvas.height, 8, 36)
+  const bounds = expandBounds(alphaBounds ?? fallbackBounds, canvas.width, canvas.height, 1)
+
+  const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   return {
     blob,
@@ -2486,7 +2579,7 @@ async function processResize(upload, targetWidth, previousOperations = []) {
 
 function appendResult(upload, result) {
   const objectUrl = URL.createObjectURL(result.blob)
-  state.results.unshift({
+  const record = {
     id: uuid(),
     sourceId: upload.id,
     name: result.name,
@@ -2497,10 +2590,47 @@ function appendResult(upload, result) {
     objectUrl,
     operations: result.operations,
     createdAt: Date.now(),
-  })
+  }
+  state.results.unshift(record)
   renderResults()
   updateResultActionAvailability()
   updateOperationAvailability()
+  recomputeStage()
+  return record
+}
+
+function replaceResult(existingResult, updatedPayload) {
+  const index = state.results.findIndex((item) => item.id === existingResult.id)
+  if (index === -1) return
+
+  const previous = state.results[index]
+  if (previous.objectUrl) {
+    try {
+      URL.revokeObjectURL(previous.objectUrl)
+    } catch (error) {
+      console.warn('결과 객체 URL 해제 중 오류', error)
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(updatedPayload.blob)
+  const updated = {
+    ...previous,
+    name: updatedPayload.name,
+    width: updatedPayload.width,
+    height: updatedPayload.height,
+    size: updatedPayload.blob.size,
+    blob: updatedPayload.blob,
+    objectUrl,
+    operations: updatedPayload.operations,
+    updatedAt: Date.now(),
+  }
+
+  state.results[index] = updated
+  removeAnalysisFor('result', updated.id)
+  renderResults()
+  updateResultActionAvailability()
+  updateOperationAvailability()
+  displayAnalysisFor({ type: 'result', id: updated.id })
   recomputeStage()
 }
 
@@ -2572,10 +2702,15 @@ async function runOperation(operation) {
           const resizeResult = await processResize(upload, targetWidth)
           if (resizeResult && resizeResult.blob) {
             processedCount += 1
+            appendResult(upload, resizeResult)
           }
-          appendResult(upload, resizeResult)
         } else {
           const resultItem = target.payload
+          if (!resultItem) {
+            // eslint-disable-next-line no-continue
+            continue
+          }
+
           const pseudoUpload = {
             id: resultItem.id,
             name: resultItem.name,
@@ -2587,13 +2722,13 @@ async function runOperation(operation) {
             width: resultItem.width,
             height: resultItem.height,
           }
-          const previousOps = Array.isArray(resultItem.operations) ? resultItem.operations : []
+          const previousOps = Array.isArray(resultItem.operations) ? [...resultItem.operations] : []
           // eslint-disable-next-line no-await-in-loop
           const resizeResult = await processResize(pseudoUpload, targetWidth, previousOps)
           if (resizeResult && resizeResult.blob) {
             processedCount += 1
+            replaceResult(resultItem, resizeResult)
           }
-          appendResult(resultItem, resizeResult)
         }
       }
     } else {
@@ -2630,76 +2765,114 @@ async function runOperation(operation) {
   }
 }
 
-function handleUploadListClick(event) {
+function handleUploadListChange(event) {
   if (!elements.uploadList) return
-  const checkbox = resolveCheckbox(event, 'input[data-role="upload-checkbox"]')
-  if (checkbox instanceof HTMLInputElement) {
-    const card = checkbox.closest('[data-type="upload"]')
-    if (!card) return
-    const id = card.dataset.id
-    if (!id) return
-    if (checkbox.checked) {
-      state.selectedUploads.add(id)
-      displayAnalysisFor({ type: 'upload', id })
-    } else {
-      state.selectedUploads.delete(id)
-      displayAnalysisFor()
-    }
-    card.classList.toggle('is-selected', checkbox.checked)
-    updateOperationAvailability()
-    return
-  }
-
-  const button = event.target.closest('button[data-action]')
-  if (!button) return
-  const card = button.closest('[data-type="upload"]')
+  const input = event.target
+  if (!(input instanceof HTMLInputElement) || input.dataset.role !== 'upload-checkbox') return
+  const card = input.closest('[data-type="upload"]')
   if (!card) return
   const id = card.dataset.id
   if (!id) return
 
-  const action = button.dataset.action
-  if (action === 'delete-upload') {
-    deleteUploads([id])
+  if (input.checked) {
+    state.selectedUploads.add(id)
+    displayAnalysisFor({ type: 'upload', id })
+  } else {
+    state.selectedUploads.delete(id)
+    displayAnalysisFor()
   }
+
+  card.classList.toggle('is-selected', input.checked)
+  updateOperationAvailability()
+  updateResultActionAvailability()
+}
+
+function handleUploadListClick(event) {
+  if (!elements.uploadList) return
+  const target = event.target instanceof HTMLElement ? event.target : null
+  if (!target) return
+
+  const removeButton = target.closest('[data-role="upload-remove"]')
+  if (removeButton) {
+    const card = removeButton.closest('[data-type="upload"]')
+    if (!card) return
+    const id = card.dataset.id
+    if (!id) return
+    deleteUploads([id])
+    return
+  }
+
+  if (target.closest('.asset-card__checkbox')) {
+    return
+  }
+
+  const card = target.closest('[data-type="upload"]')
+  if (!card) return
+  const checkbox = card.querySelector('input[data-role="upload-checkbox"]')
+  if (!(checkbox instanceof HTMLInputElement)) return
+
+  checkbox.checked = !checkbox.checked
+  checkbox.dispatchEvent(new Event('change', { bubbles: true }))
+}
+
+function handleResultListChange(event) {
+  if (!elements.resultList) return
+  const input = event.target
+  if (!(input instanceof HTMLInputElement) || input.dataset.role !== 'result-checkbox') return
+  const card = input.closest('[data-type="result"]')
+  if (!card) return
+  const id = card.dataset.id
+  if (!id) return
+
+  if (input.checked) {
+    state.selectedResults.add(id)
+    displayAnalysisFor({ type: 'result', id })
+  } else {
+    state.selectedResults.delete(id)
+    displayAnalysisFor()
+  }
+
+  card.classList.toggle('is-selected', input.checked)
+  updateResultActionAvailability()
+  updateOperationAvailability()
 }
 
 function handleResultListClick(event) {
   if (!elements.resultList) return
-  const checkbox = resolveCheckbox(event, 'input[data-role="result-checkbox"]')
-  if (checkbox instanceof HTMLInputElement) {
-    const card = checkbox.closest('[data-type="result"]')
+  const target = event.target instanceof HTMLElement ? event.target : null
+  if (!target) return
+
+  const removeButton = target.closest('[data-role="result-remove"]')
+  if (removeButton) {
+    const card = removeButton.closest('[data-type="result"]')
     if (!card) return
     const id = card.dataset.id
     if (!id) return
-    if (checkbox.checked) {
-      state.selectedResults.add(id)
-      displayAnalysisFor({ type: 'result', id })
-    } else {
-      state.selectedResults.delete(id)
-      displayAnalysisFor()
-    }
-    card.classList.toggle('is-selected', checkbox.checked)
-    updateResultActionAvailability()
-    updateOperationAvailability()
+    deleteResults([id])
     return
   }
 
-  const button = event.target.closest('button[data-action]')
-  if (!button) return
-  const card = button.closest('[data-type="result"]')
-  if (!card) return
-  const id = card.dataset.id
-  if (!id) return
-  const result = state.results.find((item) => item.id === id)
-  if (!result) return
-
-  const action = button.dataset.action
-  if (action === 'download-result') {
+  const downloadButton = target.closest('button[data-action="download-result"]')
+  if (downloadButton) {
+    const card = downloadButton.closest('[data-type="result"]')
+    if (!card) return
+    const id = card.dataset.id
+    if (!id) return
     downloadResults([id])
+    return
   }
-  if (action === 'delete-result') {
-    deleteResults([id])
+
+  if (target.closest('.asset-card__checkbox')) {
+    return
   }
+
+  const card = target.closest('[data-type="result"]')
+  if (!card) return
+  const checkbox = card.querySelector('input[data-role="result-checkbox"]')
+  if (!(checkbox instanceof HTMLInputElement)) return
+
+  checkbox.checked = !checkbox.checked
+  checkbox.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
 function selectAllUploads() {
@@ -2875,10 +3048,12 @@ function attachEventListeners() {
   }
 
   if (elements.uploadList) {
+    elements.uploadList.addEventListener('change', handleUploadListChange)
     elements.uploadList.addEventListener('click', handleUploadListClick)
   }
 
   if (elements.resultList) {
+    elements.resultList.addEventListener('change', handleResultListChange)
     elements.resultList.addEventListener('click', handleResultListClick)
   }
 
@@ -2892,6 +3067,10 @@ function attachEventListeners() {
 
   if (elements.uploadDeleteSelected instanceof HTMLButtonElement) {
     elements.uploadDeleteSelected.addEventListener('click', () => {
+      if (state.selectedUploads.size === 0) {
+        setStatus('삭제할 업로드 이미지를 선택해주세요.', 'danger')
+        return
+      }
       deleteUploads(Array.from(state.selectedUploads))
     })
   }
@@ -2906,6 +3085,10 @@ function attachEventListeners() {
 
   if (elements.resultDeleteSelected instanceof HTMLButtonElement) {
     elements.resultDeleteSelected.addEventListener('click', () => {
+      if (state.selectedResults.size === 0) {
+        setStatus('삭제할 결과 이미지를 선택해주세요.', 'danger')
+        return
+      }
       deleteResults(Array.from(state.selectedResults))
     })
   }

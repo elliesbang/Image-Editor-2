@@ -169,9 +169,6 @@ app.get('/', (c) => {
             이미지 업로드
           </button>
         </div>
-        <p class="hero__credit-hint">
-          로그인 없이 편집 프로세스를 탐색하고, 계정을 연결하면 <strong>무료 30 크레딧</strong>이 충전됩니다.
-        </p>
         <ul class="hero__highlights" role="list">
           <li>
             <strong>AI 없이도 깔끔한 배경 제거</strong>
@@ -186,6 +183,24 @@ app.get('/', (c) => {
             <span>PNG → SVG(1~6색) 변환과 ZIP 다운로드 지원</span>
           </li>
         </ul>
+      </section>
+
+      <section class="features" aria-label="주요 기능 안내">
+        <h2 class="features__title">더 나은 편집 경험을 위한 핵심 기능</h2>
+        <div class="features__grid">
+          <article class="feature-card">
+            <h3>배경 제거 &amp; 피사체 크롭</h3>
+            <p>자동 컬러 감지로 피사체를 분리하고, 여백을 줄여 바로 사용할 수 있는 투명 PNG를 만듭니다.</p>
+          </article>
+          <article class="feature-card">
+            <h3>노이즈 제거 · 고품질 리사이즈</h3>
+            <p>미세한 블러 처리를 통해 노이즈를 줄이고, 가로 폭 기준으로 선명하게 리사이즈합니다.</p>
+          </article>
+          <article class="feature-card">
+            <h3>PNG → SVG 벡터 변환</h3>
+            <p>1~6색을 선택해 150KB 이하의 벡터 파일로 변환하고, 전체 결과를 ZIP으로 저장하세요.</p>
+          </article>
+        </div>
       </section>
 
       <section class="stage" aria-label="작업 단계 안내">
@@ -423,24 +438,6 @@ app.get('/', (c) => {
               <ul class="analysis__keywords" data-role="analysis-keywords"></ul>
               <p class="analysis__summary" data-role="analysis-summary"></p>
             </section>
-          </article>
-        </div>
-      </section>
-
-      <section class="features" aria-label="주요 기능 안내">
-        <h2 class="features__title">더 나은 편집 경험을 위한 핵심 기능</h2>
-        <div class="features__grid">
-          <article class="feature-card">
-            <h3>배경 제거 & 피사체 크롭</h3>
-            <p>자동 컬러 감지로 피사체를 분리하고, 여백을 줄여 바로 사용할 수 있는 투명 PNG를 만듭니다.</p>
-          </article>
-          <article class="feature-card">
-            <h3>노이즈 제거 · 고품질 리사이즈</h3>
-            <p>미세한 블러 처리를 통해 노이즈를 줄이고, 가로 폭 기준으로 선명하게 리사이즈합니다.</p>
-          </article>
-          <article class="feature-card">
-            <h3>PNG → SVG 벡터 변환</h3>
-            <p>1~6색을 선택해 150KB 이하의 벡터 파일로 변환하고, 전체 결과를 ZIP으로 저장하세요.</p>
           </article>
         </div>
       </section>
