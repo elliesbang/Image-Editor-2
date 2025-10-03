@@ -477,6 +477,16 @@ main.page {
   font-size: 0.85rem;
 }
 
+.workspace__actions {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.workspace__actions .btn {
+  min-width: 220px;
+}
+
 .btn {
   position: relative;
   border: none;
@@ -648,6 +658,25 @@ main.page {
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--heading);
+}
+
+.analysis__meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: none;
+}
+
+.analysis--has-data .analysis__meta {
+  display: block;
+}
+
+.analysis[data-provider='openai'] .analysis__meta {
+  color: var(--accent);
+}
+
+.analysis[data-provider='local'] .analysis__meta {
+  color: #facc15;
 }
 
 .analysis__hint {

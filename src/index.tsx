@@ -164,25 +164,6 @@ app.get('/', (c) => {
           최대 50장의 이미지를 한 번에 업로드하고 배경 제거, 여백 크롭, 노이즈 제거, 리사이즈,
           PNG → SVG 벡터 변환까지 한 곳에서 처리하세요. 로그인하면 무료 30 크레딧으로 모든 기능을 바로 사용할 수 있어요.
         </p>
-        <div class="hero__actions">
-          <button class="btn btn--primary" type="button" data-trigger="file">
-            이미지 업로드
-          </button>
-        </div>
-        <ul class="hero__highlights" role="list">
-          <li>
-            <strong>AI 없이도 깔끔한 배경 제거</strong>
-            <span>간단한 컬러 분석으로 빠르게 투명 처리</span>
-          </li>
-          <li>
-            <strong>정밀한 여백 크롭 & 노이즈 제거</strong>
-            <span>주요 피사체에 맞춘 자동 크롭 및 부드러운 노이즈 감소</span>
-          </li>
-          <li>
-            <strong>벡터 변환 & 일괄 다운로드</strong>
-            <span>PNG → SVG(1~6색) 변환과 ZIP 다운로드 지원</span>
-          </li>
-        </ul>
       </section>
 
       <section class="features" aria-label="주요 기능 안내">
@@ -295,6 +276,11 @@ app.get('/', (c) => {
       </div>
 
       <section class="workspace" aria-label="이미지 작업 영역">
+        <div class="workspace__actions">
+          <button class="btn btn--primary" type="button" data-trigger="file">
+            이미지 업로드
+          </button>
+        </div>
         <div class="workspace__row workspace__row--top">
           <article class="panel panel--upload" aria-label="원본 이미지 관리">
             <header class="panel__header panel__header--stack">
@@ -433,6 +419,7 @@ app.get('/', (c) => {
                   분석 실행
                 </button>
               </div>
+              <p class="analysis__meta" data-role="analysis-meta" aria-live="polite"></p>
               <p class="analysis__hint" data-role="analysis-hint">분석할 결과 이미지를 선택하고 “분석 실행” 버튼을 눌러보세요.</p>
               <p class="analysis__headline" data-role="analysis-title"></p>
               <ul class="analysis__keywords" data-role="analysis-keywords"></ul>

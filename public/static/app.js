@@ -58,6 +58,7 @@ const elements = {
   resultDeleteSelected: document.querySelector('[data-action="result-delete-selected"]'),
   analysisPanel: document.querySelector('[data-role="analysis-panel"]'),
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
+  analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
   analysisKeywords: document.querySelector('[data-role="analysis-keywords"]'),
   analysisSummary: document.querySelector('[data-role="analysis-summary"]'),
@@ -1606,6 +1607,7 @@ function displayAnalysisFor(target) {
   if (
     !elements.analysisPanel ||
     !elements.analysisHint ||
+    !elements.analysisMeta ||
     !elements.analysisKeywords ||
     !elements.analysisSummary ||
     !elements.analysisHeadline
@@ -1623,7 +1625,9 @@ function displayAnalysisFor(target) {
 
   const resetView = (hintText) => {
     elements.analysisPanel.classList.remove('analysis--has-data')
+    elements.analysisPanel.dataset.provider = ''
     elements.analysisHint.textContent = hintText
+    elements.analysisMeta.textContent = ''
     elements.analysisHeadline.textContent = ''
     elements.analysisKeywords.innerHTML = ''
     elements.analysisSummary.textContent = ''
@@ -1644,6 +1648,16 @@ function displayAnalysisFor(target) {
   }
 
   elements.analysisPanel.classList.add('analysis--has-data')
+  const provider = typeof data.provider === 'string' ? data.provider : ''
+  elements.analysisPanel.dataset.provider = provider
+  if (provider === 'openai') {
+    elements.analysisMeta.textContent = 'OpenAI GPT-4o-mini 분석 결과'
+  } else if (provider === 'local') {
+    const reason = typeof data.reason === 'string' && data.reason ? ` (${data.reason})` : ''
+    elements.analysisMeta.textContent = `로컬 Canvas 분석 결과${reason}`
+  } else {
+    elements.analysisMeta.textContent = ''
+  }
   elements.analysisHint.textContent = ''
   elements.analysisHeadline.textContent = data.title || ''
   elements.analysisKeywords.innerHTML = data.keywords.map((keyword) => `<li>${keyword}</li>`).join('')
@@ -2257,12 +2271,21 @@ async function analyzeCurrentImage() {
       analysis = {
         title: payload.title.trim(),
         summary: payload.summary.trim(),
-        keywords: payload.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean).slice(0, 25),
+        keywords: payload.keywords
+          .map((keyword) => (typeof keyword === 'string' ? keyword.trim() : ''))
+          .filter(Boolean)
+          .slice(0, 25),
+        provider: 'openai',
       }
     } catch (apiError) {
       fallbackReason = apiError instanceof Error ? apiError.message : String(apiError)
       console.warn('OpenAI 분석 실패, 로컬 분석으로 대체합니다.', fallbackReason)
-      analysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
+      const fallbackAnalysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
+      const fallbackReasonLabel =
+        typeof fallbackReason === 'string' && fallbackReason.includes('OPENAI_API_KEY_NOT_CONFIGURED')
+          ? 'OpenAI API 키 미설정'
+          : 'OpenAI API 호출 실패'
+      analysis = { ...fallbackAnalysis, provider: 'local', reason: fallbackReasonLabel }
       usedFallback = true
     }
 
@@ -2288,10 +2311,10 @@ async function analyzeCurrentImage() {
       }
       setStatus(`${baseMessage}${reasonMessage}`, 'danger')
     } else {
-      setStatus(
-        statusHeadline ? `키워드 분석 완료: ${statusHeadline}` : '키워드 분석이 완료되었습니다.',
-        statusHeadline ? 'success' : 'info',
-      )
+      const successMessage = statusHeadline
+        ? `OpenAI 키워드 분석 완료: ${statusHeadline}`
+        : 'OpenAI 키워드 분석이 완료되었습니다.'
+      setStatus(successMessage, 'success')
     }
   } catch (error) {
     console.error(error)

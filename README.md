@@ -18,7 +18,7 @@
 - 결과 ZIP 다운로드(선택/전체) 및 JSZip 번들 포함 여부 감지
 - **Freemium 크레딧 모델**: 로그인 시 무료 30 크레딧 충전, 작업별 차감(배경/크롭/노이즈/리사이즈 1, PNG→SVG 2, 선택 다운로드 1, 전체 다운로드 2, 분석 1)
 - OTP 이메일 로그인(6자리 코드·5분 만료·재전송), Google 로그인 데모, 헤더/게이트/스테이지 인디케이터와 연동된 상태 UI
-- 키워드 분석: `/api/analyze` → OpenAI Chat Completions API 호출, 키/요금 미설정 시 로컬 Canvas 분석 25키워드/요약/제목 fallback
+- 키워드 분석: `/api/analyze` → OpenAI GPT-4o-mini Chat Completions API 호출, 키 미설정 시 로컬 Canvas 분석 25키워드/요약/제목 fallback + UI에서 “OpenAI 분석 결과/로컬 분석 결과” 메타 표시
 - 쿠키 동의 배너, 개인정보 처리방침(`/privacy`), 이용약관(`/terms`), 쿠키 정책(`/cookies`), 헬스 체크(`/api/health`)
 
 ## 최근 개선 하이라이트
@@ -28,6 +28,7 @@
 4. **복잡 배경 타이트 크롭**: 알파 히트맵 + 컬러 바운드 결합 로직으로 여백을 최소화
 5. **Hero/Features 배치 조정**: Hero 하단 설명 정리, Features 섹션을 Hero 바로 뒤로 이동하여 정보 위계 개선
 6. **크레딧 안내 텍스트·게이트 UX**: 잔여 크레딧 수량과 경고 단계 표시를 강화
+7. **OpenAI 분석 피드백 고도화**: 환경 변수에 OpenAI API 키가 설정되면 분석 패널에 “OpenAI GPT-4o-mini 분석 결과” 메타가 노출되고 토스트 메시지로 성공 상태를 안내, 실패 시 로컬 분석 사유를 표시
 
 ## 미구현/예정 기능
 - OpenAI GPT-4 이상 모델 기반 고급 메타데이터 파이프라인 고도화(현재는 4o-mini 호출 + 로컬 fallback)
@@ -39,6 +40,7 @@
 ## URL & 엔드포인트 요약
 | 경로 | 설명 |
 | --- | --- |
+| `https://image-editor.pages.dev` | Cloudflare Pages 프로덕션 메인 |
 | `/` | 멀티 이미지 편집 메인 UI |
 | `/privacy` | 개인정보 처리방침 |
 | `/terms` | 이용약관 |
@@ -46,7 +48,7 @@
 | `/api/health` | 상태 점검(JSON `{ "status": "ok" }`) |
 | `POST /api/analyze` | OpenAI 기반 이미지 키워드·제목 생성(JSON, 키 미설정 시 오류 응답)
 
-> Cloudflare Pages 프로덕션/프리뷰 URL은 배포 완료 후 업데이트 예정입니다.
+> 프리뷰 배포는 Wrangler가 제공하는 임시 도메인(`https://*.project-*.pages.dev`)으로 확인할 수 있습니다.
 
 ## 데이터 아키텍처
 - 편집·분석은 모두 브라우저 Canvas 및 메모리에서 진행, 서버측 파일 시스템/DB 사용 없음
@@ -87,6 +89,7 @@ curl http://localhost:3000/api/health
 - `npm run build` (성공)
 - `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
 - `curl -X POST /api/analyze` (OpenAI 키 미설정 시 `{"error":"OPENAI_API_KEY_NOT_CONFIGURED"}` 응답 확인)
+- 프런트엔드에서 “OpenAI 키워드 분석 완료” 토스트 및 분석 패널 메타 라벨 노출 확인(키 설정 시)
 
 ## 환경 변수 & 시크릿
 - `OPENAI_API_KEY`: OpenAI Chat Completions API 호출용 키
