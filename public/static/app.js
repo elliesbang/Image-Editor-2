@@ -2,6 +2,7 @@ const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
 const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
 const FREEMIUM_INITIAL_CREDITS = 30
+const MICHINA_INITIAL_CREDITS = 10000
 const CREDIT_COSTS = {
   operation: 1,
   resize: 1,
@@ -135,18 +136,18 @@ const runtime = {
 let googleSdkPromise = null
 
 function hasUnlimitedAccess() {
-  return state.admin.isLoggedIn || state.user.plan === 'michina'
+  return state.admin.isLoggedIn
 }
 
 function formatCreditsValue(value) {
   if (hasUnlimitedAccess()) return '∞'
   const numeric = typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
-  return `${numeric}`
+  return numeric.toLocaleString('ko-KR')
 }
 
 function getPlanLabel() {
-  if (state.admin.isLoggedIn) return '관리자 테스트 모드'
-  if (state.user.plan === 'michina') return '미치나 챌린저'
+  if (state.admin.isLoggedIn) return '관리자 모드'
+  if (state.user.plan === 'michina') return '미치나 플랜'
   if (state.user.plan === 'freemium') return 'Freemium'
   return '게스트'
 }
@@ -378,16 +379,6 @@ const elements = {
   adminDownloadCompletion: document.querySelector('[data-role="admin-download-completion"]'),
   adminLogoutButton: document.querySelector('[data-role="admin-logout"]'),
   planBadge: document.querySelector('[data-role="plan-badge"]'),
-  planCards: document.querySelectorAll('[data-plan-card]'),
-  planPills: document.querySelectorAll('[data-plan-pill]'),
-  planCreditNotice: document.querySelector('[data-role="plan-credit-notice"]'),
-  planStatus: document.querySelector('[data-role="plan-status"]'),
-  planStatusCopy: document.querySelector('[data-role="plan-status-copy"]'),
-  planStatusPlan: document.querySelector('[data-role="plan-status-plan"]'),
-  planStatusBadge: document.querySelector('[data-role="plan-status-badge"]'),
-  planStatusRemaining: document.querySelector('[data-role="plan-status-remaining"]'),
-  planStatusDeadline: document.querySelector('[data-role="plan-status-deadline"]'),
-  planStatusProgress: document.querySelector('[data-role="plan-status-progress"]'),
   challengeSection: document.querySelector('[data-role="challenge-section"]'),
   challengeDashboard: document.querySelector('[data-role="challenge-dashboard"]'),
   challengeLocked: document.querySelector('[data-role="challenge-locked"]'),
@@ -840,15 +831,19 @@ function resolveActiveTarget(preferred) {
 
 function updateHeaderState() {
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
-  const unlimited = hasUnlimitedAccess()
   const creditsNumeric = Math.max(0, state.user.credits)
+  const isAdmin = state.admin.isLoggedIn
+  const isMichina = state.user.plan === 'michina' && !isAdmin
+  const formattedCredits = formatCreditsValue(state.user.credits)
 
   if (elements.creditDisplay instanceof HTMLElement) {
-    elements.creditDisplay.dataset.state = loggedIn
-      ? unlimited
-        ? 'unlimited'
-        : creditStateFromBalance(creditsNumeric)
-      : 'locked'
+    if (!loggedIn) {
+      elements.creditDisplay.dataset.state = 'locked'
+    } else if (isAdmin) {
+      elements.creditDisplay.dataset.state = 'unlimited'
+    } else {
+      elements.creditDisplay.dataset.state = creditStateFromBalance(creditsNumeric)
+    }
   }
 
   if (elements.planBadge instanceof HTMLElement) {
@@ -856,15 +851,19 @@ function updateHeaderState() {
   }
 
   if (elements.creditLabel instanceof HTMLElement) {
-    elements.creditLabel.textContent = loggedIn
-      ? unlimited
-        ? `${getPlanLabel()} · 무제한 이용`
-        : 'Freemium · 잔여 크레딧'
-      : '로그인하고 무료 30 크레딧 받기'
+    if (!loggedIn) {
+      elements.creditLabel.textContent = '로그인하고 무료 30 크레딧 받기'
+    } else if (isAdmin) {
+      elements.creditLabel.textContent = '관리자 모드 · 무제한 이용'
+    } else if (isMichina) {
+      elements.creditLabel.textContent = '미치나 플랜 · 잔여 크레딧'
+    } else {
+      elements.creditLabel.textContent = 'Freemium · 잔여 크레딧'
+    }
   }
 
   if (elements.creditCount instanceof HTMLElement) {
-    elements.creditCount.textContent = formatCreditsValue(state.user.credits)
+    elements.creditCount.textContent = formattedCredits
   }
 
   if (elements.headerAuthButton instanceof HTMLButtonElement) {
@@ -873,7 +872,7 @@ function updateHeaderState() {
   }
 
   if (elements.resultsCreditCount instanceof HTMLElement) {
-    elements.resultsCreditCount.textContent = formatCreditsValue(state.user.credits)
+    elements.resultsCreditCount.textContent = formattedCredits
   }
 }
 
@@ -894,17 +893,28 @@ function updateOperationsGate() {
   const gate = elements.operationsGate
   if (!(gate instanceof HTMLElement)) return
 
-  const loggedIn = state.user.isLoggedIn
+  const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+  const isAdmin = state.admin.isLoggedIn
+  const isMichina = state.user.plan === 'michina' && !isAdmin
   const credits = Math.max(0, state.user.credits)
+  const formattedCredits = formatCreditsValue(state.user.credits)
 
   let stateName = 'unlocked'
   let title = '작업 실행 크레딧 안내'
-  let copy = `현재 잔여 크레딧: <strong>${credits}</strong> · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
+  let copy = `현재 잔여 크레딧: <strong>${formattedCredits}</strong> · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
 
   if (!loggedIn) {
     stateName = 'locked'
     title = '로그인 후 도구를 실행해 주세요.'
     copy = `실행 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 드립니다.`
+  } else if (isAdmin) {
+    stateName = 'success'
+    title = '관리자 모드가 활성화되어 있습니다.'
+    copy = '테스트를 위해 모든 기능을 무제한으로 사용할 수 있습니다.'
+  } else if (isMichina) {
+    stateName = 'success'
+    title = '미치나 플랜이 활성화되어 있습니다.'
+    copy = `미치나 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 작업당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
   } else if (credits <= 0) {
     stateName = 'danger'
     title = '크레딧이 부족합니다.'
@@ -912,7 +922,7 @@ function updateOperationsGate() {
   } else if (credits <= 2) {
     stateName = 'warning'
     title = '잔여 크레딧이 적습니다.'
-    copy = `남은 크레딧 <strong>${credits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 사용됩니다.`
+    copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 사용됩니다.`
   }
 
   setGateContent(gate, { state: stateName, title, copy })
@@ -930,13 +940,16 @@ function updateResultsGate() {
   const gate = elements.resultsGate
   if (!(gate instanceof HTMLElement)) return
 
-  const loggedIn = state.user.isLoggedIn
+  const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+  const isAdmin = state.admin.isLoggedIn
+  const isMichina = state.user.plan === 'michina' && !isAdmin
   const credits = Math.max(0, state.user.credits)
+  const formattedCredits = formatCreditsValue(state.user.credits)
   const hasResults = state.results.length > 0
 
   let stateName = 'unlocked'
   let title = '결과 저장 준비 완료'
-  let copy = `남은 크레딧 <strong>${credits}</strong>개 · PNG→SVG 변환 ${CREDIT_COSTS.svg} 크레딧, 다운로드 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
+  let copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환 ${CREDIT_COSTS.svg} 크레딧, 다운로드 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
 
   if (!hasResults) {
     stateName = 'locked'
@@ -946,6 +959,14 @@ function updateResultsGate() {
     stateName = 'locked'
     title = '로그인 후 결과를 저장할 수 있어요.'
     copy = `다운로드/벡터 변환 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 받습니다.`
+  } else if (isAdmin) {
+    stateName = 'success'
+    title = '관리자 모드가 활성화되어 있습니다.'
+    copy = '테스트를 위해 다운로드와 벡터 변환을 무제한으로 사용할 수 있습니다.'
+  } else if (isMichina) {
+    stateName = 'success'
+    title = '미치나 플랜 잔여 크레딧 안내'
+    copy = `미치나 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환 ${CREDIT_COSTS.svg} 크레딧, 다운로드 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
   } else if (credits <= 0) {
     stateName = 'danger'
     title = '크레딧이 부족합니다.'
@@ -953,7 +974,7 @@ function updateResultsGate() {
   } else if (credits <= 1) {
     stateName = 'warning'
     title = '잔여 크레딧이 1개 이하입니다.'
-    copy = `남은 크레딧 <strong>${credits}</strong>개 · PNG→SVG 변환은 이미지당 ${CREDIT_COSTS.svg} 크레딧이 필요합니다.`
+    copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환은 이미지당 ${CREDIT_COSTS.svg} 크레딧이 필요합니다.`
   }
 
   setGateContent(gate, { state: stateName, title, copy })
@@ -967,7 +988,7 @@ function updateResultsGate() {
   }
 
   if (elements.resultsCreditCount instanceof HTMLElement) {
-    elements.resultsCreditCount.textContent = `${credits}`
+    elements.resultsCreditCount.textContent = formattedCredits
   }
 }
 
@@ -1052,134 +1073,22 @@ function getActivePlanKey() {
 function updatePlanExperience() {
   const currentPlan = getActivePlanKey()
   const profile = state.challenge.profile
+  const isExpired = Boolean(profile?.expired)
 
-  const planCards = Array.from(elements.planCards ?? [])
-  planCards.forEach((card) => {
-    if (!(card instanceof HTMLElement)) return
-    const planKey = card.dataset.planCard
-    let shouldHighlight = false
-    if (currentPlan === 'michina') {
-      shouldHighlight = planKey === 'michina'
-    } else if (currentPlan === 'admin') {
-      shouldHighlight = planKey === 'michina'
-    } else {
-      shouldHighlight = planKey === 'freemium'
+  if (elements.challengeSection instanceof HTMLElement) {
+    let planState = 'guest'
+    if (state.admin.isLoggedIn) {
+      planState = 'admin'
+    } else if (isExpired) {
+      planState = 'expired'
+    } else if (profile?.completed) {
+      planState = 'completed'
+    } else if (currentPlan === 'michina') {
+      planState = 'michina'
+    } else if (currentPlan === 'freemium') {
+      planState = 'freemium'
     }
-    card.classList.toggle('is-active', Boolean(shouldHighlight))
-  })
-
-  const planPills = Array.from(elements.planPills ?? [])
-  planPills.forEach((pill) => {
-    if (!(pill instanceof HTMLElement)) return
-    const planKey = pill.dataset.planPill
-    let visible = false
-    let label = '현재 이용 중'
-    if (currentPlan === 'michina' && planKey === 'michina') {
-      visible = true
-    } else if (currentPlan === 'admin' && planKey === 'michina') {
-      visible = true
-      label = '관리자 모드'
-    } else if (currentPlan === 'freemium' && planKey === 'freemium') {
-      visible = state.user.isLoggedIn
-    } else if (currentPlan === 'public' && planKey === 'freemium') {
-      visible = false
-    }
-    pill.textContent = label
-    pill.hidden = !visible
-  })
-
-  if (elements.planCreditNotice instanceof HTMLElement) {
-    switch (currentPlan) {
-      case 'admin':
-        elements.planCreditNotice.innerHTML =
-          '<strong>관리자:</strong> 테스트를 위한 무제한 크레딧이 제공됩니다. 모든 기능을 자유롭게 확인하세요.'
-        break
-      case 'michina':
-        elements.planCreditNotice.innerHTML =
-          '<strong>미치나 플랜:</strong> 챌린지 기간 동안 모든 편집 기능과 수료증 발급이 무제한으로 제공됩니다.'
-        break
-      case 'freemium':
-        elements.planCreditNotice.innerHTML =
-          '<strong>Freemium 사용자:</strong> 로그인 시 지급된 무료 30 크레딧으로 기능을 체험할 수 있습니다.'
-        break
-      default:
-        elements.planCreditNotice.innerHTML =
-          '<strong>게스트:</strong> Google 로그인으로 무료 30 크레딧을 받고 이미지를 바로 편집해 보세요.'
-        break
-    }
-  }
-
-  if (elements.planStatus instanceof HTMLElement) {
-    if (currentPlan === 'michina') {
-      elements.planStatus.hidden = false
-      elements.planStatus.dataset.state = profile?.completed ? 'completed' : profile ? 'active' : 'pending'
-      if (elements.planStatusPlan instanceof HTMLElement) {
-        elements.planStatusPlan.textContent = '미치나 챌린지'
-      }
-      if (profile) {
-        const required = Number(profile.required ?? 15)
-        const total = Number(profile.totalSubmissions ?? Object.keys(profile.submissions ?? {}).length)
-        const remaining = Math.max(0, required - total)
-        const percent = required > 0 ? Math.min(100, Math.round((total / required) * 100)) : 0
-        const deadline = formatDateLabel(profile.endDate)
-        if (elements.planStatusCopy instanceof HTMLElement) {
-          elements.planStatusCopy.textContent = profile.completed
-            ? `${profile.name ?? profile.email} 님, 챌린지를 완주하셨습니다!`
-            : `${profile.name ?? profile.email} 님, ${remaining}회 제출이 남았습니다.`
-        }
-        if (elements.planStatusBadge instanceof HTMLElement) {
-          elements.planStatusBadge.textContent = profile.completed ? '완주' : remaining === 0 ? '검토 중' : '진행 중'
-        }
-        if (elements.planStatusRemaining instanceof HTMLElement) {
-          elements.planStatusRemaining.textContent = `${remaining}회`
-        }
-        if (elements.planStatusDeadline instanceof HTMLElement) {
-          elements.planStatusDeadline.textContent = deadline || '-'
-        }
-        if (elements.planStatusProgress instanceof HTMLElement) {
-          elements.planStatusProgress.textContent = `${total}/${required}회 (${percent}%)`
-        }
-      } else {
-        if (elements.planStatusCopy instanceof HTMLElement) {
-          elements.planStatusCopy.textContent = '챌린지 참가자 정보를 불러오는 중입니다. 관리자에게 문의해 주세요.'
-        }
-        if (elements.planStatusBadge instanceof HTMLElement) {
-          elements.planStatusBadge.textContent = '대기'
-        }
-        if (elements.planStatusRemaining instanceof HTMLElement) {
-          elements.planStatusRemaining.textContent = '-'
-        }
-        if (elements.planStatusDeadline instanceof HTMLElement) {
-          elements.planStatusDeadline.textContent = '-'
-        }
-        if (elements.planStatusProgress instanceof HTMLElement) {
-          elements.planStatusProgress.textContent = '-'
-        }
-      }
-    } else if (currentPlan === 'admin') {
-      elements.planStatus.hidden = false
-      elements.planStatus.dataset.state = 'admin'
-      if (elements.planStatusPlan instanceof HTMLElement) {
-        elements.planStatusPlan.textContent = '관리자 테스트 모드'
-      }
-      if (elements.planStatusCopy instanceof HTMLElement) {
-        elements.planStatusCopy.textContent = '모든 편집 기능을 크레딧 제한 없이 검증할 수 있습니다.'
-      }
-      if (elements.planStatusBadge instanceof HTMLElement) {
-        elements.planStatusBadge.textContent = '무제한'
-      }
-      if (elements.planStatusRemaining instanceof HTMLElement) {
-        elements.planStatusRemaining.textContent = '무제한'
-      }
-      if (elements.planStatusDeadline instanceof HTMLElement) {
-        elements.planStatusDeadline.textContent = '-'
-      }
-      if (elements.planStatusProgress instanceof HTMLElement) {
-        elements.planStatusProgress.textContent = '전체 기능 오픈'
-      }
-    } else {
-      elements.planStatus.hidden = true
-    }
+    elements.challengeSection.dataset.planState = planState
   }
 }
 
@@ -1426,6 +1335,13 @@ function formatDateLabel(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
   return new Intl.DateTimeFormat('ko', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+}
+
+function isPlanExpired(endDate) {
+  if (!endDate) return false
+  const timestamp = Date.parse(endDate)
+  if (Number.isNaN(timestamp)) return false
+  return timestamp < Date.now()
 }
 
 function renderAdminParticipants() {
