@@ -1484,12 +1484,93 @@ body.is-modal-open {
   border-color: rgba(59, 130, 246, 0.42);
 }
 
+.login-modal__helper {
+  margin: -4px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.login-modal__helper[hidden] {
+  display: none !important;
+}
+
+.login-modal__helper[data-tone='info'] {
+  color: rgba(96, 165, 250, 0.92);
+}
+
+.login-modal__helper[data-tone='warning'] {
+  color: rgba(251, 191, 36, 0.96);
+}
+
+.login-modal__helper[data-tone='danger'] {
+  color: rgba(248, 113, 113, 0.95);
+}
+
+.login-modal__helper[data-tone='success'] {
+  color: rgba(52, 211, 153, 0.98);
+}
+
+.login-modal__provider .login-modal__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-modal__provider .login-modal__icon i {
+  font-size: 1.05rem;
+}
+
+.login-modal__provider .login-modal__spinner {
+  display: none;
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  border-radius: 999px;
+  border: 2px solid rgba(226, 232, 240, 0.72);
+  border-top-color: rgba(59, 130, 246, 0.34);
+  animation: login-spinner 0.9s linear infinite;
+}
+
+.login-modal__provider[data-loading='true'] .login-modal__spinner {
+  display: inline-block;
+}
+
+.login-modal__provider[data-loading='true'] .login-modal__icon {
+  display: none;
+}
+
+.login-modal__provider[data-state='disabled'] {
+  cursor: not-allowed;
+  opacity: 0.48;
+  background: rgba(15, 23, 42, 0.55);
+  border-color: rgba(148, 163, 184, 0.16);
+  color: rgba(148, 163, 184, 0.72);
+}
+
+.login-modal__provider[data-state='error'] {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
 .login-modal__provider[disabled],
 .login-modal__provider[data-loading='true'] {
   opacity: 0.6;
-  cursor: wait;
   pointer-events: none;
   transform: none;
+}
+
+.login-modal__provider[disabled] {
+  cursor: not-allowed;
+}
+
+.login-modal__provider[data-loading='true'] {
+  cursor: wait;
+}
+
+@keyframes login-spinner {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .login-modal__divider {
@@ -1615,6 +1696,166 @@ body.is-modal-open {
 
 .login-modal__form[data-state='idle'] .login-modal__code-group {
   display: none;
+}
+
+.admin-modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+}
+
+.admin-modal.is-active {
+  display: flex;
+}
+
+.admin-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 13, 28, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.admin-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(420px, calc(100% - 48px));
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(11, 17, 32, 0.94);
+  box-shadow: 0 26px 70px rgba(8, 13, 28, 0.58);
+  padding: 32px 34px 28px;
+  display: grid;
+  gap: 18px;
+}
+
+.admin-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.admin-modal__title {
+  margin: 0;
+  font-size: 1.25rem;
+  color: var(--heading);
+}
+
+.admin-modal__close {
+  border: none;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-primary);
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.admin-modal__close:hover {
+  background: rgba(148, 163, 184, 0.28);
+}
+
+.admin-modal__subtitle {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.admin-modal__form {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-modal__form[data-state='loading'] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.admin-modal__form[data-state='authenticated'] {
+  display: none;
+}
+
+.admin-modal__label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.admin-modal__input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  background: rgba(8, 13, 28, 0.82);
+  color: var(--heading);
+  font-size: 0.95rem;
+}
+
+.admin-modal__input:focus-visible {
+  outline: 2px solid rgba(254, 245, 104, 0.65);
+  outline-offset: 3px;
+}
+
+.admin-modal__helper {
+  margin: 0;
+  min-height: 1.25rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.admin-modal__helper[data-tone='muted'] {
+  color: var(--text-muted);
+}
+
+.admin-modal__helper[data-tone='info'] {
+  color: rgba(59, 130, 246, 0.82);
+}
+
+.admin-modal__helper[data-tone='success'] {
+  color: rgba(34, 197, 94, 0.85);
+}
+
+.admin-modal__helper[data-tone='danger'] {
+  color: rgba(248, 113, 113, 0.92);
+}
+
+.admin-modal__helper[data-tone='warning'] {
+  color: rgba(253, 224, 71, 0.86);
+}
+
+.admin-modal__actions {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.68);
+}
+
+.admin-modal__actions[hidden] {
+  display: none !important;
+}
+
+.admin-modal__note {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.admin-modal__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-modal__action {
+  flex: 1 1 140px;
 }
 
 .cookie-banner {
@@ -1861,6 +2102,29 @@ body.is-modal-open {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.challenge-card__category {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(254, 245, 104, 0.16);
+  color: rgba(254, 245, 104, 0.98);
+  border: 1px solid rgba(254, 245, 104, 0.32);
+  box-shadow: 0 10px 24px rgba(254, 245, 104, 0.18);
+}
+
+.challenge-card__category::before {
+  content: '\25CF';
+  font-size: 0.75rem;
+  line-height: 1;
 }
 
 .challenge-card__section {

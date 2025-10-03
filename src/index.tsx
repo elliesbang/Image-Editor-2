@@ -79,6 +79,20 @@ async function sha256(input: string) {
   return toHex(digest)
 }
 
+function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
+  const configured = c.env.GOOGLE_REDIRECT_URI?.trim()
+  if (configured) {
+    return configured
+  }
+  try {
+    const url = new URL(c.req.url)
+    return `${url.origin}/auth/google/callback`
+  } catch (error) {
+    console.warn('[auth/google] Failed to derive redirect URI from request URL', error)
+    return DEFAULT_GOOGLE_REDIRECT_URI
+  }
+}
+
 type GoogleIdTokenPayload = {
   aud?: string
   email?: string
@@ -340,11 +354,11 @@ app.use('*', async (c, next) => {
 
   const csp = [
     "default-src 'self'",
-    "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://apis.google.com",
+    "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://apis.google.com https://www.gstatic.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net",
     "img-src 'self' data: blob: https://lh3.googleusercontent.com",
     "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net",
-    "connect-src 'self' https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com",
+    "connect-src 'self' https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com https://www.googleapis.com",
     "frame-src 'self' https://accounts.google.com",
     "frame-ancestors 'none'",
     "form-action 'self'",
@@ -427,7 +441,7 @@ app.post('/api/auth/google', async (c) => {
 
   const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
   const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
-  const redirectUri = c.env.GOOGLE_REDIRECT_URI?.trim() || DEFAULT_GOOGLE_REDIRECT_URI
+  const redirectUri = resolveGoogleRedirectUri(c)
 
   if (!clientId || !clientSecret) {
     return c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 500)
@@ -912,6 +926,8 @@ app.post('/api/analyze', async (c) => {
 
 app.get('/', (c) => {
   const currentYear = new Date().getFullYear()
+  const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
+  const googleRedirectUri = resolveGoogleRedirectUri(c)
 
   return c.render(
     <main class="page">
@@ -999,6 +1015,153 @@ app.get('/', (c) => {
         </div>
       </section>
 
+      <section class="plans" aria-labelledby="plans-heading">
+        <div class="plans__head">
+          <p class="plans__eyebrow">플랜 안내</p>
+          <h2 class="plans__heading" id="plans-heading">크레딧 정책과 플랜 비교</h2>
+          <p class="plans__description">
+            Freemium 사용자는 로그인 시 30 크레딧을 받고 기능당 소량의 크레딧이 차감됩니다. Michina 플랜은 챌린지 참가자 전용으로 모든 편집 기능과 수료증 발급을 무제한으로 제공합니다.
+          </p>
+        </div>
+        <div class="plans__cards" data-role="plan-cards">
+          <article class="plan-card" data-plan-card="freemium">
+            <header class="plan-card__header">
+              <span class="plan-card__eyebrow">입문용</span>
+              <h3 class="plan-card__title">Freemium</h3>
+              <span class="plan-card__pill" data-plan-pill="freemium" hidden>현재 이용 중</span>
+            </header>
+            <p class="plan-card__summary"><strong>30</strong> 무료 크레딧 포함</p>
+            <ul class="plan-card__list">
+              <li><i class="ri-checkbox-circle-line" aria-hidden="true"></i> 배경 제거 · 피사체 크롭 · 리사이즈</li>
+              <li><i class="ri-checkbox-circle-line" aria-hidden="true"></i> PNG → SVG 변환 (2 크레딧)</li>
+              <li><i class="ri-checkbox-circle-line" aria-hidden="true"></i> 키워드 분석 (1 크레딧)</li>
+              <li class="plan-card__item--locked"><i class="ri-lock-line" aria-hidden="true"></i> 미치나 챌린지 대시보드</li>
+              <li class="plan-card__item--locked"><i class="ri-lock-line" aria-hidden="true"></i> 수료증 다운로드</li>
+            </ul>
+          </article>
+          <article class="plan-card plan-card--highlight" data-plan-card="michina">
+            <header class="plan-card__header">
+              <span class="plan-card__eyebrow">챌린지 전용</span>
+              <h3 class="plan-card__title">Michina</h3>
+              <span class="plan-card__pill" data-plan-pill="michina" hidden>현재 이용 중</span>
+            </header>
+            <p class="plan-card__summary"><strong>무제한</strong> 크레딧 · 전 기능 개방</p>
+            <ul class="plan-card__list">
+              <li><i class="ri-infinity-line" aria-hidden="true"></i> 이미지 보정 · 변환 무제한</li>
+              <li><i class="ri-infinity-line" aria-hidden="true"></i> PNG → SVG &amp; ZIP 다운로드 무제한</li>
+              <li><i class="ri-checkbox-circle-line" aria-hidden="true"></i> 미치나 챌린지 진행 현황 &amp; 완주 판정</li>
+              <li><i class="ri-award-line" aria-hidden="true"></i> 3주 챌린지 수료증 PNG 발급</li>
+              <li><i class="ri-user-smile-line" aria-hidden="true"></i> 운영팀 검수 및 지원</li>
+            </ul>
+          </article>
+        </div>
+        <div class="plan-status" data-role="plan-status" hidden>
+          <header class="plan-status__header">
+            <span class="plan-status__badge" data-role="plan-status-badge">진행 중</span>
+            <span class="plan-status__plan" data-role="plan-status-plan">미치나 챌린지</span>
+          </header>
+          <p class="plan-status__copy" data-role="plan-status-copy">
+            챌린지 참가자 정보를 불러오는 중입니다. 관리자에게 문의해 주세요.
+          </p>
+          <dl class="plan-status__metrics">
+            <div>
+              <dt>남은 제출</dt>
+              <dd data-role="plan-status-remaining">-</dd>
+            </div>
+            <div>
+              <dt>종료일</dt>
+              <dd data-role="plan-status-deadline">-</dd>
+            </div>
+            <div>
+              <dt>진행률</dt>
+              <dd data-role="plan-status-progress">-</dd>
+            </div>
+          </dl>
+        </div>
+        <div class="plan-credit" data-role="plan-credit-notice">
+          <strong>Freemium 이용자:</strong> Google 로그인으로 즉시 30 크레딧을 받고, 기능 실행 시 1~2 크레딧이 차감됩니다.
+        </div>
+        <div class="plan-table-wrapper">
+          <table class="plan-table" aria-describedby="plans-heading">
+            <thead>
+              <tr>
+                <th scope="col">기능</th>
+                <th scope="col" data-plan-column="freemium">Freemium</th>
+                <th scope="col" data-plan-column="michina">Michina</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">이미지 보정 도구</th>
+                <td data-plan-feature="freemium" data-plan-availability="limited">
+                  <i class="plan-feature__icon ri-flashlight-line" aria-hidden="true"></i>
+                  <span>사용 가능 · 이미지당 1 크레딧</span>
+                </td>
+                <td data-plan-feature="michina" data-plan-availability="unlimited">
+                  <i class="plan-feature__icon ri-infinity-line" aria-hidden="true"></i>
+                  <span>무제한</span>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">PNG → SVG 변환</th>
+                <td data-plan-feature="freemium" data-plan-availability="limited">
+                  <i class="plan-feature__icon ri-shape-line" aria-hidden="true"></i>
+                  <span>2 크레딧/이미지</span>
+                </td>
+                <td data-plan-feature="michina" data-plan-availability="unlimited">
+                  <i class="plan-feature__icon ri-shape-line" aria-hidden="true"></i>
+                  <span>무제한</span>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">ZIP 일괄 다운로드</th>
+                <td data-plan-feature="freemium" data-plan-availability="limited">
+                  <i class="plan-feature__icon ri-download-cloud-2-line" aria-hidden="true"></i>
+                  <span>가능 · 2 크레딧/다운로드</span>
+                </td>
+                <td data-plan-feature="michina" data-plan-availability="unlimited">
+                  <i class="plan-feature__icon ri-download-cloud-2-line" aria-hidden="true"></i>
+                  <span>무제한</span>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">키워드 분석 리포트</th>
+                <td data-plan-feature="freemium" data-plan-availability="limited">
+                  <i class="plan-feature__icon ri-lightbulb-flash-line" aria-hidden="true"></i>
+                  <span>1 크레딧/분석</span>
+                </td>
+                <td data-plan-feature="michina" data-plan-availability="available">
+                  <i class="plan-feature__icon ri-checkbox-circle-line" aria-hidden="true"></i>
+                  <span>포함</span>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">미치나 챌린지 대시보드</th>
+                <td data-plan-feature="freemium" data-plan-availability="locked">
+                  <i class="plan-feature__icon ri-lock-line" aria-hidden="true"></i>
+                  <span>잠금</span>
+                </td>
+                <td data-plan-feature="michina" data-plan-availability="available">
+                  <i class="plan-feature__icon ri-checkbox-circle-line" aria-hidden="true"></i>
+                  <span>포함</span>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">3주 챌린지 수료증</th>
+                <td data-plan-feature="freemium" data-plan-availability="locked">
+                  <i class="plan-feature__icon ri-lock-line" aria-hidden="true"></i>
+                  <span>잠금</span>
+                </td>
+                <td data-plan-feature="michina" data-plan-availability="available">
+                  <i class="plan-feature__icon ri-award-line" aria-hidden="true"></i>
+                  <span>포함</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
         <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
         <div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
@@ -1010,10 +1173,26 @@ app.get('/', (c) => {
           </header>
           <p class="login-modal__subtitle">원하는 로그인 방식을 선택해 계속 진행하세요.</p>
           <div class="login-modal__providers">
-            <button class="login-modal__provider login-modal__provider--google" type="button" data-action="login-google">
-              <i class="ri-google-fill" aria-hidden="true"></i>
-              Google 계정으로 계속하기
+            <button
+              class="login-modal__provider login-modal__provider--google"
+              type="button"
+              data-action="login-google"
+              data-role="google-login-button"
+              aria-describedby="google-login-helper"
+            >
+              <span class="login-modal__icon" aria-hidden="true">
+                <i class="ri-google-fill"></i>
+              </span>
+              <span data-role="google-login-text" aria-live="polite">Google 계정으로 계속하기</span>
+              <span class="login-modal__spinner" data-role="google-login-spinner" aria-hidden="true"></span>
             </button>
+            <p
+              class="login-modal__helper login-modal__helper--google"
+              data-role="google-login-helper"
+              aria-live="polite"
+              id="google-login-helper"
+              hidden
+            ></p>
           </div>
           <div class="login-modal__divider" role="presentation">
             <span>또는</span>
@@ -1068,8 +1247,10 @@ app.get('/', (c) => {
               <i class="ri-close-line" aria-hidden="true"></i>
             </button>
           </header>
-          <p class="admin-modal__subtitle">등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.</p>
-          <form class="admin-modal__form" data-role="admin-login-form">
+          <p class="admin-modal__subtitle" data-role="admin-modal-subtitle">
+            등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.
+          </p>
+          <form class="admin-modal__form" data-role="admin-login-form" data-state="idle">
             <label class="admin-modal__label" for="adminEmail">관리자 이메일</label>
             <input
               id="adminEmail"
@@ -1092,9 +1273,22 @@ app.get('/', (c) => {
               data-role="admin-password"
               placeholder="비밀번호"
             />
-            <p class="admin-modal__helper" data-role="admin-login-message"></p>
+            <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite"></p>
             <button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>
           </form>
+          <div class="admin-modal__actions" data-role="admin-modal-actions" hidden>
+            <p class="admin-modal__note">
+              관리자 모드가 이미 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있습니다.
+            </p>
+            <div class="admin-modal__buttons">
+              <button class="btn btn--outline admin-modal__action" type="button" data-role="admin-modal-dashboard">
+                대시보드 열기
+              </button>
+              <button class="btn btn--ghost admin-modal__action" type="button" data-role="admin-modal-logout">
+                로그아웃
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1267,6 +1461,7 @@ app.get('/', (c) => {
             <header class="challenge-card__header">
               <h3>관리자 대시보드</h3>
               <p>명단 업로드부터 완주자 추출까지 통합으로 관리하세요.</p>
+              <span class="challenge-card__category" data-role="admin-category" hidden aria-live="polite">카테고리: 미치나</span>
             </header>
             <section class="challenge-card__section">
               <h4 class="challenge-card__section-title">참가자 명단 등록</h4>
@@ -1411,8 +1606,8 @@ app.get('/', (c) => {
       </div>
       <script type="application/json" data-role="app-config">
         {JSON.stringify({
-          googleClientId: c.env.GOOGLE_CLIENT_ID ?? '',
-          googleRedirectUri: c.env.GOOGLE_REDIRECT_URI ?? '',
+          googleClientId,
+          googleRedirectUri,
         })}
       </script>
     </main>

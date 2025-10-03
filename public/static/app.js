@@ -11,6 +11,66 @@ const CREDIT_COSTS = {
   analysis: 1,
 }
 const STAGE_FLOW = ['upload', 'refine', 'export']
+const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
+const GOOGLE_SIGNIN_TEXT = {
+  default: 'Google 계정으로 계속하기',
+  idle: 'Google 계정으로 계속하기',
+  initializing: 'Google 로그인 준비 중…',
+  loading: 'Google 계정을 확인하는 중…',
+  disabled: 'Google 로그인 구성 필요',
+  error: 'Google 로그인 다시 시도',
+  retrying: 'Google 로그인 자동 재시도 준비 중…',
+}
+
+const GOOGLE_MAX_AUTO_RETRY = 3
+const GOOGLE_BACKOFF_BASE_DELAY = 1500
+const GOOGLE_BACKOFF_MAX_DELAY = 30000
+const GOOGLE_BACKOFF_JITTER = 400
+
+const GOOGLE_RECOVERABLE_ERRORS = new Set([
+  'GOOGLE_SDK_TIMEOUT',
+  'GOOGLE_SDK_UNAVAILABLE',
+  'GOOGLE_SDK_LOAD_FAILED',
+  'GOOGLE_CODE_MISSING',
+  'GOOGLE_AUTH_REJECTED',
+  'GOOGLE_TOKEN_EXCHANGE_FAILED',
+  'GOOGLE_AUTH_UNEXPECTED_ERROR',
+  'interaction_required',
+])
+
+const GOOGLE_POPUP_DISMISSED_ERRORS = new Set([
+  'access_denied',
+  'popup_closed_by_user',
+  'popup_blocked_by_browser',
+])
+
+const GOOGLE_CONFIGURATION_ERRORS = new Set(['GOOGLE_CLIENT_ID_MISSING', 'GOOGLE_AUTH_NOT_CONFIGURED'])
+
+const GOOGLE_RETRY_REASON_HINTS = {
+  default: '일시적인 오류가 발생했습니다.',
+  recoverable_error: '일시적인 오류가 발생했습니다.',
+  GOOGLE_SDK_TIMEOUT: 'Google 로그인 응답이 지연되고 있습니다.',
+  GOOGLE_SDK_UNAVAILABLE: 'Google 로그인 서비스와 연결이 원활하지 않습니다.',
+  GOOGLE_SDK_LOAD_FAILED: 'Google 로그인 스크립트를 불러오는 중 문제가 발생했습니다.',
+  GOOGLE_CODE_MISSING: 'Google에서 인증 코드가 전달되지 않았습니다.',
+  GOOGLE_AUTH_REJECTED: 'Google 로그인 요청이 일시적으로 거절되었습니다.',
+  GOOGLE_TOKEN_EXCHANGE_FAILED: 'Google 인증 서버 응답이 지연되고 있습니다.',
+  GOOGLE_AUTH_UNEXPECTED_ERROR: 'Google 인증 서버에서 예기치 않은 응답을 받았습니다.',
+  interaction_required: 'Google 계정 선택이 필요한 상태입니다.',
+}
+
+function describeGoogleRetry(reason) {
+  if (!reason) {
+    return GOOGLE_RETRY_REASON_HINTS.default
+  }
+  return GOOGLE_RETRY_REASON_HINTS[reason] || GOOGLE_RETRY_REASON_HINTS.default
+}
+
+function announceGoogleRetry(delayMs, reason = 'recoverable_error') {
+  const seconds = Math.max(1, Math.ceil(delayMs / 1000))
+  const message = `${describeGoogleRetry(reason)} 약 ${seconds}초 후 자동으로 다시 시도합니다.`
+  setGoogleLoginHelper(message, 'info')
+}
 
 const state = {
   uploads: [],
@@ -54,8 +114,25 @@ const runtime = {
   google: {
     codeClient: null,
     deferred: null,
+    prefetchPromise: null,
+    retryCount: 0,
+    cooldownTimer: null,
+    cooldownUntil: 0,
+    cooldownAutoRetry: false,
+    retryTimer: null,
+    retryAt: 0,
+    nextRetryReason: '',
+    lastErrorHint: '',
+    lastErrorTone: 'muted',
+  },
+  admin: {
+    retryCount: 0,
+    cooldownTimer: null,
+    cooldownUntil: 0,
   },
 }
+
+let googleSdkPromise = null
 
 function hasUnlimitedAccess() {
   return state.admin.isLoggedIn || state.user.plan === 'michina'
@@ -113,6 +190,88 @@ function waitForGoogleSdk(timeout = 8000) {
   })
 }
 
+function loadGoogleSdk(timeout = 10000) {
+  if (window.google?.accounts?.oauth2) {
+    return Promise.resolve()
+  }
+
+  if (googleSdkPromise) {
+    return googleSdkPromise
+  }
+
+  googleSdkPromise = new Promise((resolve, reject) => {
+    let script = document.querySelector('script[data-role="google-sdk"]')
+    let settled = false
+    let timer = null
+
+    const cleanup = () => {
+      if (script) {
+        script.removeEventListener('load', handleLoad)
+        script.removeEventListener('error', handleError)
+      }
+      if (timer) {
+        window.clearTimeout(timer)
+      }
+    }
+
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) {
+        googleSdkPromise = null
+        reject(error)
+        return
+      }
+      resolve(true)
+    }
+
+    const handleLoad = () => {
+      if (script) {
+        script.setAttribute('data-loaded', 'true')
+      }
+      finish()
+    }
+
+    const handleError = () => {
+      if (script && script.parentNode) {
+        script.parentNode.removeChild(script)
+      }
+      finish(new Error('GOOGLE_SDK_LOAD_FAILED'))
+    }
+
+    if (!script) {
+      script = document.createElement('script')
+      script.src = GOOGLE_SDK_SRC
+      script.async = true
+      script.defer = true
+      script.dataset.role = 'google-sdk'
+      script.addEventListener('load', handleLoad, { once: true })
+      script.addEventListener('error', handleError, { once: true })
+      document.head.appendChild(script)
+    } else if (script.getAttribute('data-loaded') === 'true') {
+      finish()
+      return
+    } else {
+      script.addEventListener('load', handleLoad, { once: true })
+      script.addEventListener('error', handleError, { once: true })
+    }
+
+    timer = window.setTimeout(() => {
+      if (window.google?.accounts?.oauth2) {
+        handleLoad()
+        return
+      }
+      if (script && script.parentNode) {
+        script.parentNode.removeChild(script)
+      }
+      finish(new Error('GOOGLE_SDK_TIMEOUT'))
+    }, timeout)
+  })
+
+  return googleSdkPromise
+}
+
 function createDeferred() {
   let resolve
   let reject
@@ -134,9 +293,8 @@ async function ensureGoogleClient() {
     throw new Error('GOOGLE_CLIENT_ID_MISSING')
   }
 
-  await waitForGoogleSdk().catch((error) => {
-    throw error
-  })
+  await loadGoogleSdk()
+  await waitForGoogleSdk()
 
   const oauth2 = window.google?.accounts?.oauth2
   if (!oauth2 || typeof oauth2.initCodeClient !== 'function') {
@@ -170,6 +328,7 @@ async function ensureGoogleClient() {
         runtime.google.deferred = null
       },
     })
+    runtime.google.retryCount = 0
   }
 
   return runtime.google.codeClient
@@ -203,6 +362,11 @@ const elements = {
   adminEmailInput: document.querySelector('[data-role="admin-email"]'),
   adminPasswordInput: document.querySelector('[data-role="admin-password"]'),
   adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
+  adminModalSubtitle: document.querySelector('[data-role="admin-modal-subtitle"]'),
+  adminModalActions: document.querySelector('[data-role="admin-modal-actions"]'),
+  adminModalDashboardButton: document.querySelector('[data-role="admin-modal-dashboard"]'),
+  adminModalLogoutButton: document.querySelector('[data-role="admin-modal-logout"]'),
+  adminCategoryBadge: document.querySelector('[data-role="admin-category"]'),
   adminDashboard: document.querySelector('[data-role="admin-dashboard"]'),
   adminImportForm: document.querySelector('[data-role="admin-import-form"]'),
   adminImportFile: document.querySelector('[data-role="admin-import-file"]'),
@@ -214,6 +378,16 @@ const elements = {
   adminDownloadCompletion: document.querySelector('[data-role="admin-download-completion"]'),
   adminLogoutButton: document.querySelector('[data-role="admin-logout"]'),
   planBadge: document.querySelector('[data-role="plan-badge"]'),
+  planCards: document.querySelectorAll('[data-plan-card]'),
+  planPills: document.querySelectorAll('[data-plan-pill]'),
+  planCreditNotice: document.querySelector('[data-role="plan-credit-notice"]'),
+  planStatus: document.querySelector('[data-role="plan-status"]'),
+  planStatusCopy: document.querySelector('[data-role="plan-status-copy"]'),
+  planStatusPlan: document.querySelector('[data-role="plan-status-plan"]'),
+  planStatusBadge: document.querySelector('[data-role="plan-status-badge"]'),
+  planStatusRemaining: document.querySelector('[data-role="plan-status-remaining"]'),
+  planStatusDeadline: document.querySelector('[data-role="plan-status-deadline"]'),
+  planStatusProgress: document.querySelector('[data-role="plan-status-progress"]'),
   challengeSection: document.querySelector('[data-role="challenge-section"]'),
   challengeDashboard: document.querySelector('[data-role="challenge-dashboard"]'),
   challengeLocked: document.querySelector('[data-role="challenge-locked"]'),
@@ -232,6 +406,10 @@ const elements = {
   analysisSummary: document.querySelector('[data-role="analysis-summary"]'),
   analysisButton: document.querySelector('[data-action="analyze-current"]'),
   loginModal: document.querySelector('[data-role="login-modal"]'),
+  googleLoginButton: document.querySelector('[data-role="google-login-button"]'),
+  googleLoginText: document.querySelector('[data-role="google-login-text"]'),
+  googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
+  googleLoginHelper: document.querySelector('[data-role="google-login-helper"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
   loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
   loginEmailCodeInput: document.querySelector('[data-role="login-email-code"]'),
@@ -287,6 +465,286 @@ function setStatus(message, tone = 'info', duration = 3200) {
     statusTimer = window.setTimeout(() => {
       elements.status?.classList.add('status--hidden')
     }, duration)
+  }
+}
+
+function setGoogleButtonState(state = 'idle', labelOverride) {
+  const button = elements.googleLoginButton
+  if (!(button instanceof HTMLButtonElement)) {
+    return
+  }
+
+  const labelKey = typeof GOOGLE_SIGNIN_TEXT[state] === 'string' ? state : 'default'
+  const label =
+    typeof labelOverride === 'string' && labelOverride.trim().length > 0
+      ? labelOverride.trim()
+      : GOOGLE_SIGNIN_TEXT[labelKey] ?? GOOGLE_SIGNIN_TEXT.default
+
+  if (elements.googleLoginText instanceof HTMLElement) {
+    elements.googleLoginText.textContent = label
+  }
+
+  button.setAttribute('aria-label', label)
+
+  const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
+  const shouldDisable = isPending || state === 'disabled' || state === 'error'
+
+  button.disabled = shouldDisable
+  if (shouldDisable) {
+    button.setAttribute('aria-disabled', 'true')
+  } else {
+    button.removeAttribute('aria-disabled')
+  }
+  button.setAttribute('aria-busy', isPending ? 'true' : 'false')
+
+  if (isPending) {
+    button.dataset.loading = 'true'
+  } else if (button.dataset.loading) {
+    delete button.dataset.loading
+  }
+
+  if (state === 'disabled' || state === 'error' || state === 'retrying') {
+    button.dataset.state = state
+  } else if (button.dataset.state) {
+    delete button.dataset.state
+  }
+}
+
+function setGoogleLoginHelper(message = '', tone = 'muted') {
+  if (!(elements.googleLoginHelper instanceof HTMLElement)) {
+    return
+  }
+  const trimmed = typeof message === 'string' ? message.trim() : ''
+  elements.googleLoginHelper.textContent = trimmed
+  elements.googleLoginHelper.hidden = !trimmed
+  runtime.google.lastErrorHint = trimmed
+  if (!trimmed) {
+    delete elements.googleLoginHelper.dataset.tone
+    runtime.google.lastErrorTone = 'muted'
+    return
+  }
+  if (typeof tone === 'string' && tone !== 'muted') {
+    elements.googleLoginHelper.dataset.tone = tone
+    runtime.google.lastErrorTone =
+      tone === 'danger' || tone === 'warning' || tone === 'info' ? tone : 'muted'
+  } else {
+    delete elements.googleLoginHelper.dataset.tone
+    runtime.google.lastErrorTone = 'muted'
+  }
+}
+
+function updateGoogleProviderAvailability() {
+  if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
+    return
+  }
+
+  const now = Date.now()
+  if (runtime.google.cooldownUntil && now < runtime.google.cooldownUntil) {
+    const remaining = Math.max(0, runtime.google.cooldownUntil - now)
+    const seconds = Math.max(1, Math.ceil(remaining / 1000))
+    if (runtime.google.cooldownAutoRetry) {
+      setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
+      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
+    } else {
+      setGoogleButtonState('error', `${seconds}초 후 다시 시도`)
+    }
+    return
+  }
+
+  if (runtime.google.retryTimer && runtime.google.retryAt && now < runtime.google.retryAt) {
+    const remaining = Math.max(0, runtime.google.retryAt - now)
+    const seconds = Math.max(1, Math.ceil(remaining / 1000))
+    setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
+    announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
+    return
+  }
+
+  const config = getAppConfig()
+  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+  if (!clientId) {
+    setGoogleButtonState('disabled')
+    setGoogleLoginHelper('Google 로그인 구성이 필요합니다. 관리자에게 문의해주세요.', 'danger')
+    return
+  }
+  if (runtime.google.codeClient) {
+    setGoogleButtonState('idle')
+    return
+  }
+  if (runtime.google.prefetchPromise) {
+    setGoogleButtonState('initializing')
+    return
+  }
+  setGoogleButtonState('idle')
+}
+
+async function prefetchGoogleClient() {
+  const config = getAppConfig()
+  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+  if (!clientId) {
+    setGoogleButtonState('disabled')
+    return null
+  }
+  if (runtime.google.codeClient) {
+    setGoogleButtonState('idle')
+    return runtime.google.codeClient
+  }
+  if (runtime.google.prefetchPromise) {
+    return runtime.google.prefetchPromise
+  }
+
+  setGoogleButtonState('initializing')
+
+  runtime.google.prefetchPromise = ensureGoogleClient()
+    .then((client) => {
+      runtime.google.retryCount = 0
+      setGoogleButtonState('idle')
+      setGoogleLoginHelper('Google 로그인을 사용할 준비가 되었습니다.', 'info')
+      return client
+    })
+    .catch((error) => {
+      console.warn('Google client 초기화 실패', error)
+      if (error instanceof Error && error.message === 'GOOGLE_CLIENT_ID_MISSING') {
+        setGoogleButtonState('disabled')
+        setGoogleLoginHelper('Google 로그인 구성이 필요합니다. 관리자에게 문의해주세요.', 'danger')
+      } else {
+        setGoogleButtonState('error')
+        setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
+        window.setTimeout(() => {
+          updateGoogleProviderAvailability()
+        }, 2400)
+      }
+      return null
+    })
+    .finally(() => {
+      runtime.google.prefetchPromise = null
+    })
+
+  return runtime.google.prefetchPromise
+}
+
+function clearGoogleAutoRetry() {
+  if (runtime.google.retryTimer) {
+    window.clearTimeout(runtime.google.retryTimer)
+  }
+  runtime.google.retryTimer = null
+  runtime.google.retryAt = 0
+  runtime.google.nextRetryReason = ''
+}
+
+function clearGoogleCooldown() {
+  if (runtime.google.cooldownTimer) {
+    window.clearTimeout(runtime.google.cooldownTimer)
+  }
+  runtime.google.cooldownTimer = null
+  runtime.google.cooldownUntil = 0
+  runtime.google.cooldownAutoRetry = false
+  clearGoogleAutoRetry()
+  setGoogleLoginHelper('', 'muted')
+  updateGoogleProviderAvailability()
+}
+
+function startGoogleCooldown(durationMs, options = {}) {
+  if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
+    return
+  }
+  const { autoRetry = false } = options
+  const normalized = Math.max(1000, durationMs)
+  const target = Date.now() + normalized
+
+  const helperElement =
+    elements.googleLoginHelper instanceof HTMLElement ? elements.googleLoginHelper : null
+  const baseHelperMessage = helperElement ? (helperElement.textContent || '').trim() : ''
+  const fallbackTone =
+    runtime.google.lastErrorTone && runtime.google.lastErrorTone !== 'muted'
+      ? runtime.google.lastErrorTone
+      : autoRetry
+        ? 'info'
+        : 'warning'
+  const baseHelperTone =
+    helperElement && helperElement.dataset.tone && helperElement.dataset.tone !== 'muted'
+      ? helperElement.dataset.tone
+      : fallbackTone
+
+  if (runtime.google.cooldownTimer) {
+    window.clearTimeout(runtime.google.cooldownTimer)
+  }
+  if (!autoRetry) {
+    clearGoogleAutoRetry()
+  }
+
+  runtime.google.cooldownAutoRetry = autoRetry
+  runtime.google.cooldownUntil = target
+
+  const update = () => {
+    const remaining = Math.max(0, runtime.google.cooldownUntil - Date.now())
+    if (remaining <= 0) {
+      clearGoogleCooldown()
+      return
+    }
+    const seconds = Math.ceil(remaining / 1000)
+    const label = autoRetry ? `자동 재시도까지 ${seconds}초` : `${seconds}초 후 다시 시도`
+    setGoogleButtonState(autoRetry ? 'retrying' : 'error', label)
+    if (autoRetry) {
+      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
+    } else {
+      const hint =
+        baseHelperMessage || runtime.google.lastErrorHint || 'Google 로그인에 잠시 문제가 발생했습니다.'
+      setGoogleLoginHelper(`${hint} 약 ${seconds}초 후 다시 시도할 수 있습니다.`, baseHelperTone)
+    }
+    runtime.google.cooldownTimer = window.setTimeout(update, 1000)
+  }
+
+  update()
+}
+
+function calculateGoogleBackoffDelay(retryCount) {
+  const exponent = Math.max(0, retryCount - 1)
+  const baseDelay = GOOGLE_BACKOFF_BASE_DELAY * Math.pow(2, exponent)
+  const cappedDelay = Math.min(GOOGLE_BACKOFF_MAX_DELAY, baseDelay)
+  const jitter = Math.random() * GOOGLE_BACKOFF_JITTER
+  return Math.round(cappedDelay + jitter)
+}
+
+function scheduleGoogleAutoRetry(reason = 'recoverable_error') {
+  if (runtime.google.retryCount >= GOOGLE_MAX_AUTO_RETRY) {
+    return false
+  }
+  const delay = calculateGoogleBackoffDelay(runtime.google.retryCount || 1)
+  startGoogleCooldown(delay, { autoRetry: true })
+
+  if (runtime.google.retryTimer) {
+    window.clearTimeout(runtime.google.retryTimer)
+  }
+
+  runtime.google.retryAt = Date.now() + delay
+  runtime.google.nextRetryReason = reason
+  runtime.google.lastErrorHint = describeGoogleRetry(reason)
+  runtime.google.lastErrorTone = 'info'
+  runtime.google.retryTimer = window.setTimeout(() => {
+    runtime.google.retryTimer = null
+    runtime.google.retryAt = 0
+    runtime.google.nextRetryReason = ''
+    setGoogleLoginHelper('Google 로그인을 다시 시도합니다…', 'info')
+    runtime.google.lastErrorTone = 'info'
+    handleGoogleLogin(new Event('retry'))
+  }, delay)
+
+  const statusTone = reason === 'interaction_required' ? 'info' : 'warning'
+  setStatus(`${describeGoogleRetry(reason)} 자동으로 다시 시도합니다.`, statusTone)
+  announceGoogleRetry(delay, reason)
+  return true
+}
+
+function activateEmailFallback() {
+  encourageEmailFallback()
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    if (state.auth.step !== 'code') {
+      updateLoginFormState('idle')
+    }
+  }
+  setLoginHelper('Google 로그인에 문제가 발생했습니다. 이메일 인증으로 계속 진행해주세요.', 'warning')
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    window.requestAnimationFrame(() => elements.loginEmailInput.focus())
   }
 }
 
@@ -581,6 +1039,148 @@ function refreshAccessStates() {
   updateHeaderState()
   updateAccessGates()
   updateStageUI()
+  updatePlanExperience()
+}
+
+function getActivePlanKey() {
+  if (state.admin.isLoggedIn) return 'admin'
+  if (state.user.plan === 'michina') return 'michina'
+  if (state.user.isLoggedIn) return 'freemium'
+  return 'public'
+}
+
+function updatePlanExperience() {
+  const currentPlan = getActivePlanKey()
+  const profile = state.challenge.profile
+
+  const planCards = Array.from(elements.planCards ?? [])
+  planCards.forEach((card) => {
+    if (!(card instanceof HTMLElement)) return
+    const planKey = card.dataset.planCard
+    let shouldHighlight = false
+    if (currentPlan === 'michina') {
+      shouldHighlight = planKey === 'michina'
+    } else if (currentPlan === 'admin') {
+      shouldHighlight = planKey === 'michina'
+    } else {
+      shouldHighlight = planKey === 'freemium'
+    }
+    card.classList.toggle('is-active', Boolean(shouldHighlight))
+  })
+
+  const planPills = Array.from(elements.planPills ?? [])
+  planPills.forEach((pill) => {
+    if (!(pill instanceof HTMLElement)) return
+    const planKey = pill.dataset.planPill
+    let visible = false
+    let label = '현재 이용 중'
+    if (currentPlan === 'michina' && planKey === 'michina') {
+      visible = true
+    } else if (currentPlan === 'admin' && planKey === 'michina') {
+      visible = true
+      label = '관리자 모드'
+    } else if (currentPlan === 'freemium' && planKey === 'freemium') {
+      visible = state.user.isLoggedIn
+    } else if (currentPlan === 'public' && planKey === 'freemium') {
+      visible = false
+    }
+    pill.textContent = label
+    pill.hidden = !visible
+  })
+
+  if (elements.planCreditNotice instanceof HTMLElement) {
+    switch (currentPlan) {
+      case 'admin':
+        elements.planCreditNotice.innerHTML =
+          '<strong>관리자:</strong> 테스트를 위한 무제한 크레딧이 제공됩니다. 모든 기능을 자유롭게 확인하세요.'
+        break
+      case 'michina':
+        elements.planCreditNotice.innerHTML =
+          '<strong>미치나 플랜:</strong> 챌린지 기간 동안 모든 편집 기능과 수료증 발급이 무제한으로 제공됩니다.'
+        break
+      case 'freemium':
+        elements.planCreditNotice.innerHTML =
+          '<strong>Freemium 사용자:</strong> 로그인 시 지급된 무료 30 크레딧으로 기능을 체험할 수 있습니다.'
+        break
+      default:
+        elements.planCreditNotice.innerHTML =
+          '<strong>게스트:</strong> Google 로그인으로 무료 30 크레딧을 받고 이미지를 바로 편집해 보세요.'
+        break
+    }
+  }
+
+  if (elements.planStatus instanceof HTMLElement) {
+    if (currentPlan === 'michina') {
+      elements.planStatus.hidden = false
+      elements.planStatus.dataset.state = profile?.completed ? 'completed' : profile ? 'active' : 'pending'
+      if (elements.planStatusPlan instanceof HTMLElement) {
+        elements.planStatusPlan.textContent = '미치나 챌린지'
+      }
+      if (profile) {
+        const required = Number(profile.required ?? 15)
+        const total = Number(profile.totalSubmissions ?? Object.keys(profile.submissions ?? {}).length)
+        const remaining = Math.max(0, required - total)
+        const percent = required > 0 ? Math.min(100, Math.round((total / required) * 100)) : 0
+        const deadline = formatDateLabel(profile.endDate)
+        if (elements.planStatusCopy instanceof HTMLElement) {
+          elements.planStatusCopy.textContent = profile.completed
+            ? `${profile.name ?? profile.email} 님, 챌린지를 완주하셨습니다!`
+            : `${profile.name ?? profile.email} 님, ${remaining}회 제출이 남았습니다.`
+        }
+        if (elements.planStatusBadge instanceof HTMLElement) {
+          elements.planStatusBadge.textContent = profile.completed ? '완주' : remaining === 0 ? '검토 중' : '진행 중'
+        }
+        if (elements.planStatusRemaining instanceof HTMLElement) {
+          elements.planStatusRemaining.textContent = `${remaining}회`
+        }
+        if (elements.planStatusDeadline instanceof HTMLElement) {
+          elements.planStatusDeadline.textContent = deadline || '-'
+        }
+        if (elements.planStatusProgress instanceof HTMLElement) {
+          elements.planStatusProgress.textContent = `${total}/${required}회 (${percent}%)`
+        }
+      } else {
+        if (elements.planStatusCopy instanceof HTMLElement) {
+          elements.planStatusCopy.textContent = '챌린지 참가자 정보를 불러오는 중입니다. 관리자에게 문의해 주세요.'
+        }
+        if (elements.planStatusBadge instanceof HTMLElement) {
+          elements.planStatusBadge.textContent = '대기'
+        }
+        if (elements.planStatusRemaining instanceof HTMLElement) {
+          elements.planStatusRemaining.textContent = '-'
+        }
+        if (elements.planStatusDeadline instanceof HTMLElement) {
+          elements.planStatusDeadline.textContent = '-'
+        }
+        if (elements.planStatusProgress instanceof HTMLElement) {
+          elements.planStatusProgress.textContent = '-'
+        }
+      }
+    } else if (currentPlan === 'admin') {
+      elements.planStatus.hidden = false
+      elements.planStatus.dataset.state = 'admin'
+      if (elements.planStatusPlan instanceof HTMLElement) {
+        elements.planStatusPlan.textContent = '관리자 테스트 모드'
+      }
+      if (elements.planStatusCopy instanceof HTMLElement) {
+        elements.planStatusCopy.textContent = '모든 편집 기능을 크레딧 제한 없이 검증할 수 있습니다.'
+      }
+      if (elements.planStatusBadge instanceof HTMLElement) {
+        elements.planStatusBadge.textContent = '무제한'
+      }
+      if (elements.planStatusRemaining instanceof HTMLElement) {
+        elements.planStatusRemaining.textContent = '무제한'
+      }
+      if (elements.planStatusDeadline instanceof HTMLElement) {
+        elements.planStatusDeadline.textContent = '-'
+      }
+      if (elements.planStatusProgress instanceof HTMLElement) {
+        elements.planStatusProgress.textContent = '전체 기능 오픈'
+      }
+    } else {
+      elements.planStatus.hidden = true
+    }
+  }
 }
 
 function ensureActionAllowed(action, options = {}) {
@@ -665,7 +1265,55 @@ async function handleLogout() {
   renderChallengeDashboard()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
   resetLoginFlow()
+  clearAdminCooldown()
   updateAdminUI()
+}
+
+function clearAdminCooldown(restoreForm = true) {
+  if (runtime.admin.cooldownTimer) {
+    window.clearTimeout(runtime.admin.cooldownTimer)
+  }
+  runtime.admin.cooldownTimer = null
+  runtime.admin.cooldownUntil = 0
+  if (!restoreForm) {
+    return
+  }
+  if (elements.adminLoginForm instanceof HTMLFormElement && elements.adminLoginForm.dataset.state === 'cooldown') {
+    elements.adminLoginForm.dataset.state = 'idle'
+  }
+  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm?.querySelector('button[type="submit"]')]
+  controls.forEach((control) => {
+    if (control instanceof HTMLElement) {
+      control.removeAttribute('disabled')
+    }
+  })
+}
+
+function startAdminCooldown(durationMs = 15000) {
+  if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
+  const normalized = Math.max(3000, durationMs)
+  clearAdminCooldown(false)
+  const end = Date.now() + normalized
+  runtime.admin.cooldownUntil = end
+  elements.adminLoginForm.dataset.state = 'cooldown'
+  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm.querySelector('button[type="submit"]')]
+  controls.forEach((control) => {
+    if (control instanceof HTMLElement) {
+      control.setAttribute('disabled', 'true')
+    }
+  })
+  const update = () => {
+    const remaining = Math.max(0, runtime.admin.cooldownUntil - Date.now())
+    if (remaining <= 0) {
+      clearAdminCooldown()
+      setAdminMessage('다시 시도할 수 있습니다. 정확한 관리자 자격을 입력해주세요.', 'info')
+      return
+    }
+    const seconds = Math.max(1, Math.ceil(remaining / 1000))
+    setAdminMessage(`보안 보호를 위해 ${seconds}초 뒤에 다시 시도할 수 있습니다.`, 'warning')
+    runtime.admin.cooldownTimer = window.setTimeout(update, 1000)
+  }
+  update()
 }
 
 function setAdminMessage(message = '', tone = 'info') {
@@ -677,30 +1325,46 @@ function setAdminMessage(message = '', tone = 'info') {
 
 function openAdminModal() {
   if (!(elements.adminModal instanceof HTMLElement)) return
-  if (state.admin.isLoggedIn) {
-    if (elements.adminDashboard instanceof HTMLElement) {
-      elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const isAdmin = state.admin.isLoggedIn
+
+  if (isAdmin) {
+    setAdminMessage('', 'info')
+    setStatus('관리자 모드가 활성화되어 있습니다. 필요한 작업을 선택하세요.', 'info')
+  } else {
+    setAdminMessage('등록된 관리자만 접근할 수 있습니다.', 'muted')
+    if (elements.adminLoginForm instanceof HTMLFormElement) {
+      elements.adminLoginForm.dataset.state = 'idle'
+      elements.adminLoginForm.reset()
     }
-    setStatus('이미 관리자 모드가 활성화되어 있습니다.', 'info')
-    return
+    if (elements.adminPasswordInput instanceof HTMLInputElement) {
+      elements.adminPasswordInput.value = ''
+    }
+    if (elements.adminEmailInput instanceof HTMLInputElement) {
+      elements.adminEmailInput.value = state.admin.email || ''
+    }
   }
-  setAdminMessage('등록된 관리자만 접근할 수 있습니다.', 'muted')
-  if (elements.adminLoginForm instanceof HTMLFormElement) {
-    elements.adminLoginForm.dataset.state = 'idle'
-    elements.adminLoginForm.reset()
-  }
-  if (elements.adminPasswordInput instanceof HTMLInputElement) {
-    elements.adminPasswordInput.value = ''
-  }
-  if (elements.adminEmailInput instanceof HTMLInputElement && state.admin.email) {
-    elements.adminEmailInput.value = state.admin.email
-  }
+
+  updateAdminModalState()
+
   elements.adminModal.classList.add('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'false')
   document.body.classList.add('is-modal-open')
-  if (elements.adminEmailInput instanceof HTMLInputElement) {
-    window.requestAnimationFrame(() => elements.adminEmailInput.focus())
-  }
+
+  window.requestAnimationFrame(() => {
+    if (isAdmin) {
+      if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
+        elements.adminModalDashboardButton.focus()
+        return
+      }
+      if (elements.adminModalLogoutButton instanceof HTMLButtonElement) {
+        elements.adminModalLogoutButton.focus()
+        return
+      }
+    }
+    if (elements.adminEmailInput instanceof HTMLInputElement) {
+      elements.adminEmailInput.focus()
+    }
+  })
 }
 
 function closeAdminModal() {
@@ -807,10 +1471,35 @@ function renderAdminParticipants() {
   elements.adminParticipantsBody.innerHTML = rows
 }
 
+function updateAdminModalState() {
+  const isAdmin = state.admin.isLoggedIn
+
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.hidden = isAdmin
+  }
+
+  if (elements.adminModalActions instanceof HTMLElement) {
+    elements.adminModalActions.hidden = !isAdmin
+  }
+
+  if (elements.adminModalSubtitle instanceof HTMLElement) {
+    elements.adminModalSubtitle.textContent = isAdmin
+      ? '관리자 모드가 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있어요.'
+      : '등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.'
+  }
+}
+
 function updateAdminUI() {
   const isAdmin = state.admin.isLoggedIn
+  updateAdminModalState()
   if (elements.adminDashboard instanceof HTMLElement) {
     elements.adminDashboard.hidden = !isAdmin
+  }
+  if (elements.adminCategoryBadge instanceof HTMLElement) {
+    elements.adminCategoryBadge.hidden = !isAdmin
+    if (isAdmin) {
+      elements.adminCategoryBadge.textContent = '카테고리: 미치나'
+    }
   }
   if (elements.adminLoginButton instanceof HTMLButtonElement) {
     elements.adminLoginButton.textContent = isAdmin ? '관리자 패널' : '관리자'
@@ -937,12 +1626,21 @@ async function handleAdminLogin(event) {
   if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
   if (elements.adminLoginForm.dataset.state === 'loading') return
 
+  if (runtime.admin.cooldownUntil && Date.now() < runtime.admin.cooldownUntil) {
+    const seconds = Math.max(1, Math.ceil((runtime.admin.cooldownUntil - Date.now()) / 1000))
+    setAdminMessage(`보안 보호를 위해 ${seconds}초 뒤에 다시 시도할 수 있습니다.`, 'warning')
+    return
+  }
+
+  clearAdminCooldown()
+
   const email = elements.adminEmailInput instanceof HTMLInputElement ? elements.adminEmailInput.value.trim().toLowerCase() : ''
   const password = elements.adminPasswordInput instanceof HTMLInputElement ? elements.adminPasswordInput.value : ''
 
   if (!isValidEmail(email)) {
     setAdminMessage('유효한 관리자 이메일을 입력해주세요.', 'danger')
     if (elements.adminEmailInput instanceof HTMLInputElement) {
+      elements.adminEmailInput.setAttribute('aria-invalid', 'true')
       elements.adminEmailInput.focus()
     }
     return
@@ -950,13 +1648,26 @@ async function handleAdminLogin(event) {
   if (!password) {
     setAdminMessage('비밀번호를 입력해주세요.', 'danger')
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
+      elements.adminPasswordInput.setAttribute('aria-invalid', 'true')
       elements.adminPasswordInput.focus()
     }
     return
   }
 
+  if (elements.adminEmailInput instanceof HTMLInputElement) {
+    elements.adminEmailInput.removeAttribute('aria-invalid')
+  }
+  if (elements.adminPasswordInput instanceof HTMLInputElement) {
+    elements.adminPasswordInput.removeAttribute('aria-invalid')
+  }
+
   elements.adminLoginForm.dataset.state = 'loading'
   setAdminMessage('관리자 자격을 확인하는 중입니다…', 'info')
+
+  const submitButton = elements.adminLoginForm.querySelector('button[type="submit"]')
+  if (submitButton instanceof HTMLButtonElement) {
+    submitButton.disabled = true
+  }
 
   try {
     const response = await fetch('/api/auth/admin/login', {
@@ -968,15 +1679,37 @@ async function handleAdminLogin(event) {
     if (!response.ok) {
       if (response.status === 401) {
         setAdminMessage('관리자 인증에 실패했습니다. 이메일 또는 비밀번호를 확인하세요.', 'danger')
+        if (elements.adminEmailInput instanceof HTMLInputElement) {
+          elements.adminEmailInput.setAttribute('aria-invalid', 'true')
+        }
+        if (elements.adminPasswordInput instanceof HTMLInputElement) {
+          elements.adminPasswordInput.setAttribute('aria-invalid', 'true')
+          elements.adminPasswordInput.value = ''
+          elements.adminPasswordInput.focus()
+        }
+        runtime.admin.retryCount += 1
+        if (runtime.admin.retryCount >= 3) {
+          startAdminCooldown(20000)
+          runtime.admin.retryCount = 0
+        }
       } else if (response.status === 500) {
         setAdminMessage('관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.', 'danger')
+        startAdminCooldown(12000)
+        runtime.admin.retryCount = 0
       } else {
         setAdminMessage(`관리자 로그인 중 오류(${response.status})가 발생했습니다.`, 'danger')
+        runtime.admin.retryCount += 1
+        if (runtime.admin.retryCount >= 2) {
+          startAdminCooldown(12000)
+          runtime.admin.retryCount = 0
+        }
       }
       return
     }
     const payload = await response.json().catch(() => ({}))
     const sessionEmail = typeof payload?.email === 'string' ? payload.email : email
+    runtime.admin.retryCount = 0
+    clearAdminCooldown()
     state.admin.isLoggedIn = true
     state.admin.email = sessionEmail
     applyLoginProfile({ name: '관리자', email: sessionEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
@@ -987,13 +1720,32 @@ async function handleAdminLogin(event) {
     updateAdminUI()
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
       elements.adminPasswordInput.value = ''
+      elements.adminPasswordInput.removeAttribute('aria-invalid')
+    }
+    if (elements.adminEmailInput instanceof HTMLInputElement) {
+      elements.adminEmailInput.removeAttribute('aria-invalid')
     }
   } catch (error) {
     console.error('관리자 로그인 중 오류', error)
     setAdminMessage('네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    runtime.admin.retryCount += 1
+    if (runtime.admin.retryCount >= 2) {
+      startAdminCooldown(10000)
+      runtime.admin.retryCount = 0
+    }
   } finally {
-    if (elements.adminLoginForm instanceof HTMLFormElement) {
+    if (elements.adminLoginForm instanceof HTMLFormElement && elements.adminLoginForm.dataset.state !== 'cooldown') {
       elements.adminLoginForm.dataset.state = 'idle'
+      const submit = elements.adminLoginForm.querySelector('button[type="submit"]')
+      if (submit instanceof HTMLButtonElement) {
+        submit.disabled = false
+      }
+      const controls = [elements.adminEmailInput, elements.adminPasswordInput]
+      controls.forEach((control) => {
+        if (control instanceof HTMLElement) {
+          control.removeAttribute('disabled')
+        }
+      })
     }
   }
 }
@@ -1406,6 +2158,7 @@ function renderChallengeDashboard() {
   renderChallengeDays(profile)
   updateChallengeSubmitState(profile)
   renderCertificateSection(profile)
+  updatePlanExperience()
 }
 
 async function syncChallengeProfile(explicitEmail) {
@@ -1609,6 +2362,15 @@ function setLoginHelper(message) {
   }
 }
 
+function encourageEmailFallback() {
+  if (state.auth.step !== 'idle') return
+  if (!(elements.loginEmailHelper instanceof HTMLElement)) return
+  const current = (elements.loginEmailHelper.textContent || '').trim()
+  if (!current || current.includes('이메일 주소를 입력') || current.includes('팝업')) {
+    setLoginHelper('팝업이 차단되면 아래 이메일 로그인으로 계속 진행할 수 있습니다.')
+  }
+}
+
 function updateLoginFormState(step) {
   state.auth.step = step
   if (elements.loginEmailForm instanceof HTMLFormElement) {
@@ -1660,6 +2422,9 @@ function resetLoginFlow() {
     elements.loginEmailResend.disabled = true
   }
   setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+  clearGoogleCooldown()
+  runtime.google.retryCount = 0
+  updateGoogleProviderAvailability()
 }
 
 function generateVerificationCode() {
@@ -1754,6 +2519,9 @@ function openLoginModal() {
   elements.loginModal.classList.add('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'false')
   document.body.classList.add('is-modal-open')
+  prefetchGoogleClient().catch((error) => {
+    console.warn('Google 로그인 초기화 중 오류', error)
+  })
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     window.requestAnimationFrame(() => elements.loginEmailInput.focus())
   }
@@ -1772,17 +2540,46 @@ async function handleGoogleLogin(event) {
     event.preventDefault()
   }
 
-  const button = event?.currentTarget instanceof HTMLButtonElement ? event.currentTarget : null
+  const isAutoRetry = event instanceof Event && event.type === 'retry'
 
-  if (button) {
-    button.disabled = true
-    button.setAttribute('data-loading', 'true')
+  const config = getAppConfig()
+  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+  if (!clientId) {
+    setStatus('Google 로그인 설정이 아직 완료되지 않았습니다. 관리자에게 문의해주세요.', 'danger')
+    setGoogleButtonState('disabled')
+    return
   }
 
+  if (runtime.google.cooldownUntil && Date.now() < runtime.google.cooldownUntil) {
+    const remaining = Math.max(0, runtime.google.cooldownUntil - Date.now())
+    const seconds = Math.max(1, Math.ceil(remaining / 1000))
+    setStatus(`보안 보호를 위해 ${seconds}초 후 다시 시도해주세요.`, 'warning')
+    updateGoogleProviderAvailability()
+    return
+  }
+
+  let disableDueToConfig = false
+
   try {
-    setStatus('Google 로그인 준비 중입니다…', 'info', 0)
+    clearGoogleCooldown()
+    const loadingLabel = isAutoRetry ? 'Google 로그인을 다시 시도하는 중…' : undefined
+    if (isAutoRetry) {
+      setGoogleButtonState('loading', loadingLabel)
+      setStatus('Google 로그인을 자동으로 다시 시도하는 중입니다…', 'info', 0)
+      setGoogleLoginHelper('자동 재시도를 시작합니다. 잠시만 기다려주세요.', 'info')
+    } else {
+      const initialState = runtime.google.codeClient ? 'loading' : 'initializing'
+      setGoogleButtonState(initialState, loadingLabel)
+      setStatus('Google 로그인 준비 중입니다…', 'info', 0)
+    }
 
     const codeClient = await ensureGoogleClient()
+    if (!codeClient) {
+      throw new Error('GOOGLE_SDK_UNAVAILABLE')
+    }
+
+    setGoogleButtonState('loading', loadingLabel)
+
     const deferred = createDeferred()
     runtime.google.deferred = deferred
 
@@ -1838,6 +2635,12 @@ async function handleGoogleLogin(event) {
         : email || 'Google 사용자'
 
     applyLoginProfile({ name: displayName, email: email || undefined, plan: 'freemium' })
+    runtime.google.retryCount = 0
+    clearGoogleCooldown()
+    runtime.google.lastErrorHint = ''
+    runtime.google.lastErrorTone = 'muted'
+    setGoogleLoginHelper('Google 계정으로 로그인되었습니다.', 'success')
+    window.setTimeout(() => setGoogleLoginHelper('', 'muted'), 3200)
     closeLoginModal()
     setStatus(
       `${displayName} Google 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`,
@@ -1847,14 +2650,18 @@ async function handleGoogleLogin(event) {
     if (email) {
       await syncChallengeProfile(email)
     }
+
+    setGoogleButtonState('idle')
   } catch (error) {
     console.error('Google 로그인 중 오류', error)
     let message = 'Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.'
+    const errorCode = error instanceof Error && error.message ? error.message : ''
 
     if (error instanceof Error) {
       switch (error.message) {
         case 'GOOGLE_CLIENT_ID_MISSING':
           message = 'Google 로그인 설정이 아직 완료되지 않았습니다. 관리자에게 문의해주세요.'
+          disableDueToConfig = true
           break
         case 'GOOGLE_EMAIL_NOT_VERIFIED':
           message = 'Google 계정 이메일 인증이 필요합니다. Google 계정에서 이메일 인증을 완료한 뒤 다시 시도해주세요.'
@@ -1864,6 +2671,7 @@ async function handleGoogleLogin(event) {
           break
         case 'GOOGLE_SDK_TIMEOUT':
         case 'GOOGLE_SDK_UNAVAILABLE':
+        case 'GOOGLE_SDK_LOAD_FAILED':
           message = 'Google 로그인 스크립트를 불러오지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도해주세요.'
           break
         case 'GOOGLE_CODE_MISSING':
@@ -1882,6 +2690,12 @@ async function handleGoogleLogin(event) {
         case 'popup_closed_by_user':
           message = 'Google 로그인 창이 닫혔습니다. 다시 시도해주세요.'
           break
+        case 'popup_blocked_by_browser':
+          message = '브라우저가 팝업을 차단했습니다. 팝업을 허용하거나 아래 이메일 로그인을 이용해주세요.'
+          break
+        case 'interaction_required':
+          message = 'Google 계정 선택이 필요합니다. 다시 시도하여 계정을 선택해주세요.'
+          break
         default:
           if (error.message && error.message.startsWith('clientId')) {
             message = 'Google 로그인 구성이 올바르지 않습니다. 관리자에게 문의해주세요.'
@@ -1890,12 +2704,76 @@ async function handleGoogleLogin(event) {
       }
     }
 
-    setStatus(message, 'danger')
+    if (GOOGLE_CONFIGURATION_ERRORS.has(errorCode)) {
+      disableDueToConfig = true
+    }
+
+    const isPopupDismissed = GOOGLE_POPUP_DISMISSED_ERRORS.has(errorCode)
+    const isRecoverable = GOOGLE_RECOVERABLE_ERRORS.has(errorCode)
+
+    if (isRecoverable && !disableDueToConfig) {
+      message = `${describeGoogleRetry(errorCode || 'recoverable_error')} 자동으로 다시 시도합니다.`
+    }
+
+    let helperMessage = ''
+    let helperTone = 'danger'
+    if (disableDueToConfig) {
+      helperMessage = 'Google 로그인 구성이 필요합니다. 관리자에게 문의해주세요.'
+    } else if (isPopupDismissed) {
+      helperMessage = 'Google 로그인 창이 닫혔습니다. 버튼을 다시 눌러 진행해주세요.'
+      helperTone = 'warning'
+    } else if (!isRecoverable) {
+      helperMessage = message
+    }
+
+    if (helperMessage) {
+      setGoogleLoginHelper(helperMessage, helperTone)
+      runtime.google.lastErrorHint = helperMessage
+      runtime.google.lastErrorTone = helperTone
+    } else {
+      const fallbackReason = errorCode || 'recoverable_error'
+      runtime.google.lastErrorHint = describeGoogleRetry(fallbackReason)
+      runtime.google.lastErrorTone =
+        fallbackReason === 'interaction_required' ? 'info' : isRecoverable ? 'warning' : 'danger'
+    }
+
+    const statusTone = disableDueToConfig ? 'danger' : isPopupDismissed ? 'warning' : isRecoverable ? 'info' : 'danger'
+    setStatus(message, statusTone)
+
+    if (!disableDueToConfig) {
+      if (isRecoverable && !isPopupDismissed) {
+        runtime.google.retryCount += 1
+        const scheduled = scheduleGoogleAutoRetry(errorCode || 'recoverable_error')
+        if (!scheduled) {
+          const cooldown = Math.min(15000, 2000 * runtime.google.retryCount)
+          startGoogleCooldown(cooldown)
+        }
+      } else if (!isPopupDismissed) {
+        runtime.google.retryCount = Math.min(runtime.google.retryCount + 1, 5)
+        const fallbackCooldown = Math.min(10000, 2000 * runtime.google.retryCount)
+        startGoogleCooldown(fallbackCooldown)
+      }
+
+      if (runtime.google.retryCount >= 3 && state.auth.step === 'idle') {
+        activateEmailFallback()
+      }
+    }
+
+    if (disableDueToConfig) {
+      setGoogleButtonState('disabled')
+    } else if (runtime.google.cooldownUntil && Date.now() < runtime.google.cooldownUntil) {
+      // countdown handler controls button state
+    } else if (isPopupDismissed) {
+      setGoogleButtonState('idle')
+    } else if (runtime.google.retryTimer) {
+      setGoogleButtonState('retrying', 'Google 로그인 자동 재시도 준비 중…')
+    } else {
+      setGoogleButtonState('error')
+    }
   } finally {
     runtime.google.deferred = null
-    if (button) {
-      button.disabled = false
-      button.removeAttribute('data-loading')
+    if (!disableDueToConfig && (!runtime.google.cooldownUntil || Date.now() >= runtime.google.cooldownUntil)) {
+      updateGoogleProviderAvailability()
     }
   }
 }
@@ -4281,14 +5159,23 @@ function attachEventListeners() {
 
   if (elements.adminLoginButton instanceof HTMLButtonElement) {
     elements.adminLoginButton.addEventListener('click', () => {
-      if (state.admin.isLoggedIn) {
-        if (elements.adminDashboard instanceof HTMLElement) {
-          elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }
-        setStatus('관리자 대시보드를 확인할 수 있습니다.', 'info')
-      } else {
-        openAdminModal()
+      openAdminModal()
+    })
+  }
+
+  if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
+    elements.adminModalDashboardButton.addEventListener('click', () => {
+      closeAdminModal()
+      if (elements.adminDashboard instanceof HTMLElement) {
+        elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
+    })
+  }
+
+  if (elements.adminModalLogoutButton instanceof HTMLButtonElement) {
+    elements.adminModalLogoutButton.addEventListener('click', () => {
+      closeAdminModal()
+      handleLogout()
     })
   }
 
@@ -4323,9 +5210,22 @@ function attachEventListeners() {
     loginBackdrop.addEventListener('click', closeLoginModal)
   }
 
-  const googleLoginButton = document.querySelector('[data-action="login-google"]')
-  if (googleLoginButton instanceof HTMLButtonElement) {
-    googleLoginButton.addEventListener('click', handleGoogleLogin)
+  if (elements.googleLoginButton instanceof HTMLButtonElement) {
+    elements.googleLoginButton.addEventListener('click', handleGoogleLogin)
+    elements.googleLoginButton.addEventListener('pointerenter', () => {
+      if (!runtime.google.codeClient && !runtime.google.prefetchPromise) {
+        prefetchGoogleClient().catch((error) => {
+          console.warn('Google client prefetch 중 오류', error)
+        })
+      }
+    })
+    elements.googleLoginButton.addEventListener('focus', () => {
+      if (!runtime.google.codeClient && !runtime.google.prefetchPromise) {
+        prefetchGoogleClient().catch((error) => {
+          console.warn('Google client prefetch 중 오류', error)
+        })
+      }
+    })
   }
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
@@ -4468,6 +5368,7 @@ function init() {
   updateAdminUI()
   initCookieBanner()
   resetLoginFlow()
+  prefetchGoogleClient()
   renderUploads()
   renderResults()
   displayAnalysisFor(null)
