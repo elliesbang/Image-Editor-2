@@ -13,7 +13,7 @@
   - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
   - 고정 윈도우 + 추가 쿨다운 기반 레이트 리밋(`ADMIN_RATE_LIMIT_*`) 및 `Retry-After`/`X-RateLimit-*` 헤더 제공
-  - 관리자 로그인/세션 복원 시 자동 페이지 전환 없이 상태 배너에서 ‘대시보드 이동’·‘새 탭에서 열기’ CTA를 즉시 제공하고, 내비게이션 버튼 하이라이트와 안내 패널(현재 페이지 이동/새 탭 열기)을 동시에 노출해 대시보드 위치를 즉시 안내
+  - 관리자 로그인/세션 복원 시 자동 페이지 전환 없이 상태 배너에서 ‘대시보드 이동’·‘새 탭에서 열기’ CTA를 즉시 제공하고, 내비게이션 버튼 하이라이트와 안내 패널(현재 페이지 이동/새 탭 열기)을 동시에 노출해 대시보드 위치를 즉시 안내(상태 배너 문안: “관리자 로그인 완료! 대시보드를 현재 페이지에서 열거나 새 탭으로 띄울 수 있습니다.”)
   - `/api/auth/admin/login/logout/session` REST API, 실패 시 지연 응답 및 429 처리
 - **미치나 플랜 3주 챌린지 관리**
   - 관리자: CSV/수동 입력으로 참가자 명단 업로드, D+15 영업일 자동 만료일, 진행률 대시보드, 완주 판별 실행, 완주자 CSV 추출, 참가자 데이터 백업/스냅샷 API
@@ -139,7 +139,7 @@ curl http://localhost:3000/api/health
 
 ## 테스트/검증 로그
 - 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 자동 재시도 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋, 상태 배너 CTA 템플릿)
-- 2025-10-04 관리자 로그인 직후 상태 배너 CTA(대시보드 이동/새 탭 열기)·내비 하이라이트·안내 패널 연동 검증(세션 동기화 포함, 자동 이동 제거, 8초 지속·`status--interactive` 적용)
+- 2025-10-04 관리자 로그인 직후 상태 배너 CTA(“관리자 로그인 완료! ...”)·내비 하이라이트·안내 패널 연동 검증(세션 동기화 포함, 자동 이동 제거, 8초 지속·`status--interactive` 적용)
 - `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
 - 관리자 로그인 플로우: 잘못된 해시 입력 시 401 + 지연 응답, 3회 초과 시 429 + `Retry-After`, 성공 시 세션 쿠키(`admin_session`) 발급·만료 8h
 - Google OAuth 코드 플로우: 팝업 거절/네트워크 오류 시 자동 재시도 메시지 노출, 검증 실패 시 명확한 에러 코드(`GOOGLE_EMAIL_NOT_VERIFIED` 등) 반환
@@ -205,4 +205,4 @@ curl http://localhost:3000/api/health
 ## 라이선스 & 고지
 - 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
 
-_Last updated: 2025-10-04 (관리자 대시보드 즉시 접근 배너 CTA(대시보드 이동/새 탭)·네비 하이라이트 · OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지)_
+_Last updated: 2025-10-04 (관리자 로그인 자동 이동 제거 + 배너 CTA 복수 선택 안내(대시보드 이동/새 탭)·네비 하이라이트 · OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지)_
