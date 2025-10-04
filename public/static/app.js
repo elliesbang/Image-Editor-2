@@ -146,6 +146,9 @@ const runtime = {
 }
 
 let googleSdkPromise = null
+let hasAnnouncedAdminNav = false
+let adminNavHighlightTimer = null
+let hasShownAdminDashboardPrompt = false
 
 function hasUnlimitedAccess() {
   return state.admin.isLoggedIn
@@ -369,6 +372,7 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  adminNavButton: document.querySelector('[data-role="admin-nav"]'),
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
   adminModal: document.querySelector('[data-role="admin-modal"]'),
   adminLoginForm: document.querySelector('[data-role="admin-login-form"]'),
@@ -460,17 +464,56 @@ function baseName(filename) {
 }
 
 function setStatus(message, tone = 'info', duration = 3200) {
-  if (!elements.status) return
+  if (!(elements.status instanceof HTMLElement)) return
+
+  let content = ''
+  let useHtml = false
+  let resolvedTone = tone
+  let resolvedDuration = duration
+  let isInteractive = false
+
+  if (message && typeof message === 'object' && !Array.isArray(message)) {
+    if (typeof message.html === 'string') {
+      content = message.html
+      useHtml = true
+    } else if (typeof message.text === 'string') {
+      content = message.text
+    } else if (typeof message.message === 'string') {
+      content = message.message
+    }
+    if (typeof message.tone === 'string') {
+      resolvedTone = message.tone
+    }
+    if (typeof message.duration === 'number') {
+      resolvedDuration = message.duration
+    }
+    if (typeof message.interactive === 'boolean') {
+      isInteractive = message.interactive
+    }
+  } else if (typeof message === 'string') {
+    content = message
+  }
 
   window.clearTimeout(statusTimer)
-  elements.status.textContent = message
-  elements.status.dataset.tone = tone
+  elements.status.classList.remove('status--interactive')
+
+  if (useHtml) {
+    elements.status.innerHTML = content
+  } else {
+    elements.status.textContent = content
+  }
+
+  if (isInteractive) {
+    elements.status.classList.add('status--interactive')
+  }
+
+  elements.status.dataset.tone = resolvedTone
   elements.status.classList.remove('status--hidden')
 
-  if (duration > 0) {
+  if (resolvedDuration > 0) {
     statusTimer = window.setTimeout(() => {
       elements.status?.classList.add('status--hidden')
-    }, duration)
+    }, resolvedDuration)
   }
 }
 
@@ -1172,6 +1215,9 @@ function handleNavigationClick(targetView) {
     return
   }
   if (canAccessView(view)) {
+    if (view === 'admin') {
+      clearAdminNavHighlight()
+    }
     setView(view)
     return
   }
@@ -1215,6 +1261,96 @@ function updateNavigationAccess() {
   } else {
     setView(state.view, { force: true, bypassAccess: runtime.allowViewBypass })
   }
+}
+
+function clearAdminNavHighlight() {
+  if (adminNavHighlightTimer) {
+    window.clearTimeout(adminNavHighlightTimer)
+    adminNavHighlightTimer = null
+  }
+  if (elements.adminNavButton instanceof HTMLButtonElement) {
+    elements.adminNavButton.classList.remove('nav-button--highlight')
+  }
+}
+
+function highlightAdminNavButton(duration = 12000) {
+  if (!(elements.adminNavButton instanceof HTMLButtonElement)) {
+    return
+  }
+  clearAdminNavHighlight()
+  elements.adminNavButton.classList.add('nav-button--highlight')
+  adminNavHighlightTimer = window.setTimeout(() => {
+    if (elements.adminNavButton instanceof HTMLButtonElement) {
+      elements.adminNavButton.classList.remove('nav-button--highlight')
+    }
+    adminNavHighlightTimer = null
+  }, Math.max(1000, duration))
+}
+
+function showAdminDashboardShortcut(options = {}) {
+  if (!(elements.status instanceof HTMLElement)) {
+    return
+  }
+  const { force = false } = options
+  if (hasShownAdminDashboardPrompt && !force) {
+    highlightAdminNavButton()
+    return
+  }
+
+  hasShownAdminDashboardPrompt = true
+
+  const existingActions = elements.status.querySelector('[data-role="status-actions"]')
+  if (existingActions instanceof HTMLElement) {
+    existingActions.remove()
+  }
+
+  const actions = document.createElement('span')
+  actions.className = 'status__actions'
+  actions.dataset.role = 'status-actions'
+
+  const openButton = document.createElement('button')
+  openButton.type = 'button'
+  openButton.className = 'status__link status__link--primary'
+  openButton.textContent = '대시보드 바로가기'
+  openButton.addEventListener('click', () => {
+    closeAdminModal()
+    setView('admin')
+    if (elements.adminDashboard instanceof HTMLElement) {
+      elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    if (elements.adminNavButton instanceof HTMLButtonElement) {
+      elements.adminNavButton.focus()
+    }
+    dismissAdminDashboardPrompt()
+    clearAdminNavHighlight()
+  })
+  actions.appendChild(openButton)
+
+  let adminUrl = '/?view=admin'
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.set('view', 'admin')
+    url.hash = ''
+    adminUrl = url.toString()
+  } catch (error) {
+    // ignore URL parse errors
+  }
+
+  const newTabLink = document.createElement('a')
+  newTabLink.href = adminUrl
+  newTabLink.target = '_blank'
+  newTabLink.rel = 'noopener noreferrer'
+  newTabLink.className = 'status__link status__link--ghost'
+  newTabLink.textContent = '새 탭에서 열기'
+  newTabLink.addEventListener('click', () => {
+    dismissAdminDashboardPrompt()
+    clearAdminNavHighlight()
+  })
+  actions.appendChild(newTabLink)
+
+  elements.status.appendChild(actions)
+  elements.status.classList.add('status--interactive')
+  highlightAdminNavButton()
 }
 
 function getActivePlanKey() {
@@ -1324,6 +1460,9 @@ async function handleLogout() {
   state.user.totalUsed = 0
   state.challenge.profile = null
   state.challenge.certificate = null
+  hasShownAdminDashboardPrompt = false
+  dismissAdminDashboardPrompt()
+  clearAdminNavHighlight()
   setView('home', { force: true })
   refreshAccessStates()
   renderChallengeDashboard()
@@ -1451,6 +1590,9 @@ function revokeAdminSessionState() {
     state.user.credits = 0
     state.user.totalUsed = 0
   }
+  hasShownAdminDashboardPrompt = false
+  dismissAdminDashboardPrompt()
+  clearAdminNavHighlight()
   if (wasAdmin) {
     refreshAccessStates()
     updateAdminUI()
@@ -1475,8 +1617,11 @@ async function syncAdminSession() {
       state.admin.email = email
       applyLoginProfile({ name: '관리자', email, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
       updateAdminUI()
+      if (runtime.initialView === 'admin') {
+        setView('admin', { force: true })
+      }
       await fetchAdminParticipants()
-      setStatus('관리자 모드가 활성화되어 있습니다.', 'success')
+      announceAdminDashboardAccess()
     } else {
       revokeAdminSessionState()
     }
@@ -1562,6 +1707,9 @@ function updateAdminModalState() {
 
 function updateAdminUI() {
   const isAdmin = state.admin.isLoggedIn
+  if (!isAdmin) {
+    clearAdminNavHighlight()
+  }
   updateAdminModalState()
   if (elements.adminDashboard instanceof HTMLElement) {
     elements.adminDashboard.hidden = !isAdmin
@@ -1573,8 +1721,27 @@ function updateAdminUI() {
     }
   }
   if (elements.adminLoginButton instanceof HTMLButtonElement) {
-    elements.adminLoginButton.textContent = isAdmin ? '관리자 패널' : '관리자'
+    elements.adminLoginButton.textContent = isAdmin ? '관리자 패널' : '관리자 전용'
     elements.adminLoginButton.dataset.mode = isAdmin ? 'panel' : 'login'
+  }
+  if (elements.adminNavButton instanceof HTMLButtonElement) {
+    elements.adminNavButton.hidden = !isAdmin
+    elements.adminNavButton.disabled = !isAdmin
+    if (isAdmin) {
+      elements.adminNavButton.removeAttribute('aria-disabled')
+    } else {
+      elements.adminNavButton.setAttribute('aria-disabled', 'true')
+    }
+  }
+  if (isAdmin && !hasAnnouncedAdminNav) {
+    hasAnnouncedAdminNav = true
+    window.setTimeout(() => {
+      if (elements.adminNavButton instanceof HTMLButtonElement && document.body.contains(elements.adminNavButton)) {
+        elements.adminNavButton.focus()
+      }
+    }, 150)
+  } else if (!isAdmin && hasAnnouncedAdminNav) {
+    hasAnnouncedAdminNav = false
   }
   if (elements.adminRunCompletionButton instanceof HTMLButtonElement) {
     elements.adminRunCompletionButton.disabled = !isAdmin
@@ -1593,6 +1760,129 @@ function updateAdminUI() {
   }
   renderAdminParticipants()
 }
+
+function getOrCreateAdminDashboardPrompt() {
+  let prompt = document.querySelector('[data-role="admin-dashboard-prompt"]')
+  if (!(prompt instanceof HTMLElement)) {
+    prompt = document.createElement('div')
+    prompt.dataset.role = 'admin-dashboard-prompt'
+    prompt.className = 'admin-dashboard-prompt'
+    prompt.innerHTML = `
+      <div class="admin-dashboard-prompt__body" role="alert" aria-live="assertive">
+        <strong class="admin-dashboard-prompt__title">관리자 대시보드 안내</strong>
+        <p class="admin-dashboard-prompt__description">
+          관리자 대시보드는 상단 내비게이션의 <span class="admin-dashboard-prompt__highlight">관리자 대시보드</span> 섹션에서 확인할 수 있습니다.
+        </p>
+        <div class="admin-dashboard-prompt__actions">
+          <button type="button" class="admin-dashboard-prompt__action" data-action="open-admin-dashboard" data-open-target="self">
+            현재 페이지에서 이동
+          </button>
+          <button type="button" class="admin-dashboard-prompt__action admin-dashboard-prompt__action--secondary" data-action="open-admin-dashboard" data-open-target="new">
+            새 탭에서 열기
+          </button>
+        </div>
+        <button type="button" class="admin-dashboard-prompt__close" data-action="dismiss-admin-dashboard-prompt" aria-label="안내 닫기">
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+    `
+    prompt.hidden = true
+    document.body.appendChild(prompt)
+  }
+  return prompt
+}
+
+function announceAdminDashboardAccess(options = {}) {
+  if (!state.admin.isLoggedIn) {
+    return
+  }
+  if (hasShownAdminDashboardPrompt && !options.force) {
+    return
+  }
+
+  const prompt = getOrCreateAdminDashboardPrompt()
+  prompt.hidden = false
+  window.requestAnimationFrame(() => {
+    prompt.classList.add('is-visible')
+  })
+
+  const primaryAction = prompt.querySelector('[data-open-target="self"]')
+  if (primaryAction instanceof HTMLElement) {
+    window.requestAnimationFrame(() => {
+      primaryAction.focus()
+    })
+  }
+
+  const duration = Number.isFinite(options.duration) ? options.duration : 8000
+  const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
+  setStatus({
+    html: `
+      <span><strong>관리자 로그인 완료!</strong> 대시보드에서 참가자 관리와 챌린지 현황을 확인하세요.</span>
+      <div class="status__actions" role="group" aria-label="관리자 대시보드 바로가기">
+        <button type="button" class="status__link status__link--primary" data-action="open-admin-dashboard" data-open-target="self">
+          대시보드 이동
+        </button>
+        <a href="${dashboardUrl}" class="status__link status__link--ghost" data-action="open-admin-dashboard" data-open-target="new" target="_blank" rel="noopener">
+          새 탭에서 열기
+        </a>
+      </div>
+    `,
+    tone: options.tone || 'success',
+    duration,
+    interactive: true,
+  })
+
+  showAdminDashboardShortcut({ force: Boolean(options.force) })
+
+  hasShownAdminDashboardPrompt = true
+}
+
+function dismissAdminDashboardPrompt() {
+  const prompt = document.querySelector('[data-role="admin-dashboard-prompt"]')
+  if (!(prompt instanceof HTMLElement)) {
+    return
+  }
+  prompt.classList.remove('is-visible')
+  window.setTimeout(() => {
+    prompt.hidden = true
+  }, 220)
+}
+
+document.addEventListener('click', (event) => {
+  const origin = event.target instanceof HTMLElement ? event.target.closest('[data-action]') : null
+  if (!(origin instanceof HTMLElement)) {
+    return
+  }
+  const action = origin.dataset.action
+  if (action === 'open-admin-dashboard') {
+    event.preventDefault()
+    const openTarget = origin.dataset.openTarget || 'self'
+    const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
+    if (openTarget === 'new') {
+      window.open(dashboardUrl, '_blank', 'noopener')
+    } else {
+      setView('admin', { force: true })
+      if (elements.adminDashboard instanceof HTMLElement) {
+        elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }
+    dismissAdminDashboardPrompt()
+    clearAdminNavHighlight()
+  } else if (action === 'dismiss-admin-dashboard-prompt') {
+    event.preventDefault()
+    dismissAdminDashboardPrompt()
+  }
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') {
+    return
+  }
+  const prompt = document.querySelector('[data-role="admin-dashboard-prompt"]')
+  if (prompt instanceof HTMLElement && prompt.classList.contains('is-visible')) {
+    dismissAdminDashboardPrompt()
+  }
+})
 
 function parseManualParticipants(input) {
   if (typeof input !== 'string' || !input.trim()) return []
@@ -1798,10 +2088,13 @@ async function handleAdminLogin(event) {
     applyLoginProfile({ name: '관리자', email: sessionEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
     refreshAccessStates()
     closeAdminModal()
-    setStatus('관리자 모드가 활성화되었습니다. 모든 기능을 무제한으로 테스트할 수 있습니다.', 'success')
+    announceAdminDashboardAccess({ force: true })
     await fetchAdminParticipants()
     updateAdminUI()
     setView('admin')
+    if (elements.adminDashboard instanceof HTMLElement) {
+      elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
       elements.adminPasswordInput.value = ''
       elements.adminPasswordInput.removeAttribute('aria-invalid')
@@ -4903,7 +5196,13 @@ async function processResize(upload, targetWidth, previousOperations = []) {
   }
 }
 
-function appendResult(upload, result) {
+function findLatestResultForSource(sourceId) {
+  if (!sourceId) return null
+  return state.results.find((result) => result.sourceId === sourceId) || null
+}
+
+function appendResult(upload, result, options = {}) {
+  const { transferSelection = true, selectResult = true } = options
   const objectUrl = URL.createObjectURL(result.blob)
   const record = {
     id: uuid(),
@@ -4917,8 +5216,22 @@ function appendResult(upload, result) {
     operations: result.operations,
     createdAt: Date.now(),
   }
+
+  let shouldRefreshUploads = false
+  if (transferSelection && upload && upload.id && state.selectedUploads.has(upload.id)) {
+    state.selectedUploads.delete(upload.id)
+    shouldRefreshUploads = true
+  }
+
+  if (selectResult && record.id) {
+    state.selectedResults.add(record.id)
+  }
+
   state.results.unshift(record)
   renderResults()
+  if (shouldRefreshUploads) {
+    renderUploads()
+  }
   updateResultActionAvailability()
   updateOperationAvailability()
   recomputeStage()
@@ -5013,6 +5326,7 @@ async function runOperation(operation) {
     if (operation === 'resize') {
       const targets = []
       const blockedUploadIds = new Set()
+      const targetedResultIds = new Set()
 
       for (const resultId of resultIds) {
         const relatedResult = state.results.find((item) => item.id === resultId)
@@ -5026,11 +5340,22 @@ async function runOperation(operation) {
           continue
         }
         const upload = state.uploads.find((item) => item.id === uploadId)
-        if (upload) targets.push({ type: 'upload', payload: upload })
+        if (!upload) continue
+        const latestResult = findLatestResultForSource(upload.id)
+        if (latestResult && !targetedResultIds.has(latestResult.id)) {
+          targets.push({ type: 'result', payload: latestResult })
+          targetedResultIds.add(latestResult.id)
+        } else if (!latestResult) {
+          targets.push({ type: 'upload', payload: upload })
+        }
       }
       for (const resultId of resultIds) {
+        if (targetedResultIds.has(resultId)) continue
         const result = state.results.find((item) => item.id === resultId)
-        if (result) targets.push({ type: 'result', payload: result })
+        if (result) {
+          targets.push({ type: 'result', payload: result })
+          targetedResultIds.add(result.id)
+        }
       }
 
       for (const target of targets) {
@@ -5328,7 +5653,17 @@ function attachEventListeners() {
 
   if (elements.adminLoginButton instanceof HTMLButtonElement) {
     elements.adminLoginButton.addEventListener('click', () => {
-      openAdminModal()
+      if (state.admin.isLoggedIn) {
+        setView('admin')
+        if (elements.adminDashboard instanceof HTMLElement) {
+          elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+        if (elements.adminNavButton instanceof HTMLButtonElement) {
+          elements.adminNavButton.focus()
+        }
+      } else {
+        openAdminModal()
+      }
     })
   }
 
@@ -5539,12 +5874,30 @@ function attachEventListeners() {
 function init() {
   const config = getAppConfig()
   const allowedViews = new Set(['home', 'community', 'admin'])
-  const initialView =
-    typeof config.initialView === 'string' && allowedViews.has(config.initialView) ? config.initialView : 'home'
+  const normalizeView = (value) => {
+    if (typeof value !== 'string') return ''
+    const trimmed = value.trim().toLowerCase()
+    return allowedViews.has(trimmed) ? trimmed : ''
+  }
+
+  let requestedView = ''
+  try {
+    const url = new URL(window.location.href)
+    requestedView = normalizeView(url.searchParams.get('view'))
+    if (!requestedView && url.hash) {
+      requestedView = normalizeView(url.hash.replace('#', ''))
+    }
+  } catch (error) {
+    requestedView = ''
+  }
+
+  const configInitial = normalizeView(config.initialView)
+  const initialView = requestedView || configInitial || 'home'
 
   runtime.config = config
   runtime.initialView = initialView
-  runtime.allowViewBypass = initialView !== 'home'
+  const allowBypass = initialView !== 'home' && initialView !== 'admin'
+  runtime.allowViewBypass = allowBypass
   state.view = initialView
 
   if (elements.communityLink instanceof HTMLAnchorElement) {

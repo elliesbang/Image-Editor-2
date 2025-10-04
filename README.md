@@ -13,6 +13,7 @@
   - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
   - 고정 윈도우 + 추가 쿨다운 기반 레이트 리밋(`ADMIN_RATE_LIMIT_*`) 및 `Retry-After`/`X-RateLimit-*` 헤더 제공
+  - 관리자 로그인/세션 복원 시 상태 배너에서 ‘대시보드 이동’·‘새 탭에서 열기’ CTA를 즉시 제공하고, 내비게이션 버튼 하이라이트와 안내 패널(현재 페이지 이동/새 탭 열기)을 동시에 노출해 대시보드 위치를 즉시 안내
   - `/api/auth/admin/login/logout/session` REST API, 실패 시 지연 응답 및 429 처리
 - **미치나 플랜 3주 챌린지 관리**
   - 관리자: CSV/수동 입력으로 참가자 명단 업로드, D+15 영업일 자동 만료일, 진행률 대시보드, 완주 판별 실행, 완주자 CSV 추출, 참가자 데이터 백업/스냅샷 API
@@ -137,7 +138,8 @@ curl http://localhost:3000/api/health
 - 비밀번호 해시 생성 예시: `echo -n 'test1234!' | shasum -a 256 | awk '{print tolower($1)}'`
 
 ## 테스트/검증 로그
-- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 자동 재시도 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋)
+- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 자동 재시도 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋, 상태 배너 CTA 템플릿)
+- 2025-10-04 관리자 로그인 직후 상태 배너 CTA(대시보드 이동/새 탭 열기)·내비 하이라이트·안내 패널 연동 검증(세션 동기화 포함, 8초 지속·`status--interactive` 적용)
 - `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
 - 관리자 로그인 플로우: 잘못된 해시 입력 시 401 + 지연 응답, 3회 초과 시 429 + `Retry-After`, 성공 시 세션 쿠키(`admin_session`) 발급·만료 8h
 - Google OAuth 코드 플로우: 팝업 거절/네트워크 오류 시 자동 재시도 메시지 노출, 검증 실패 시 명확한 에러 코드(`GOOGLE_EMAIL_NOT_VERIFIED` 등) 반환
@@ -191,7 +193,7 @@ curl http://localhost:3000/api/health
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 Google 계정 선택(자동 재시도 지원) 또는 이메일 OTP 인증 → 무료 크레딧 충전 후 편집 진행
-- **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
+- **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
 - **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
 - **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
 
@@ -203,4 +205,4 @@ curl http://localhost:3000/api/health
 ## 라이선스 & 고지
 - 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
 
-_Last updated: 2025-10-04 (OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지 · Google 로그인 자동 재시도 UX)_
+_Last updated: 2025-10-04 (관리자 대시보드 즉시 접근 배너 CTA(대시보드 이동/새 탭)·네비 하이라이트 · OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지)_
