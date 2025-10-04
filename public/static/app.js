@@ -67,10 +67,18 @@ function describeGoogleRetry(reason) {
   return GOOGLE_RETRY_REASON_HINTS[reason] || GOOGLE_RETRY_REASON_HINTS.default
 }
 
-function announceGoogleRetry(delayMs, reason = 'recoverable_error') {
+function announceGoogleRetry(delayMs, reason = 'recoverable_error', attemptNumber) {
   const seconds = Math.max(1, Math.ceil(delayMs / 1000))
-  const message = `${describeGoogleRetry(reason)} 약 ${seconds}초 후 자동으로 다시 시도합니다.`
-  setGoogleLoginHelper(message, 'info')
+  const resolvedAttempt =
+    typeof attemptNumber === 'number' && attemptNumber > 1
+      ? attemptNumber
+      : runtime.google.nextRetryAttempt && runtime.google.nextRetryAttempt > 1
+        ? runtime.google.nextRetryAttempt
+        : 0
+  const attemptMessage =
+    resolvedAttempt > 1 ? `${resolvedAttempt}번째 자동 재시도를 진행합니다.` : '자동으로 다시 시도합니다.'
+  const message = `${describeGoogleRetry(reason)} 약 ${seconds}초 후 ${attemptMessage}`
+  setGoogleLoginHelper(`${message}`, 'info')
 }
 
 const state = {
@@ -126,6 +134,7 @@ const runtime = {
     retryTimer: null,
     retryAt: 0,
     nextRetryReason: '',
+    nextRetryAttempt: 0,
     lastErrorHint: '',
     lastErrorTone: 'muted',
   },
@@ -626,6 +635,7 @@ function clearGoogleAutoRetry() {
   runtime.google.retryTimer = null
   runtime.google.retryAt = 0
   runtime.google.nextRetryReason = ''
+  runtime.google.nextRetryAttempt = 0
 }
 
 function clearGoogleCooldown() {
@@ -644,9 +654,17 @@ function startGoogleCooldown(durationMs, options = {}) {
   if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
     return
   }
-  const { autoRetry = false } = options
+  const { autoRetry = false, attemptNumber } = options
   const normalized = Math.max(1000, durationMs)
   const target = Date.now() + normalized
+  const upcomingAttempt =
+    typeof attemptNumber === 'number' && attemptNumber > 0
+      ? attemptNumber
+      : runtime.google.nextRetryAttempt || runtime.google.retryCount + 1
+
+  if (autoRetry && upcomingAttempt > 0) {
+    runtime.google.nextRetryAttempt = upcomingAttempt
+  }
 
   const helperElement =
     elements.googleLoginHelper instanceof HTMLElement ? elements.googleLoginHelper : null
@@ -679,10 +697,13 @@ function startGoogleCooldown(durationMs, options = {}) {
       return
     }
     const seconds = Math.ceil(remaining / 1000)
-    const label = autoRetry ? `자동 재시도까지 ${seconds}초` : `${seconds}초 후 다시 시도`
+    const attemptLabel = autoRetry && upcomingAttempt > 1 ? ` (다음 시도 ${upcomingAttempt}번째)` : ''
+    const label = autoRetry
+      ? `자동 재시도까지 ${seconds}초${attemptLabel}`
+      : `${seconds}초 후 다시 시도`
     setGoogleButtonState(autoRetry ? 'retrying' : 'error', label)
     if (autoRetry) {
-      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
+      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error', upcomingAttempt)
     } else {
       const hint =
         baseHelperMessage || runtime.google.lastErrorHint || 'Google 로그인에 잠시 문제가 발생했습니다.'
@@ -703,11 +724,14 @@ function calculateGoogleBackoffDelay(retryCount) {
 }
 
 function scheduleGoogleAutoRetry(reason = 'recoverable_error') {
-  if (runtime.google.retryCount >= GOOGLE_MAX_AUTO_RETRY) {
+  if (runtime.google.retryCount > GOOGLE_MAX_AUTO_RETRY) {
     return false
   }
+
+  const upcomingAttempt = Math.max(2, runtime.google.retryCount + 1)
   const delay = calculateGoogleBackoffDelay(runtime.google.retryCount || 1)
-  startGoogleCooldown(delay, { autoRetry: true })
+  runtime.google.nextRetryAttempt = upcomingAttempt
+  startGoogleCooldown(delay, { autoRetry: true, attemptNumber: upcomingAttempt })
 
   if (runtime.google.retryTimer) {
     window.clearTimeout(runtime.google.retryTimer)
@@ -721,13 +745,18 @@ function scheduleGoogleAutoRetry(reason = 'recoverable_error') {
     runtime.google.retryTimer = null
     runtime.google.retryAt = 0
     runtime.google.nextRetryReason = ''
-    setGoogleLoginHelper('Google 로그인을 다시 시도합니다…', 'info')
+    runtime.google.nextRetryAttempt = upcomingAttempt
+    setGoogleLoginHelper(`Google 로그인 ${upcomingAttempt}번째 자동 재시도를 시작합니다…`, 'info')
     runtime.google.lastErrorTone = 'info'
     handleGoogleLogin(new Event('retry'))
   }, delay)
 
-  setStatus('Google 로그인이 잠시 지연되고 있습니다. 자동 재시도를 진행합니다.', 'info', 3600)
-  announceGoogleRetry(delay, reason)
+  setStatus(
+    `Google 로그인 ${upcomingAttempt}번째 자동 재시도를 준비하고 있습니다.`,
+    'info',
+    3600,
+  )
+  announceGoogleRetry(delay, reason, upcomingAttempt)
   return true
 }
 
@@ -3405,8 +3434,41 @@ async function canvasFromDataUrl(dataUrl) {
   const canvas = createCanvas(image.naturalWidth || image.width, image.naturalHeight || image.height)
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) throw new Error('캔버스를 초기화할 수 없습니다.')
+  const previousComposite = ctx.globalCompositeOperation
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.globalCompositeOperation = 'copy'
   ctx.drawImage(image, 0, 0)
+  ctx.globalCompositeOperation = previousComposite
   return { canvas, ctx }
+}
+
+async function canvasFromBlob(blob) {
+  if (!(blob instanceof Blob)) {
+    throw new Error('유효한 이미지 Blob이 필요합니다.')
+  }
+  if (typeof createImageBitmap !== 'function') {
+    const dataUrl = await blobToDataUrl(blob)
+    if (typeof dataUrl !== 'string') {
+      throw new Error('이미지 Blob을 로드할 수 없습니다.')
+    }
+    return canvasFromDataUrl(dataUrl)
+  }
+  const bitmap = await createImageBitmap(blob)
+  try {
+    const canvas = createCanvas(bitmap.width || 1, bitmap.height || 1)
+    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
+    if (!ctx) throw new Error('캔버스를 초기화할 수 없습니다.')
+    const previousComposite = ctx.globalCompositeOperation
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.globalCompositeOperation = 'copy'
+    ctx.drawImage(bitmap, 0, 0)
+    ctx.globalCompositeOperation = previousComposite
+    return { canvas, ctx }
+  } finally {
+    if (typeof bitmap.close === 'function') {
+      bitmap.close()
+    }
+  }
 }
 
 function sampleBackgroundColor(imageData, width, height) {
@@ -3777,7 +3839,11 @@ function resizeCanvas(canvas, width) {
   if (!ctx) throw new Error('리사이즈 캔버스를 초기화할 수 없습니다.')
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
+  const previousComposite = ctx.globalCompositeOperation
+  ctx.clearRect(0, 0, resized.width, resized.height)
+  ctx.globalCompositeOperation = 'copy'
   ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, width, height)
+  ctx.globalCompositeOperation = previousComposite
   return { canvas: resized, ctx }
 }
 
@@ -4759,35 +4825,66 @@ async function processDenoise(upload) {
 }
 
 async function processResize(upload, targetWidth, previousOperations = []) {
-  let source = typeof upload.dataUrl === 'string' && upload.dataUrl ? upload.dataUrl : null
-
-  if (!source && typeof upload.objectUrl === 'string' && upload.objectUrl) {
-    source = upload.objectUrl
-  }
-
-  if (!source && upload.blob instanceof Blob) {
-    const fromBlob = await blobToDataUrl(upload.blob)
-    if (typeof fromBlob === 'string') {
-      source = fromBlob
-    }
-  }
-
-  if (!source) {
-    throw new Error('리사이즈할 이미지 데이터를 찾지 못했습니다.')
-  }
-
-  const normalizedSource = await ensureDataUrl(source)
-  const { canvas } = await canvasFromDataUrl(normalizedSource)
   const normalizedWidth = Math.max(1, Math.round(targetWidth))
   const history = Array.isArray(previousOperations) ? [...previousOperations] : []
 
-  let workingCanvas = canvas
+  const sources = []
+  if (upload && upload.blob instanceof Blob) {
+    sources.push({ type: 'blob', value: upload.blob })
+  }
+  if (typeof upload?.dataUrl === 'string' && upload.dataUrl) {
+    sources.push({ type: 'url', value: upload.dataUrl })
+  }
+  if (
+    typeof upload?.objectUrl === 'string' &&
+    upload.objectUrl &&
+    (!upload?.dataUrl || upload.objectUrl !== upload.dataUrl)
+  ) {
+    sources.push({ type: 'url', value: upload.objectUrl })
+  }
+
+  let baseCanvas = null
+  let lastError = null
+
+  for (const source of sources) {
+    try {
+      if (source.type === 'blob') {
+        ;({ canvas: baseCanvas } = await canvasFromBlob(source.value))
+      } else {
+        const raw = source.value
+        if (raw.startsWith('data:')) {
+          ;({ canvas: baseCanvas } = await canvasFromDataUrl(raw))
+        } else if (raw.startsWith('blob:')) {
+          const response = await fetch(raw)
+          if (!response.ok) {
+            throw new Error('리사이즈할 이미지를 불러오지 못했습니다.')
+          }
+          const blob = await response.blob()
+          ;({ canvas: baseCanvas } = await canvasFromBlob(blob))
+        } else {
+          const normalized = await ensureDataUrl(raw)
+          ;({ canvas: baseCanvas } = await canvasFromDataUrl(normalized))
+        }
+      }
+      if (baseCanvas) {
+        break
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+    }
+  }
+
+  if (!baseCanvas) {
+    throw lastError || new Error('리사이즈할 이미지 데이터를 찾지 못했습니다.')
+  }
+
+  let workingCanvas = baseCanvas
   let operationLabel = '리사이즈'
 
-  if (normalizedWidth !== canvas.width) {
-    const { canvas: resizedCanvas } = resizeCanvas(canvas, normalizedWidth)
+  if (normalizedWidth !== baseCanvas.width) {
+    const { canvas: resizedCanvas } = resizeCanvas(baseCanvas, normalizedWidth)
     workingCanvas = resizedCanvas
-    operationLabel = normalizedWidth > canvas.width ? '리사이즈(확대)' : '리사이즈(축소)'
+    operationLabel = normalizedWidth > baseCanvas.width ? '리사이즈(확대)' : '리사이즈(축소)'
   } else {
     operationLabel = '리사이즈(동일 너비)'
   }
@@ -4913,7 +5010,19 @@ async function runOperation(operation) {
   try {
     if (operation === 'resize') {
       const targets = []
+      const blockedUploadIds = new Set()
+
+      for (const resultId of resultIds) {
+        const relatedResult = state.results.find((item) => item.id === resultId)
+        if (relatedResult?.sourceId) {
+          blockedUploadIds.add(relatedResult.sourceId)
+        }
+      }
+
       for (const uploadId of uploadIds) {
+        if (blockedUploadIds.has(uploadId)) {
+          continue
+        }
         const upload = state.uploads.find((item) => item.id === uploadId)
         if (upload) targets.push({ type: 'upload', payload: upload })
       }

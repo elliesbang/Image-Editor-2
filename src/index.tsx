@@ -51,10 +51,10 @@ type AdminSessionPayload = {
   sub: string
   role: 'admin'
   exp: number
-  iss?: string
-  aud?: string
-  ver?: string
-  iat?: number
+  iss: string
+  aud: string
+  ver: string
+  iat: number
 }
 
 type AdminConfig = {
@@ -70,9 +70,16 @@ type AdminRateLimitConfig = {
   cooldownSeconds: number
 }
 
+type AdminConfigValidationResult = {
+  config: AdminConfig | null
+  issues: string[]
+}
+
 type RateLimitRecord = {
   count: number
-  resetAt: number
+  windowStart: number
+  windowEnd: number
+  blockedUntil?: number
 }
 
 type RateLimitStatus = {
@@ -132,20 +139,65 @@ function parsePositiveInteger(value: string | undefined, fallback: number, min =
   return Math.min(Math.max(parsed, min), max)
 }
 
-function getAdminConfig(env: Bindings): AdminConfig | null {
-  const email = env.ADMIN_EMAIL?.trim().toLowerCase()
-  const passwordHash = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase()
-  const sessionSecret = env.SESSION_SECRET?.trim()
-  if (!email || !passwordHash || !sessionSecret) {
-    return null
-  }
-  const sessionVersion = (env.ADMIN_SESSION_VERSION?.trim() || '1').toString()
+function getFixedWindowBoundaries(now: number, windowSeconds: number) {
+  const normalizedWindowSeconds = Math.max(1, Math.floor(windowSeconds))
+  const windowMs = normalizedWindowSeconds * 1000
+  const windowStart = Math.floor(now / windowMs) * windowMs
   return {
-    email,
-    passwordHash,
-    sessionSecret,
-    sessionVersion,
+    windowStart,
+    windowEnd: windowStart + windowMs,
   }
+}
+
+function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
+  const issues: string[] = []
+
+  const emailRaw = env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
+  if (!emailRaw) {
+    issues.push('ADMIN_EMAIL is not configured')
+  } else if (!isValidEmail(emailRaw)) {
+    issues.push('ADMIN_EMAIL must be a valid email address')
+  }
+
+  const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
+  if (!passwordHashRaw) {
+    issues.push('ADMIN_PASSWORD_HASH is not configured')
+  } else if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
+    issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
+  }
+
+  const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
+  if (!sessionSecretRaw) {
+    issues.push('SESSION_SECRET is not configured')
+  } else if (sessionSecretRaw.length < 32) {
+    issues.push('SESSION_SECRET must be at least 32 characters')
+  }
+
+  const sessionVersionRaw = env.ADMIN_SESSION_VERSION?.trim() ?? '1'
+  if (!sessionVersionRaw) {
+    issues.push('ADMIN_SESSION_VERSION must not be empty')
+  } else if (sessionVersionRaw.length > 32) {
+    issues.push('ADMIN_SESSION_VERSION must be 32 characters or fewer')
+  }
+
+  if (issues.length > 0) {
+    return { config: null, issues }
+  }
+
+  return {
+    config: {
+      email: emailRaw,
+      passwordHash: passwordHashRaw,
+      sessionSecret: sessionSecretRaw,
+      sessionVersion: sessionVersionRaw,
+    },
+    issues,
+  }
+}
+
+function getAdminConfig(env: Bindings): AdminConfig | null {
+  const validation = validateAdminEnvironment(env)
+  return validation.config
 }
 
 function getAdminRateLimitConfig(env: Bindings): AdminRateLimitConfig {
@@ -180,52 +232,125 @@ function buildRateLimitKey(identifier: string) {
 
 async function readRateLimitRecord(env: Bindings, key: string): Promise<RateLimitRecord | null> {
   const now = Date.now()
-  const store = env.CHALLENGE_KV ?? env.CHALLENGE_KV_BACKUP
-  if (store) {
-    const raw = await store.get(key)
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as RateLimitRecord
-        if (typeof parsed.count !== 'number' || typeof parsed.resetAt !== 'number') {
-          await store.delete(key)
-          return null
-        }
-        if (parsed.resetAt <= now) {
-          await store.delete(key)
-          return null
-        }
-        return parsed
-      } catch (error) {
-        await store.delete(key).catch(() => {})
-        return null
-      }
+
+  const sanitize = (record: Partial<RateLimitRecord> | null): RateLimitRecord | null => {
+    if (!record) {
+      return null
     }
+    if (
+      typeof record.count !== 'number' ||
+      typeof record.windowStart !== 'number' ||
+      typeof record.windowEnd !== 'number'
+    ) {
+      return null
+    }
+    if (!Number.isFinite(record.windowStart) || !Number.isFinite(record.windowEnd)) {
+      return null
+    }
+    if (record.windowEnd <= record.windowStart) {
+      return null
+    }
+    const sanitized: RateLimitRecord = {
+      count: Math.max(0, Math.floor(record.count)),
+      windowStart: record.windowStart,
+      windowEnd: record.windowEnd,
+    }
+    if (typeof record.blockedUntil === 'number' && Number.isFinite(record.blockedUntil) && record.blockedUntil > now) {
+      sanitized.blockedUntil = record.blockedUntil
+    }
+    if (sanitized.windowEnd <= now && !sanitized.blockedUntil) {
+      return null
+    }
+    return sanitized
   }
-  const record = rateLimitMemoryStore.get(key)
-  if (!record) {
+
+  const kvStores: Array<{ store: KVNamespace; isPrimary: boolean }> = []
+  if (env.CHALLENGE_KV) {
+    kvStores.push({ store: env.CHALLENGE_KV, isPrimary: true })
+  }
+  if (env.CHALLENGE_KV_BACKUP) {
+    kvStores.push({ store: env.CHALLENGE_KV_BACKUP, isPrimary: false })
+  }
+
+  let kvRecord: RateLimitRecord | null = null
+  let kvSource: 'primary' | 'backup' | null = null
+
+  for (const { store, isPrimary } of kvStores) {
+    const raw = await store.get(key)
+    if (!raw) {
+      continue
+    }
+    let parsed: RateLimitRecord | null = null
+    try {
+      parsed = sanitize(JSON.parse(raw) as Partial<RateLimitRecord>)
+    } catch (error) {
+      parsed = null
+    }
+    if (!parsed) {
+      await store.delete(key).catch(() => {})
+      continue
+    }
+    kvRecord = parsed
+    kvSource = isPrimary ? 'primary' : 'backup'
+    break
+  }
+
+  if (kvRecord) {
+    if (kvSource === 'backup' && env.CHALLENGE_KV) {
+      await writeRateLimitRecord(env, key, kvRecord)
+    }
+    return kvRecord
+  }
+
+  const memoryRecord = rateLimitMemoryStore.get(key)
+  if (!memoryRecord) {
     return null
   }
-  if (record.resetAt <= now) {
+  const sanitizedMemory = sanitize(memoryRecord)
+  if (!sanitizedMemory) {
     rateLimitMemoryStore.delete(key)
     return null
   }
-  return record
+  rateLimitMemoryStore.set(key, sanitizedMemory)
+  return sanitizedMemory
 }
 
 async function writeRateLimitRecord(env: Bindings, key: string, record: RateLimitRecord) {
-  const ttlSeconds = Math.max(1, Math.ceil((record.resetAt - Date.now()) / 1000))
-  const store = env.CHALLENGE_KV ?? env.CHALLENGE_KV_BACKUP
-  if (store) {
-    await store.put(key, JSON.stringify(record), { expirationTtl: ttlSeconds })
-    return
+  const now = Date.now()
+  const payload: RateLimitRecord = {
+    count: Math.max(0, Math.floor(record.count)),
+    windowStart: record.windowStart,
+    windowEnd: record.windowEnd,
   }
-  rateLimitMemoryStore.set(key, record)
+
+  if (typeof record.blockedUntil === 'number' && record.blockedUntil > now) {
+    payload.blockedUntil = record.blockedUntil
+  }
+
+  const expiryTarget = Math.max(payload.blockedUntil ?? 0, payload.windowEnd)
+  const ttlSeconds = Math.max(1, Math.ceil((expiryTarget - now) / 1000))
+  const serialized = JSON.stringify(payload)
+  const primary = env.CHALLENGE_KV
+  const backup = env.CHALLENGE_KV_BACKUP
+
+  if (primary) {
+    await primary.put(key, serialized, { expirationTtl: ttlSeconds })
+  }
+  if (backup) {
+    await backup.put(key, serialized, { expirationTtl: ttlSeconds })
+  }
+
+  if (!primary && !backup) {
+    rateLimitMemoryStore.set(key, { ...payload })
+  }
 }
 
 async function clearRateLimitRecord(env: Bindings, key: string) {
-  const store = env.CHALLENGE_KV ?? env.CHALLENGE_KV_BACKUP
-  if (store) {
-    await store.delete(key)
+  if (env.CHALLENGE_KV) {
+    await env.CHALLENGE_KV.delete(key)
+  }
+  if (env.CHALLENGE_KV_BACKUP) {
+    await env.CHALLENGE_KV_BACKUP.delete(key)
   }
   rateLimitMemoryStore.delete(key)
 }
@@ -241,7 +366,11 @@ async function getAdminRateLimitStatus(env: Bindings, identifier: string, config
       resetAfterSeconds: config.windowSeconds,
     }
   }
-  if (record.resetAt <= now) {
+
+  const blocked = typeof record.blockedUntil === 'number' && record.blockedUntil > now
+  const resetTarget = blocked ? record.blockedUntil! : record.windowEnd
+
+  if (!blocked && record.windowEnd <= now) {
     await clearRateLimitRecord(env, key)
     return {
       blocked: false,
@@ -249,41 +378,46 @@ async function getAdminRateLimitStatus(env: Bindings, identifier: string, config
       resetAfterSeconds: config.windowSeconds,
     }
   }
-  const remaining = Math.max(0, config.maxAttempts - record.count)
-  const resetAfterSeconds = Math.max(1, Math.ceil((record.resetAt - now) / 1000))
-  if (record.count >= config.maxAttempts) {
-    return {
-      blocked: true,
-      remaining: 0,
-      resetAfterSeconds,
-      retryAfterSeconds: resetAfterSeconds,
-    }
-  }
+
+  const remaining = blocked ? 0 : Math.max(0, config.maxAttempts - record.count)
+  const resetAfterSeconds = Math.max(1, Math.ceil((resetTarget - now) / 1000))
+
   return {
-    blocked: false,
+    blocked,
     remaining,
     resetAfterSeconds,
+    retryAfterSeconds: blocked ? resetAfterSeconds : undefined,
   }
 }
 
 async function recordAdminLoginFailure(env: Bindings, identifier: string, config: AdminRateLimitConfig): Promise<RateLimitStatus> {
   const key = buildRateLimitKey(identifier)
   const now = Date.now()
+  const { windowStart, windowEnd } = getFixedWindowBoundaries(now, config.windowSeconds)
+
   let record = await readRateLimitRecord(env, key)
-  if (!record || record.resetAt <= now) {
+  if (!record || record.windowEnd <= now || record.windowStart !== windowStart) {
     record = {
       count: 0,
-      resetAt: now + config.windowSeconds * 1000,
+      windowStart,
+      windowEnd,
     }
   }
-  record.count += 1
+
+  record.count = Math.min(config.maxAttempts, record.count + 1)
+
   if (record.count >= config.maxAttempts) {
-    record.resetAt = Math.max(record.resetAt, now + config.cooldownSeconds * 1000)
+    const cooldownUntil = now + config.cooldownSeconds * 1000
+    record.blockedUntil = Math.max(record.blockedUntil ?? 0, windowEnd, cooldownUntil)
   }
+
   await writeRateLimitRecord(env, key, record)
-  const remaining = Math.max(0, config.maxAttempts - record.count)
-  const resetAfterSeconds = Math.max(1, Math.ceil((record.resetAt - now) / 1000))
-  const blocked = record.count >= config.maxAttempts
+
+  const blocked = typeof record.blockedUntil === 'number' && record.blockedUntil > now
+  const resetTarget = blocked ? record.blockedUntil! : record.windowEnd
+  const remaining = blocked ? 0 : Math.max(0, config.maxAttempts - record.count)
+  const resetAfterSeconds = Math.max(1, Math.ceil((resetTarget - now) / 1000))
+
   return {
     blocked,
     remaining,
@@ -301,6 +435,8 @@ function attachRateLimitHeaders(response: Response, config: AdminRateLimitConfig
   response.headers.set('X-RateLimit-Limit', String(config.maxAttempts))
   response.headers.set('X-RateLimit-Remaining', String(Math.max(0, status.remaining)))
   response.headers.set('X-RateLimit-Reset', String(Math.max(0, Math.ceil(status.resetAfterSeconds))))
+  response.headers.set('X-RateLimit-Window', String(config.windowSeconds))
+  response.headers.set('X-RateLimit-Cooldown', String(config.cooldownSeconds))
   if (status.blocked && status.retryAfterSeconds) {
     response.headers.set('Retry-After', String(Math.max(1, Math.ceil(status.retryAfterSeconds))))
   }
@@ -615,26 +751,38 @@ async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
   }
   try {
     const payload = (await verify(token, config.sessionSecret)) as AdminSessionPayload
+    const nowSeconds = Math.floor(Date.now() / 1000)
     if (payload.role !== 'admin' || !payload.sub) {
       return null
     }
     if (payload.iss !== ADMIN_SESSION_ISSUER || payload.aud !== ADMIN_SESSION_AUDIENCE) {
       return null
     }
-    if (!payload.ver || payload.ver !== config.sessionVersion) {
+    if (payload.ver !== config.sessionVersion) {
       return null
     }
     if (payload.sub !== config.email) {
       return null
     }
+    if (typeof payload.iat !== 'number' || payload.iat > nowSeconds + 60) {
+      return null
+    }
+    if (typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
+      return null
+    }
     return payload.sub
   } catch (error) {
     console.error('[auth] Failed to verify admin session', error)
+    clearAdminSession(c)
     return null
   }
 }
 
-async function createAdminSession(c: Context<{ Bindings: Bindings }>, email: string, config?: AdminConfig) {
+async function createAdminSession(
+  c: Context<{ Bindings: Bindings }>,
+  email: string,
+  config?: AdminConfig,
+): Promise<{ exp: number; iat: number }> {
   const adminConfig = config ?? getAdminConfig(c.env)
   if (!adminConfig) {
     throw new Error('SESSION_SECRET_NOT_CONFIGURED')
@@ -657,16 +805,16 @@ async function createAdminSession(c: Context<{ Bindings: Bindings }>, email: str
   )
   setCookie(c, ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
-    sameSite: 'Lax',
+    sameSite: 'Strict',
     secure: true,
     path: '/',
     maxAge: expiresInSeconds,
   })
-  return exp
+  return { exp, iat: issuedAt }
 }
 
 function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/' })
+  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -709,13 +857,24 @@ app.post('/api/auth/admin/login', async (c) => {
   try {
     payload = await c.req.json()
   } catch (error) {
-    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   }
 
   const env = c.env
-  const adminConfig = getAdminConfig(env)
+  const validation = validateAdminEnvironment(env)
+  const adminConfig = validation.config
   if (!adminConfig) {
-    return c.json({ error: 'ADMIN_AUTH_NOT_CONFIGURED' }, 500)
+    const response = c.json(
+      {
+        error: 'ADMIN_AUTH_NOT_CONFIGURED',
+        issues: validation.issues,
+      },
+      500,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   }
 
   const rateLimitConfig = getAdminRateLimitConfig(env)
@@ -725,6 +884,7 @@ app.post('/api/auth/admin/login', async (c) => {
     const retryAfter = currentStatus.retryAfterSeconds ?? rateLimitConfig.cooldownSeconds
     const response = c.json({ error: 'RATE_LIMIT_EXCEEDED', retryAfter }, 429)
     attachRateLimitHeaders(response, rateLimitConfig, currentStatus)
+    response.headers.set('Cache-Control', 'no-store')
     return response
   }
 
@@ -739,6 +899,7 @@ app.post('/api/auth/admin/login', async (c) => {
     }
     const response = c.json(responseBody, 401)
     attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
+    response.headers.set('Cache-Control', 'no-store')
     return response
   }
 
@@ -751,6 +912,7 @@ app.post('/api/auth/admin/login', async (c) => {
     }
     const response = c.json(responseBody, 401)
     attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
+    response.headers.set('Cache-Control', 'no-store')
     return response
   }
 
@@ -764,18 +926,25 @@ app.post('/api/auth/admin/login', async (c) => {
     }
     const response = c.json(responseBody, 401)
     attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
+    response.headers.set('Cache-Control', 'no-store')
     return response
   }
 
-  const exp = await createAdminSession(c, email, adminConfig)
+  const sessionMeta = await createAdminSession(c, email, adminConfig)
   await clearAdminRateLimit(env, identifier)
   const successStatus: RateLimitStatus = {
     blocked: false,
     remaining: rateLimitConfig.maxAttempts,
     resetAfterSeconds: rateLimitConfig.windowSeconds,
   }
-  const response = c.json({ ok: true, expiresAt: exp })
+  const response = c.json({
+    ok: true,
+    expiresAt: sessionMeta.exp,
+    issuedAt: sessionMeta.iat,
+    sessionVersion: adminConfig.sessionVersion,
+  })
   attachRateLimitHeaders(response, rateLimitConfig, successStatus)
+  response.headers.set('Cache-Control', 'no-store')
   return response
 })
 
@@ -1243,6 +1412,161 @@ app.get('/api/challenge/certificate', async (c) => {
   })
 })
 
+const OPENAI_KEYWORD_FALLBACK_POOL: string[] = [
+  '이미지',
+  '사진',
+  '디자인',
+  '그래픽',
+  '브랜딩',
+  '콘텐츠',
+  '마케팅',
+  '소셜미디어',
+  '프로모션',
+  '브랜드',
+  '광고',
+  '썸네일',
+  '배너',
+  '포스터',
+  '프레젠테이션',
+  '템플릿',
+  '고화질',
+  '투명 배경',
+  '크롭',
+  '배경 제거',
+  '비주얼',
+  '크리에이티브',
+  '트렌디',
+  '감각적인',
+  '현대적인',
+  '컬러 팔레트',
+  '하이라이트',
+  '제품 촬영',
+  '모델 컷',
+  'SNS 콘텐츠',
+  '웹디자인',
+  'e커머스',
+  '프리미엄',
+  '상업용',
+  '브랜드 아이덴티티',
+  '컨셉 아트',
+  '라이프스타일',
+  '무드 보드',
+  '스토리텔링',
+]
+
+const KEYWORD_TEXT_SPLIT_PATTERN = /[,\n，、·•|\/\\;:()\[\]{}<>!?！？]+/
+
+const normalizeKeywordCandidate = (keyword: string): string => {
+  return keyword
+    .replace(/[\u0000-\u001f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[#"'`•·\-]+/, '')
+    .replace(/[#"'`•·\-]+$/, '')
+    .trim()
+}
+
+const collectKeywordsFromRaw = (raw: unknown): string[] => {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => (typeof item === 'string' ? item : String(item ?? '')))
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+  }
+  if (typeof raw === 'string') {
+    return raw
+      .split(KEYWORD_TEXT_SPLIT_PATTERN)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+  }
+  return []
+}
+
+const extractKeywordTokensFromText = (text?: string | null): string[] => {
+  if (typeof text !== 'string') return []
+  const trimmed = text.trim()
+  if (!trimmed) return []
+  const tokens = new Set<string>()
+
+  const normalizedWhole = normalizeKeywordCandidate(trimmed)
+  if (normalizedWhole.length >= 2) {
+    tokens.add(normalizedWhole)
+  }
+
+  const segments = trimmed.split(KEYWORD_TEXT_SPLIT_PATTERN)
+  for (const segment of segments) {
+    const normalizedSegment = normalizeKeywordCandidate(segment)
+    if (!normalizedSegment || normalizedSegment.length < 2) {
+      continue
+    }
+    tokens.add(normalizedSegment)
+
+    const words = normalizedSegment.split(/\s+/)
+    if (words.length > 1 && words.length <= 4) {
+      tokens.add(words.join(' '))
+    }
+    for (const word of words) {
+      const normalizedWord = normalizeKeywordCandidate(word)
+      if (normalizedWord.length >= 2) {
+        tokens.add(normalizedWord)
+      }
+    }
+  }
+
+  return Array.from(tokens).filter((value) => value.length >= 2 && value.length <= 32)
+}
+
+const buildKeywordListFromOpenAI = (
+  raw: unknown,
+  context: { title?: string; summary?: string; name?: string },
+): string[] => {
+  const keywords: string[] = []
+  const seen = new Set<string>()
+
+  const pushKeyword = (value: string) => {
+    const normalized = normalizeKeywordCandidate(value)
+    if (!normalized) return
+    if (normalized.length > 48) return
+    if (seen.has(normalized)) return
+    seen.add(normalized)
+    keywords.push(normalized)
+  }
+
+  for (const candidate of collectKeywordsFromRaw(raw)) {
+    pushKeyword(candidate)
+  }
+
+  if (keywords.length < 25) {
+    const contextTokens = [
+      ...extractKeywordTokensFromText(context.title),
+      ...extractKeywordTokensFromText(context.summary),
+      ...extractKeywordTokensFromText(context.name),
+    ]
+    for (const token of contextTokens) {
+      pushKeyword(token)
+      if (keywords.length >= 25) {
+        break
+      }
+    }
+  }
+
+  if (keywords.length < 25) {
+    for (const fallback of OPENAI_KEYWORD_FALLBACK_POOL) {
+      pushKeyword(fallback)
+      if (keywords.length >= 25) {
+        break
+      }
+    }
+  }
+
+  let fillerIndex = 1
+  while (keywords.length < 25) {
+    pushKeyword(`키워드 ${fillerIndex}`)
+    fillerIndex += 1
+  }
+
+  return keywords.slice(0, 25)
+}
+
 app.post('/api/analyze', async (c) => {
   const env = c.env
 
@@ -1282,7 +1606,42 @@ app.post('/api/analyze', async (c) => {
 이미지 파일명: ${requestedName}`
 
   try {
-    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+    const responseFormat = {
+      type: 'json_schema',
+      json_schema: {
+        name: 'SeoMetadata',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'summary', 'keywords'],
+          properties: {
+            title: {
+              type: 'string',
+              description: 'SEO 최적화 제목 (한국어, 60자 이내)',
+              maxLength: 120,
+            },
+            summary: {
+              type: 'string',
+              description: '이미지 특징과 활용 맥락을 설명하는 문장 (120자 이내)',
+              maxLength: 240,
+            },
+            keywords: {
+              type: 'array',
+              description: '정확히 25개의 한국어 키워드',
+              minItems: 25,
+              maxItems: 25,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 48,
+              },
+            },
+          },
+        },
+      },
+    }
+
+    const openaiResponse = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1291,14 +1650,18 @@ app.post('/api/analyze', async (c) => {
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         temperature: 0.7,
-        max_tokens: 500,
-        messages: [
-          { role: 'system', content: systemPrompt },
+        max_output_tokens: 500,
+        response_format: responseFormat,
+        input: [
+          {
+            role: 'system',
+            content: [{ type: 'input_text', text: systemPrompt }],
+          },
           {
             role: 'user',
             content: [
-              { type: 'text', text: userInstruction },
-              { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Source}` } },
+              { type: 'input_text', text: userInstruction },
+              { type: 'input_image', image_url: `data:image/png;base64,${base64Source}` },
             ],
           },
         ],
@@ -1306,59 +1669,110 @@ app.post('/api/analyze', async (c) => {
     })
 
     if (!openaiResponse.ok) {
-      const errorText = await openaiResponse.text()
-      return c.json({ error: 'OPENAI_REQUEST_FAILED', detail: errorText.slice(0, 4000) }, 502)
+      let detail = ''
+      try {
+        detail = (await openaiResponse.text()).slice(0, 4000)
+      } catch (readError) {
+        detail = readError instanceof Error ? readError.message : String(readError)
+      }
+      const requestId = openaiResponse.headers.get('x-request-id') ?? ''
+      return c.json({ error: 'OPENAI_REQUEST_FAILED', detail, status: openaiResponse.status, requestId }, 502)
     }
 
-    const completion = await openaiResponse.json()
-    const messageContent = completion?.choices?.[0]?.message?.content
+    const completion: any = await openaiResponse.json()
 
-    if (!messageContent) {
-      return c.json({ error: 'OPENAI_EMPTY_RESPONSE' }, 502)
+    let parsed:
+      | {
+          title?: unknown
+          summary?: unknown
+          keywords?: unknown
+        }
+      | null = null
+
+    const outputItems: any[] = Array.isArray(completion?.output) ? completion.output : []
+    for (const item of outputItems) {
+      if (item?.type === 'message' && Array.isArray(item.content)) {
+        for (const contentItem of item.content) {
+          if (contentItem?.type === 'output_json' && contentItem?.json) {
+            parsed = contentItem.json
+            break
+          }
+          if (contentItem?.type === 'output_text' && typeof contentItem.text === 'string') {
+            try {
+              parsed = JSON.parse(contentItem.text)
+              break
+            } catch {
+              // 계속해서 다른 콘텐츠를 확인합니다.
+            }
+          }
+        }
+      }
+      if (parsed) break
     }
 
-    const contentString = Array.isArray(messageContent)
-      ? messageContent
-          .map((part: any) => {
-            if (typeof part === 'string') return part
-            if (typeof part?.text === 'string') return part.text
-            return ''
-          })
-          .join('')
-          .trim()
-      : typeof messageContent === 'string'
-        ? messageContent.trim()
-        : ''
-
-    if (!contentString) {
-      return c.json({ error: 'OPENAI_INVALID_CONTENT' }, 502)
+    if (!parsed && typeof completion?.output_text === 'string' && completion.output_text.trim()) {
+      try {
+        parsed = JSON.parse(completion.output_text.trim())
+      } catch {
+        // ignore
+      }
     }
 
-    let parsed: { title?: string; summary?: string; keywords?: string[] }
-    try {
-      parsed = JSON.parse(contentString)
-    } catch (error) {
-      return c.json({ error: 'OPENAI_PARSE_ERROR', detail: contentString.slice(0, 4000) }, 502)
+    if (!parsed) {
+      let detail = ''
+      try {
+        detail = JSON.stringify(completion).slice(0, 4000)
+      } catch {
+        detail = '응답 파싱에 실패했습니다.'
+      }
+      return c.json({ error: 'OPENAI_INVALID_CONTENT', detail }, 502)
     }
 
-    if (!parsed || typeof parsed.title !== 'string' || typeof parsed.summary !== 'string' || !Array.isArray(parsed.keywords)) {
-      return c.json({ error: 'OPENAI_INVALID_STRUCTURE', detail: contentString.slice(0, 4000) }, 502)
+    const {
+      title: rawTitle,
+      summary: rawSummary,
+      keywords: rawKeywords,
+    } = parsed as {
+      title?: unknown
+      summary?: unknown
+      keywords?: unknown
     }
 
-    const keywords = parsed.keywords.filter((keyword) => typeof keyword === 'string').slice(0, 25)
-
-    if (keywords.length !== 25) {
-      return c.json({ error: 'OPENAI_KEYWORD_COUNT_MISMATCH', detail: contentString.slice(0, 4000) }, 502)
+    if (typeof rawTitle !== 'string' || typeof rawSummary !== 'string') {
+      let detail = ''
+      try {
+        detail = JSON.stringify(parsed).slice(0, 4000)
+      } catch {
+        detail = '구조화된 응답이 아닙니다.'
+      }
+      return c.json({ error: 'OPENAI_INVALID_STRUCTURE', detail }, 502)
     }
+
+    const normalizedTitle = rawTitle.trim()
+    const normalizedSummary = rawSummary.trim()
+
+    const fallbackTitle = `${requestedName} 이미지 SEO 제목`
+    const fallbackSummary = `${requestedName}의 특징을 설명하는 요약 콘텐츠입니다.`
+
+    const safeTitle = (normalizedTitle || fallbackTitle).slice(0, 120)
+    const safeSummary = (normalizedSummary || fallbackSummary).slice(0, 240)
+
+    const keywords = buildKeywordListFromOpenAI(rawKeywords, {
+      title: safeTitle,
+      summary: safeSummary,
+      name: requestedName,
+    })
 
     return c.json({
-      title: parsed.title.trim(),
-      summary: parsed.summary.trim(),
+      title: safeTitle,
+      summary: safeSummary,
       keywords,
+      provider: 'openai',
     })
   } catch (error) {
     console.error('[api/analyze] error', error)
-    return c.json({ error: 'OPENAI_UNHANDLED_ERROR' }, 502)
+    const detail = error instanceof Error ? error.message : String(error)
+    return c.json({ error: 'OPENAI_UNHANDLED_ERROR', detail }, 502)
   }
 })
 
