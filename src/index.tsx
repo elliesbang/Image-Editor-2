@@ -1641,45 +1641,117 @@ app.post('/api/analyze', async (c) => {
       },
     }
 
-    const openaiResponse = await fetch('https://api.openai.com/v1/responses', {
+    const requestPayload = {
+      model: 'gpt-4o-mini',
+      temperature: 0.7,
+      max_output_tokens: 500,
+      response_format: responseFormat,
+      input: [
+        {
+          role: 'system',
+          content: [{ type: 'input_text', text: systemPrompt }],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: userInstruction },
+            { type: 'input_image', image_url: `data:image/png;base64,${base64Source}` },
+          ],
+        },
+      ],
+    }
+
+    const openaiRequestInit: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.7,
-        max_output_tokens: 500,
-        response_format: responseFormat,
-        input: [
-          {
-            role: 'system',
-            content: [{ type: 'input_text', text: systemPrompt }],
-          },
-          {
-            role: 'user',
-            content: [
-              { type: 'input_text', text: userInstruction },
-              { type: 'input_image', image_url: `data:image/png;base64,${base64Source}` },
-            ],
-          },
-        ],
-      }),
-    })
+      body: JSON.stringify(requestPayload),
+    }
+
+    const timeoutSignal =
+      typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout === 'function'
+        ? ((AbortSignal as any).timeout(25000) as AbortSignal)
+        : null
+    if (timeoutSignal) {
+      openaiRequestInit.signal = timeoutSignal
+    }
+
+    const openaiResponse = await fetch('https://api.openai.com/v1/responses', openaiRequestInit)
+    const requestId = openaiResponse.headers.get('x-request-id') ?? undefined
 
     if (!openaiResponse.ok) {
-      let detail = ''
+      let rawBody = ''
       try {
-        detail = (await openaiResponse.text()).slice(0, 4000)
+        rawBody = await openaiResponse.text()
       } catch (readError) {
-        detail = readError instanceof Error ? readError.message : String(readError)
+        rawBody = readError instanceof Error ? readError.message : String(readError)
       }
-      const requestId = openaiResponse.headers.get('x-request-id') ?? ''
-      return c.json({ error: 'OPENAI_REQUEST_FAILED', detail, status: openaiResponse.status, requestId }, 502)
+
+      let detail = ''
+      let code = ''
+      if (rawBody) {
+        try {
+          const parsedBody = JSON.parse(rawBody)
+          const errorInfo = typeof parsedBody?.error === 'object' && parsedBody.error ? parsedBody.error : parsedBody
+          const message = typeof errorInfo?.message === 'string' ? errorInfo.message : ''
+          detail = message || JSON.stringify(parsedBody).slice(0, 4000)
+          code =
+            typeof errorInfo?.code === 'string'
+              ? errorInfo.code
+              : typeof errorInfo?.type === 'string'
+                ? errorInfo.type
+                : ''
+        } catch {
+          detail = rawBody.slice(0, 4000)
+        }
+      }
+
+      if (!detail) {
+        detail = 'OpenAI API 요청이 실패했습니다.'
+      }
+
+      const statusCode = openaiResponse.status >= 400 && openaiResponse.status < 600 ? openaiResponse.status : 502
+
+      return c.json(
+        {
+          error: 'OPENAI_REQUEST_FAILED',
+          detail,
+          code: code || `HTTP_${openaiResponse.status}`,
+          requestId,
+        },
+        statusCode,
+      )
     }
 
     const completion: any = await openaiResponse.json()
+
+    const tryParseJsonText = (value: unknown) => {
+      if (typeof value !== 'string') return null
+      const trimmed = value.trim()
+      if (!trimmed) return null
+      try {
+        return JSON.parse(trimmed)
+      } catch {
+        return null
+      }
+    }
+
+    const collectOutputItems = (payload: any): any[] => {
+      const items: any[] = []
+      if (Array.isArray(payload?.output)) {
+        items.push(...payload.output)
+      }
+      if (Array.isArray(payload?.response?.output)) {
+        items.push(...payload.response.output)
+      }
+      if (Array.isArray(payload?.messages)) {
+        items.push(...payload.messages)
+      }
+      return items
+    }
 
     let parsed:
       | {
@@ -1689,33 +1761,50 @@ app.post('/api/analyze', async (c) => {
         }
       | null = null
 
-    const outputItems: any[] = Array.isArray(completion?.output) ? completion.output : []
+    const outputItems = collectOutputItems(completion)
     for (const item of outputItems) {
-      if (item?.type === 'message' && Array.isArray(item.content)) {
+      if (!item) continue
+
+      if (Array.isArray(item?.content)) {
         for (const contentItem of item.content) {
           if (contentItem?.type === 'output_json' && contentItem?.json) {
             parsed = contentItem.json
             break
           }
-          if (contentItem?.type === 'output_text' && typeof contentItem.text === 'string') {
-            try {
-              parsed = JSON.parse(contentItem.text)
+          if (contentItem?.type === 'output_text') {
+            const candidate = tryParseJsonText(contentItem.text)
+            if (candidate) {
+              parsed = candidate
               break
-            } catch {
-              // 계속해서 다른 콘텐츠를 확인합니다.
             }
           }
         }
       }
-      if (parsed) break
+
+      if (parsed) {
+        break
+      }
+
+      if (item?.type === 'output_json' && item?.json) {
+        parsed = item.json
+        break
+      }
+
+      if (item?.type === 'output_text') {
+        const candidate = tryParseJsonText(item.text)
+        if (candidate) {
+          parsed = candidate
+          break
+        }
+      }
     }
 
-    if (!parsed && typeof completion?.output_text === 'string' && completion.output_text.trim()) {
-      try {
-        parsed = JSON.parse(completion.output_text.trim())
-      } catch {
-        // ignore
-      }
+    if (!parsed) {
+      parsed = tryParseJsonText(completion?.output_text)
+    }
+
+    if (!parsed && typeof completion?.result === 'string') {
+      parsed = tryParseJsonText(completion.result)
     }
 
     if (!parsed) {
@@ -1725,7 +1814,7 @@ app.post('/api/analyze', async (c) => {
       } catch {
         detail = '응답 파싱에 실패했습니다.'
       }
-      return c.json({ error: 'OPENAI_INVALID_CONTENT', detail }, 502)
+      return c.json({ error: 'OPENAI_INVALID_CONTENT', detail, requestId }, 502)
     }
 
     const {
@@ -1745,7 +1834,7 @@ app.post('/api/analyze', async (c) => {
       } catch {
         detail = '구조화된 응답이 아닙니다.'
       }
-      return c.json({ error: 'OPENAI_INVALID_STRUCTURE', detail }, 502)
+      return c.json({ error: 'OPENAI_INVALID_STRUCTURE', detail, requestId }, 502)
     }
 
     const normalizedTitle = rawTitle.trim()
@@ -1768,6 +1857,8 @@ app.post('/api/analyze', async (c) => {
       summary: safeSummary,
       keywords,
       provider: 'openai',
+      model: 'gpt-4o-mini',
+      requestId,
     })
   } catch (error) {
     console.error('[api/analyze] error', error)

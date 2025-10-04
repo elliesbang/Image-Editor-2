@@ -6,7 +6,7 @@
 - **핵심 특징**: HTML5 Canvas 기반 이미지 파이프라인, Freemium 크레딧 게이트, 관리자 전용 인증/세션 유지, 참가자 진행률·수료증 UI, OpenAI 연동 키워드 분석
 
 ## 현재 구현 기능
-- **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(투명 배경/크롭 결과 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
+- **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
 - **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
 - **Google 계정 로그인 UX**: Google Identity Services 코드 플로우, 팝업 인터랙션 실패/토큰 교환 오류에 대한 세부 메시지, 최대 3회 지수 백오프 + 지터 기반 자동 재시도, 장애 시 이메일 로그인 모드 자동 유도
 - **관리자 인증 & 보안 강화**
@@ -76,7 +76,7 @@
 - **Cloudflare KV (선택)**: `CHALLENGE_KV` 바인딩 시 참가자 레코드/제출 로그를 글로벌 분산 키-값 저장소에 영속화
 - **백업 KV (선택)**: `CHALLENGE_KV_BACKUP` 바인딩 시 기본 KV와 동기화, 스냅샷 백업 키(`backup:snapshot:*`) 저장
 - **In-memory fallback**: 로컬 개발 또는 KV 미바인딩 시 Map 기반 임시 저장 (기본/백업 각각 유지), 재시작 시 데이터 초기화
-- **OpenAI API**: `POST /api/analyze`에서 Responses API(gpt-4o-mini + JSON Schema `response_format`) 호출, 이미지 data URL을 `input_image`로 전달해 25개 키워드/제목/요약을 구조화 수신, 서버 측 키워드 정규화·보강(문자열 응답/중복 제거, 25개 보장), 키 미설정 시 로컬 캔버스 분석으로 자동 대체
+- **OpenAI API**: `POST /api/analyze`에서 Responses API(gpt-4o-mini + JSON Schema `response_format`, 25초 타임아웃, `x-request-id` 전달) 호출, 이미지 data URL을 `input_image`로 전달해 25개 키워드/제목/요약을 구조화 수신, 서버 측 키워드 정규화·보강(문자열 응답/중복 제거, 25개 보장), 실패 시 상세 코드와 함께 로컬 캔버스 분석으로 자동 대체
 - **수료증 생성**: 프론트엔드 html2canvas(1.4.1)로 DOM → PNG 렌더, 배경색 #fef568 강제 지정
 
 ## 환경 변수 & 시크릿
@@ -137,7 +137,7 @@ curl http://localhost:3000/api/health
 - 비밀번호 해시 생성 예시: `echo -n 'test1234!' | shasum -a 256 | awk '{print tolower($1)}'`
 
 ## 테스트/검증 로그
-- 2025-10-04 `npm run build` (성공: 배경 제거/크롭 결과 리사이즈 개선 및 중복 선택 차단, OpenAI Responses API 키워드 정규화·에러 상세화, Google 로그인 자동 재시도 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋)
+- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 자동 재시도 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋)
 - `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
 - 관리자 로그인 플로우: 잘못된 해시 입력 시 401 + 지연 응답, 3회 초과 시 429 + `Retry-After`, 성공 시 세션 쿠키(`admin_session`) 발급·만료 8h
 - Google OAuth 코드 플로우: 팝업 거절/네트워크 오류 시 자동 재시도 메시지 노출, 검증 실패 시 명확한 에러 코드(`GOOGLE_EMAIL_NOT_VERIFIED` 등) 반환
@@ -203,4 +203,4 @@ curl http://localhost:3000/api/health
 ## 라이선스 & 고지
 - 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
 
-_Last updated: 2025-10-04 (OpenAI Responses API 전환 · 리사이즈 알파 보존 · Google 로그인 자동 재시도 UX)_
+_Last updated: 2025-10-04 (OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지 · Google 로그인 자동 재시도 UX)_

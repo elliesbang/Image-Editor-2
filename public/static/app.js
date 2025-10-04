@@ -3832,17 +3832,19 @@ function applyBoxBlur(imageData, width, height) {
 }
 
 function resizeCanvas(canvas, width) {
-  const ratio = width / canvas.width
-  const height = Math.round(canvas.height * ratio)
-  const resized = createCanvas(width, height)
-  const ctx = resized.getContext('2d')
+  const safeWidth = Math.max(1, Math.round(width))
+  const sourceWidth = Math.max(1, canvas.width)
+  const ratio = safeWidth / sourceWidth
+  const height = Math.max(1, Math.round(canvas.height * ratio))
+  const resized = createCanvas(safeWidth, height)
+  const ctx = resized.getContext('2d', { willReadFrequently: true, alpha: true })
   if (!ctx) throw new Error('리사이즈 캔버스를 초기화할 수 없습니다.')
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
   const previousComposite = ctx.globalCompositeOperation
   ctx.clearRect(0, 0, resized.width, resized.height)
   ctx.globalCompositeOperation = 'copy'
-  ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, width, height)
+  ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, safeWidth, height)
   ctx.globalCompositeOperation = previousComposite
   return { canvas: resized, ctx }
 }
