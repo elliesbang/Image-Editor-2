@@ -10,10 +10,16 @@ type Bindings = {
   ADMIN_EMAIL?: string
   ADMIN_PASSWORD_HASH?: string
   SESSION_SECRET?: string
+  ADMIN_SESSION_VERSION?: string
+  ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
+  ADMIN_RATE_LIMIT_WINDOW_SECONDS?: string
+  ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
   CHALLENGE_KV?: KVNamespace
+  CHALLENGE_KV_BACKUP?: KVNamespace
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REDIRECT_URI?: string
+  MICHINA_COMMUNITY_URL?: string
 }
 
 type ChallengeSubmission = {
@@ -45,15 +51,52 @@ type AdminSessionPayload = {
   sub: string
   role: 'admin'
   exp: number
+  iss?: string
+  aud?: string
+  ver?: string
+  iat?: number
+}
+
+type AdminConfig = {
+  email: string
+  passwordHash: string
+  sessionSecret: string
+  sessionVersion: string
+}
+
+type AdminRateLimitConfig = {
+  maxAttempts: number
+  windowSeconds: number
+  cooldownSeconds: number
+}
+
+type RateLimitRecord = {
+  count: number
+  resetAt: number
+}
+
+type RateLimitStatus = {
+  blocked: boolean
+  remaining: number
+  resetAfterSeconds: number
+  retryAfterSeconds?: number
 }
 
 const ADMIN_SESSION_COOKIE = 'admin_session'
+const ADMIN_SESSION_ISSUER = 'easy-image-editor'
+const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
+const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
+const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
+const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
+const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
 
 const inMemoryStore = new Map<string, string>()
+const inMemoryBackupStore = new Map<string, string>()
+const rateLimitMemoryStore = new Map<string, RateLimitRecord>()
 
 function encodeKey(email: string) {
   return `${PARTICIPANT_KEY_PREFIX}${email.toLowerCase()}`
@@ -77,6 +120,210 @@ async function sha256(input: string) {
   const data = encoder.encode(input)
   const digest = await crypto.subtle.digest('SHA-256', data)
   return toHex(digest)
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
+  const trimmed = (value ?? '').trim()
+  const parsed = Number.parseInt(trimmed, 10)
+  const boundedFallback = Math.min(Math.max(fallback, min), max)
+  if (!Number.isFinite(parsed) || parsed < min) {
+    return boundedFallback
+  }
+  return Math.min(Math.max(parsed, min), max)
+}
+
+function getAdminConfig(env: Bindings): AdminConfig | null {
+  const email = env.ADMIN_EMAIL?.trim().toLowerCase()
+  const passwordHash = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase()
+  const sessionSecret = env.SESSION_SECRET?.trim()
+  if (!email || !passwordHash || !sessionSecret) {
+    return null
+  }
+  const sessionVersion = (env.ADMIN_SESSION_VERSION?.trim() || '1').toString()
+  return {
+    email,
+    passwordHash,
+    sessionSecret,
+    sessionVersion,
+  }
+}
+
+function getAdminRateLimitConfig(env: Bindings): AdminRateLimitConfig {
+  const windowSeconds = parsePositiveInteger(
+    env.ADMIN_RATE_LIMIT_WINDOW_SECONDS,
+    DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS,
+    10,
+    3600,
+  )
+  const cooldownSeconds = parsePositiveInteger(
+    env.ADMIN_RATE_LIMIT_COOLDOWN_SECONDS,
+    DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS,
+    windowSeconds,
+    7200,
+  )
+  const maxAttempts = parsePositiveInteger(
+    env.ADMIN_RATE_LIMIT_MAX_ATTEMPTS,
+    DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS,
+    1,
+    20,
+  )
+  return {
+    maxAttempts,
+    windowSeconds,
+    cooldownSeconds,
+  }
+}
+
+function buildRateLimitKey(identifier: string) {
+  return `${ADMIN_RATE_LIMIT_KEY_PREFIX}${identifier}`
+}
+
+async function readRateLimitRecord(env: Bindings, key: string): Promise<RateLimitRecord | null> {
+  const now = Date.now()
+  const store = env.CHALLENGE_KV ?? env.CHALLENGE_KV_BACKUP
+  if (store) {
+    const raw = await store.get(key)
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as RateLimitRecord
+        if (typeof parsed.count !== 'number' || typeof parsed.resetAt !== 'number') {
+          await store.delete(key)
+          return null
+        }
+        if (parsed.resetAt <= now) {
+          await store.delete(key)
+          return null
+        }
+        return parsed
+      } catch (error) {
+        await store.delete(key).catch(() => {})
+        return null
+      }
+    }
+  }
+  const record = rateLimitMemoryStore.get(key)
+  if (!record) {
+    return null
+  }
+  if (record.resetAt <= now) {
+    rateLimitMemoryStore.delete(key)
+    return null
+  }
+  return record
+}
+
+async function writeRateLimitRecord(env: Bindings, key: string, record: RateLimitRecord) {
+  const ttlSeconds = Math.max(1, Math.ceil((record.resetAt - Date.now()) / 1000))
+  const store = env.CHALLENGE_KV ?? env.CHALLENGE_KV_BACKUP
+  if (store) {
+    await store.put(key, JSON.stringify(record), { expirationTtl: ttlSeconds })
+    return
+  }
+  rateLimitMemoryStore.set(key, record)
+}
+
+async function clearRateLimitRecord(env: Bindings, key: string) {
+  const store = env.CHALLENGE_KV ?? env.CHALLENGE_KV_BACKUP
+  if (store) {
+    await store.delete(key)
+  }
+  rateLimitMemoryStore.delete(key)
+}
+
+async function getAdminRateLimitStatus(env: Bindings, identifier: string, config: AdminRateLimitConfig): Promise<RateLimitStatus> {
+  const key = buildRateLimitKey(identifier)
+  const now = Date.now()
+  const record = await readRateLimitRecord(env, key)
+  if (!record) {
+    return {
+      blocked: false,
+      remaining: config.maxAttempts,
+      resetAfterSeconds: config.windowSeconds,
+    }
+  }
+  if (record.resetAt <= now) {
+    await clearRateLimitRecord(env, key)
+    return {
+      blocked: false,
+      remaining: config.maxAttempts,
+      resetAfterSeconds: config.windowSeconds,
+    }
+  }
+  const remaining = Math.max(0, config.maxAttempts - record.count)
+  const resetAfterSeconds = Math.max(1, Math.ceil((record.resetAt - now) / 1000))
+  if (record.count >= config.maxAttempts) {
+    return {
+      blocked: true,
+      remaining: 0,
+      resetAfterSeconds,
+      retryAfterSeconds: resetAfterSeconds,
+    }
+  }
+  return {
+    blocked: false,
+    remaining,
+    resetAfterSeconds,
+  }
+}
+
+async function recordAdminLoginFailure(env: Bindings, identifier: string, config: AdminRateLimitConfig): Promise<RateLimitStatus> {
+  const key = buildRateLimitKey(identifier)
+  const now = Date.now()
+  let record = await readRateLimitRecord(env, key)
+  if (!record || record.resetAt <= now) {
+    record = {
+      count: 0,
+      resetAt: now + config.windowSeconds * 1000,
+    }
+  }
+  record.count += 1
+  if (record.count >= config.maxAttempts) {
+    record.resetAt = Math.max(record.resetAt, now + config.cooldownSeconds * 1000)
+  }
+  await writeRateLimitRecord(env, key, record)
+  const remaining = Math.max(0, config.maxAttempts - record.count)
+  const resetAfterSeconds = Math.max(1, Math.ceil((record.resetAt - now) / 1000))
+  const blocked = record.count >= config.maxAttempts
+  return {
+    blocked,
+    remaining,
+    resetAfterSeconds,
+    retryAfterSeconds: blocked ? resetAfterSeconds : undefined,
+  }
+}
+
+async function clearAdminRateLimit(env: Bindings, identifier: string) {
+  const key = buildRateLimitKey(identifier)
+  await clearRateLimitRecord(env, key)
+}
+
+function attachRateLimitHeaders(response: Response, config: AdminRateLimitConfig, status: RateLimitStatus) {
+  response.headers.set('X-RateLimit-Limit', String(config.maxAttempts))
+  response.headers.set('X-RateLimit-Remaining', String(Math.max(0, status.remaining)))
+  response.headers.set('X-RateLimit-Reset', String(Math.max(0, Math.ceil(status.resetAfterSeconds))))
+  if (status.blocked && status.retryAfterSeconds) {
+    response.headers.set('Retry-After', String(Math.max(1, Math.ceil(status.retryAfterSeconds))))
+  }
+}
+
+function getClientIdentifier(c: Context<{ Bindings: Bindings }>) {
+  const headerValue =
+    c.req.header('cf-connecting-ip') ||
+    c.req.header('x-real-ip') ||
+    c.req.header('true-client-ip') ||
+    c.req.header('x-forwarded-for')
+  if (headerValue) {
+    const ip = headerValue.split(',')[0]?.trim()
+    if (ip) {
+      return ip
+    }
+  }
+  const rawRequest = c.req.raw as Request & { cf?: { connecting_ip?: string } }
+  const cfIp = rawRequest?.cf?.connecting_ip
+  if (cfIp) {
+    return cfIp
+  }
+  return 'unknown'
 }
 
 function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
@@ -150,26 +397,66 @@ function addBusinessDays(start: Date, days: number) {
 }
 
 async function kvGet(env: Bindings, key: string) {
-  if (env.CHALLENGE_KV) {
-    return env.CHALLENGE_KV.get(key)
+  const primary = env.CHALLENGE_KV
+  if (primary) {
+    const value = await primary.get(key)
+    if (value) {
+      return value
+    }
   }
-  return inMemoryStore.get(key) ?? null
+  const backup = env.CHALLENGE_KV_BACKUP
+  if (backup) {
+    const backupValue = await backup.get(key)
+    if (backupValue) {
+      if (primary) {
+        await primary.put(key, backupValue)
+      } else {
+        inMemoryStore.set(key, backupValue)
+      }
+      return backupValue
+    }
+  }
+  if (!primary) {
+    const memoryValue = inMemoryStore.get(key)
+    if (memoryValue) {
+      return memoryValue
+    }
+  }
+  if (!backup) {
+    const backupMemoryValue = inMemoryBackupStore.get(key)
+    if (backupMemoryValue) {
+      return backupMemoryValue
+    }
+  }
+  return null
 }
 
 async function kvPut(env: Bindings, key: string, value: string) {
   if (env.CHALLENGE_KV) {
     await env.CHALLENGE_KV.put(key, value)
-    return
+  } else {
+    inMemoryStore.set(key, value)
   }
-  inMemoryStore.set(key, value)
+
+  if (env.CHALLENGE_KV_BACKUP) {
+    await env.CHALLENGE_KV_BACKUP.put(key, value)
+  } else if (!env.CHALLENGE_KV) {
+    inMemoryBackupStore.set(key, value)
+  }
 }
 
 async function kvDelete(env: Bindings, key: string) {
   if (env.CHALLENGE_KV) {
     await env.CHALLENGE_KV.delete(key)
-    return
+  } else {
+    inMemoryStore.delete(key)
   }
-  inMemoryStore.delete(key)
+
+  if (env.CHALLENGE_KV_BACKUP) {
+    await env.CHALLENGE_KV_BACKUP.delete(key)
+  } else if (!env.CHALLENGE_KV) {
+    inMemoryBackupStore.delete(key)
+  }
 }
 
 async function listParticipantKeys(env: Bindings) {
@@ -185,7 +472,23 @@ async function listParticipantKeys(env: Bindings) {
     } while (cursor)
     return keys
   }
-  return Array.from(inMemoryStore.keys()).filter((key) => key.startsWith(PARTICIPANT_KEY_PREFIX))
+
+  if (env.CHALLENGE_KV_BACKUP) {
+    const keys: string[] = []
+    let cursor: string | undefined
+    do {
+      const result = await env.CHALLENGE_KV_BACKUP.list({ prefix: PARTICIPANT_KEY_PREFIX, cursor })
+      for (const entry of result.keys) {
+        keys.push(entry.name)
+      }
+      cursor = result.list_complete ? undefined : result.cursor
+    } while (cursor)
+    return keys
+  }
+
+  const primaryKeys = Array.from(inMemoryStore.keys()).filter((key) => key.startsWith(PARTICIPANT_KEY_PREFIX))
+  const backupKeys = Array.from(inMemoryBackupStore.keys()).filter((key) => key.startsWith(PARTICIPANT_KEY_PREFIX))
+  return Array.from(new Set([...primaryKeys, ...backupKeys]))
 }
 
 async function getParticipant(env: Bindings, email: string) {
@@ -302,9 +605,8 @@ async function evaluateCompletions(env: Bindings) {
 }
 
 async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
-  const env = c.env
-  const secret = env.SESSION_SECRET
-  if (!secret) {
+  const config = getAdminConfig(c.env)
+  if (!config) {
     return null
   }
   const token = getCookie(c, ADMIN_SESSION_COOKIE)
@@ -312,8 +614,17 @@ async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
     return null
   }
   try {
-    const payload = (await verify(token, secret)) as AdminSessionPayload
+    const payload = (await verify(token, config.sessionSecret)) as AdminSessionPayload
     if (payload.role !== 'admin' || !payload.sub) {
+      return null
+    }
+    if (payload.iss !== ADMIN_SESSION_ISSUER || payload.aud !== ADMIN_SESSION_AUDIENCE) {
+      return null
+    }
+    if (!payload.ver || payload.ver !== config.sessionVersion) {
+      return null
+    }
+    if (payload.sub !== config.email) {
       return null
     }
     return payload.sub
@@ -323,16 +634,27 @@ async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
   }
 }
 
-async function createAdminSession(c: Context<{ Bindings: Bindings }>, email: string) {
-  const env = c.env
-  const secret = env.SESSION_SECRET
-  if (!secret) {
+async function createAdminSession(c: Context<{ Bindings: Bindings }>, email: string, config?: AdminConfig) {
+  const adminConfig = config ?? getAdminConfig(c.env)
+  if (!adminConfig) {
     throw new Error('SESSION_SECRET_NOT_CONFIGURED')
   }
   const normalizedEmail = email.trim().toLowerCase()
   const expiresInSeconds = 60 * 60 * 8
-  const exp = Math.floor(Date.now() / 1000) + expiresInSeconds
-  const token = await sign({ sub: normalizedEmail, role: 'admin', exp }, secret)
+  const issuedAt = Math.floor(Date.now() / 1000)
+  const exp = issuedAt + expiresInSeconds
+  const token = await sign(
+    {
+      sub: normalizedEmail,
+      role: 'admin',
+      exp,
+      iat: issuedAt,
+      iss: ADMIN_SESSION_ISSUER,
+      aud: ADMIN_SESSION_AUDIENCE,
+      ver: adminConfig.sessionVersion,
+    },
+    adminConfig.sessionSecret,
+  )
   setCookie(c, ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'Lax',
@@ -391,34 +713,70 @@ app.post('/api/auth/admin/login', async (c) => {
   }
 
   const env = c.env
-  const configuredEmail = env.ADMIN_EMAIL?.trim().toLowerCase()
-  const configuredHash = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase()
-  const secret = env.SESSION_SECRET
-
-  if (!configuredEmail || !configuredHash || !secret) {
+  const adminConfig = getAdminConfig(env)
+  if (!adminConfig) {
     return c.json({ error: 'ADMIN_AUTH_NOT_CONFIGURED' }, 500)
+  }
+
+  const rateLimitConfig = getAdminRateLimitConfig(env)
+  const identifier = getClientIdentifier(c)
+  const currentStatus = await getAdminRateLimitStatus(env, identifier, rateLimitConfig)
+  if (currentStatus.blocked) {
+    const retryAfter = currentStatus.retryAfterSeconds ?? rateLimitConfig.cooldownSeconds
+    const response = c.json({ error: 'RATE_LIMIT_EXCEEDED', retryAfter }, 429)
+    attachRateLimitHeaders(response, rateLimitConfig, currentStatus)
+    return response
   }
 
   const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
   const password = typeof payload?.password === 'string' ? payload.password : ''
 
   if (!isValidEmail(email) || !password) {
-    return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
+    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
+    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
+    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
+      responseBody.retryAfter = failureStatus.retryAfterSeconds
+    }
+    const response = c.json(responseBody, 401)
+    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
+    return response
   }
 
-  if (email !== configuredEmail) {
+  if (email !== adminConfig.email) {
     await new Promise((resolve) => setTimeout(resolve, 350))
-    return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
+    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
+    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
+    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
+      responseBody.retryAfter = failureStatus.retryAfterSeconds
+    }
+    const response = c.json(responseBody, 401)
+    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
+    return response
   }
 
   const computedHash = await sha256(password)
-  if (computedHash.toLowerCase() !== configuredHash) {
+  if (computedHash.toLowerCase() !== adminConfig.passwordHash) {
     await new Promise((resolve) => setTimeout(resolve, 350))
-    return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
+    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
+    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
+    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
+      responseBody.retryAfter = failureStatus.retryAfterSeconds
+    }
+    const response = c.json(responseBody, 401)
+    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
+    return response
   }
 
-  const exp = await createAdminSession(c, email)
-  return c.json({ ok: true, expiresAt: exp })
+  const exp = await createAdminSession(c, email, adminConfig)
+  await clearAdminRateLimit(env, identifier)
+  const successStatus: RateLimitStatus = {
+    blocked: false,
+    remaining: rateLimitConfig.maxAttempts,
+    resetAfterSeconds: rateLimitConfig.windowSeconds,
+  }
+  const response = c.json({ ok: true, expiresAt: exp })
+  attachRateLimitHeaders(response, rateLimitConfig, successStatus)
+  return response
 })
 
 app.post('/api/auth/admin/logout', async (c) => {
@@ -689,6 +1047,86 @@ app.get('/api/admin/challenge/completions', async (c) => {
   return c.json({ completed })
 })
 
+app.post('/api/admin/challenge/backup', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+
+  const hasPrimaryKv = Boolean(c.env.CHALLENGE_KV)
+  const hasBackupKv = Boolean(c.env.CHALLENGE_KV_BACKUP)
+
+  if (hasPrimaryKv && !hasBackupKv) {
+    return c.json({ error: 'BACKUP_NOT_CONFIGURED' }, 400)
+  }
+
+  const keys = await listParticipantKeys(c.env)
+  let replicated = 0
+
+  for (const key of keys) {
+    const value = await kvGet(c.env, key)
+    if (!value) {
+      continue
+    }
+    if (hasBackupKv) {
+      await c.env.CHALLENGE_KV_BACKUP!.put(key, value)
+    } else {
+      inMemoryBackupStore.set(key, value)
+    }
+    replicated += 1
+  }
+
+  return c.json({ ok: true, replicated, totalKeys: keys.length })
+})
+
+app.post('/api/admin/challenge/backup/snapshot', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+
+  const hasBackupKv = Boolean(c.env.CHALLENGE_KV_BACKUP)
+  const hasPrimaryKv = Boolean(c.env.CHALLENGE_KV)
+  if (hasPrimaryKv && !hasBackupKv) {
+    return c.json({ error: 'BACKUP_NOT_CONFIGURED' }, 400)
+  }
+
+  const keys = await listParticipantKeys(c.env)
+  const participants: ChallengeParticipant[] = []
+
+  for (const key of keys) {
+    const value = await kvGet(c.env, key)
+    if (!value) {
+      continue
+    }
+    try {
+      const parsed = JSON.parse(value) as ChallengeParticipant
+      if (parsed?.email) {
+        participants.push(parsed)
+      }
+    } catch (error) {
+      console.error('[admin/backup] Failed to parse participant record for snapshot', error)
+    }
+  }
+
+  const snapshot = {
+    exportedAt: new Date().toISOString(),
+    exportedBy: adminEmail,
+    participantCount: participants.length,
+    entries: participants,
+  }
+  const snapshotKey = `backup:snapshot:${new Date().toISOString().replace(/[:.]/g, '-')}`
+  const snapshotValue = JSON.stringify(snapshot)
+
+  if (hasBackupKv) {
+    await c.env.CHALLENGE_KV_BACKUP!.put(snapshotKey, snapshotValue)
+  } else {
+    inMemoryBackupStore.set(snapshotKey, snapshotValue)
+  }
+
+  return c.json({ ok: true, key: snapshotKey, participantCount: participants.length })
+})
+
 app.get('/api/challenge/profile', async (c) => {
   const email = c.req.query('email')
   if (!isValidEmail(email)) {
@@ -928,9 +1366,22 @@ app.get('/', (c) => {
   const currentYear = new Date().getFullYear()
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
+  const appConfig = JSON.stringify(
+    {
+      googleClientId,
+      googleRedirectUri,
+      communityUrl,
+    },
+    null,
+    2,
+  ).replace(/</g, '\\u003c')
 
   return c.render(
     <main class="page">
+      <script type="application/json" data-role="app-config">
+        {appConfig}
+      </script>
       <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
         <div class="app-header__left">
           <a class="app-header__logo" href="/" aria-label="Easy Image Editor 홈">
@@ -947,12 +1398,6 @@ app.get('/', (c) => {
           >
             홈
           </button>
-          <button class="app-header__nav-item" type="button" data-view-target="community" hidden>
-            커뮤니티
-          </button>
-          <button class="app-header__nav-item" type="button" data-view-target="admin" hidden>
-            관리자
-          </button>
         </nav>
         <div class="app-header__right">
           <div class="app-header__credit" data-role="credit-display" data-state="locked">
@@ -962,9 +1407,15 @@ app.get('/', (c) => {
               <strong data-role="credit-count">0</strong> 크레딧
             </span>
           </div>
-          <button class="btn btn--outline btn--sm" type="button" data-role="admin-login">
-            관리자
-          </button>
+          <a
+            class="btn btn--ghost btn--sm"
+            href={communityUrl}
+            target="_blank"
+            rel="noopener"
+            data-role="community-link"
+          >
+            미치나 커뮤니티
+          </a>
           <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
             로그인
           </button>
@@ -1316,133 +1767,6 @@ app.get('/', (c) => {
         </div>
       </section>
 
-      <section
-        class="challenge challenge--community"
-        aria-label="미치나 커뮤니티"
-        data-role="challenge-section"
-        data-view="community"
-        hidden
-      >
-        <header class="challenge__header">
-          <div>
-            <span class="challenge__eyebrow">Michina Plan</span>
-            <h2 class="challenge__title">미치나 커뮤니티</h2>
-          </div>
-          <p class="challenge__description">
-            총 3주 · 15회 제출 챌린지를 한눈에 관리하세요. 미치나 참가자는 진행률을 확인하고 자료를 제출하며,
-            수료증을 바로 다운로드할 수 있습니다.
-          </p>
-        </header>
-        <div class="challenge__panels">
-          <article class="challenge-card challenge-card--participant" data-role="challenge-dashboard" hidden>
-            <header class="challenge-card__header">
-              <h3>나의 챌린지 현황</h3>
-              <p data-role="challenge-summary">미치나 플랜에 참여하면 일일 제출 현황을 여기에서 확인할 수 있습니다.</p>
-            </header>
-            <section class="challenge-card__section">
-              <div class="challenge-progress" data-role="challenge-progress"></div>
-              <form class="challenge-submit" data-role="challenge-submit-form">
-                <div class="challenge-submit__grid">
-                  <label class="challenge-submit__label" for="challengeDay">Day 선택</label>
-                  <select id="challengeDay" data-role="challenge-day">
-                    {Array.from({ length: 15 }).map((_, index) => (
-                      <option value={index + 1}>Day {index + 1}</option>
-                    ))}
-                  </select>
-                  <label class="challenge-submit__label" for="challengeUrl">제출 URL</label>
-                  <input id="challengeUrl" type="url" placeholder="https://" data-role="challenge-url" />
-                  <label class="challenge-submit__label" for="challengeFile">이미지 업로드</label>
-                  <input id="challengeFile" type="file" accept="image/*" data-role="challenge-file" />
-                </div>
-                <p class="challenge-submit__hint" data-role="challenge-submit-hint">URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.</p>
-                <button class="btn btn--primary challenge-submit__button" type="submit">제출 저장</button>
-              </form>
-            </section>
-            <section class="challenge-card__section">
-              <h4 class="challenge-card__section-title">일별 제출 현황</h4>
-              <ul class="challenge-days" data-role="challenge-days"></ul>
-            </section>
-            <section class="challenge-card__section challenge-card__section--certificate" data-role="challenge-certificate" hidden>
-              <div class="certificate__header">
-                <h4>수료증이 도착했습니다!</h4>
-                <p>완주를 축하드립니다. 아래 수료증을 확인하고 PNG로 다운로드하세요.</p>
-              </div>
-              <div class="certificate__preview" data-role="certificate-preview"></div>
-              <button class="btn btn--outline certificate__download" type="button" data-role="certificate-download">수료증 다운로드 (PNG)</button>
-            </section>
-          </article>
-          <article class="challenge-card challenge-card--locked" data-role="challenge-locked">
-            <header class="challenge-card__header">
-              <h3>미치나 플랜 참가 안내</h3>
-            </header>
-            <p>관리자에게 참가자 명단 등록을 요청하면 챌린지 기능이 열립니다. 등록 후에는 일일 제출과 진행률을 실시간으로 확인할 수 있어요.</p>
-          </article>
-        </div>
-      </section>
-
-      <section class="challenge challenge--admin" aria-label="관리자 대시보드" data-view="admin" hidden>
-        <header class="challenge__header">
-          <div>
-            <span class="challenge__eyebrow">Michina Plan</span>
-            <h2 class="challenge__title">관리자 전용 대시보드</h2>
-          </div>
-          <p class="challenge__description">
-            참가자 명단 업로드부터 완주 검증까지 모든 미치나 운영 작업을 한곳에서 처리하세요.
-          </p>
-        </header>
-        <div class="challenge__panels">
-          <article class="challenge-card challenge-card--admin" data-role="admin-dashboard" hidden>
-            <header class="challenge-card__header">
-              <h3>관리자 대시보드</h3>
-              <p>명단 업로드부터 완주자 추출까지 통합으로 관리하세요.</p>
-              <span class="challenge-card__category" data-role="admin-category" hidden aria-live="polite">카테고리: 미치나</span>
-            </header>
-            <section class="challenge-card__section">
-              <h4 class="challenge-card__section-title">참가자 명단 등록</h4>
-              <form class="admin-import" data-role="admin-import-form">
-                <div class="admin-import__grid">
-                  <label class="admin-import__label" for="adminImportFile">CSV 업로드</label>
-                  <input id="adminImportFile" type="file" accept=".csv,.txt" data-role="admin-import-file" />
-                  <label class="admin-import__label" for="adminImportManual">수동 입력</label>
-                  <textarea
-                    id="adminImportManual"
-                    class="admin-import__textarea"
-                    placeholder="이메일,이름 형식으로 한 줄씩 입력하세요."
-                    data-role="admin-import-manual"
-                  ></textarea>
-                  <label class="admin-import__label" for="adminImportEnd">챌린지 종료일(선택)</label>
-                  <input id="adminImportEnd" type="date" data-role="admin-import-enddate" />
-                </div>
-                <p class="admin-import__hint">등록 즉시 미치나 플랜 권한이 부여되고 15영업일 만료일이 자동 설정됩니다.</p>
-                <button class="btn btn--primary admin-import__submit" type="submit">명단 등록</button>
-              </form>
-            </section>
-            <section class="challenge-card__section">
-              <div class="admin-actions">
-                <button class="btn btn--ghost btn--sm" type="button" data-role="admin-refresh">현황 새로고침</button>
-                <button class="btn btn--outline btn--sm" type="button" data-role="admin-run-completion">완주 판별 실행</button>
-                <button class="btn btn--ghost btn--sm" type="button" data-role="admin-download-completion">완주자 CSV 다운로드</button>
-                <button class="btn btn--ghost btn--sm" type="button" data-role="admin-logout">관리자 세션 종료</button>
-              </div>
-              <div class="challenge-table-wrapper">
-                <table class="challenge-table" data-role="admin-participants-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">참가자</th>
-                      <th scope="col">진행률</th>
-                      <th scope="col">미제출</th>
-                      <th scope="col">기간</th>
-                      <th scope="col">상태</th>
-                    </tr>
-                  </thead>
-                  <tbody data-role="admin-participants-body"></tbody>
-                </table>
-              </div>
-            </section>
-          </article>
-        </div>
-      </section>
-
       <footer class="site-footer" aria-label="사이트 하단">
         <div class="site-footer__inner">
           <div class="site-footer__brand">
@@ -1455,6 +1779,7 @@ app.get('/', (c) => {
             <a href="/privacy">개인정보 처리방침</a>
             <a href="/terms">이용약관</a>
             <a href="/cookies">쿠키 정책</a>
+            <a href="/?admin=1" target="_blank" rel="noopener">관리자 전용</a>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>
@@ -1493,12 +1818,6 @@ app.get('/', (c) => {
           </div>
         </div>
       </div>
-      <script type="application/json" data-role="app-config">
-        {JSON.stringify({
-          googleClientId,
-          googleRedirectUri,
-        })}
-      </script>
     </main>
   )
 })

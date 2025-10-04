@@ -18,7 +18,7 @@ const GOOGLE_SIGNIN_TEXT = {
   idle: 'Google 계정으로 계속하기',
   initializing: 'Google 로그인 준비 중…',
   loading: 'Google 계정을 확인하는 중…',
-  disabled: 'Google 로그인 구성 필요',
+  disabled: 'Google 로그인 준비 중',
   error: 'Google 로그인 다시 시도',
   retrying: 'Google 로그인 자동 재시도 준비 중…',
 }
@@ -113,6 +113,8 @@ const state = {
 
 const runtime = {
   config: null,
+  initialView: 'home',
+  allowViewBypass: false,
   google: {
     codeClient: null,
     deferred: null,
@@ -404,6 +406,7 @@ const elements = {
   googleLoginText: document.querySelector('[data-role="google-login-text"]'),
   googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
   googleLoginHelper: document.querySelector('[data-role="google-login-helper"]'),
+  communityLink: document.querySelector('[data-role="community-link"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
   loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
   loginEmailCodeInput: document.querySelector('[data-role="login-email-code"]'),
@@ -557,7 +560,7 @@ function updateGoogleProviderAvailability() {
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
     setGoogleButtonState('disabled')
-    setGoogleLoginHelper('Google 로그인 구성이 필요합니다. 관리자에게 문의해주세요.', 'danger')
+    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
   }
   if (runtime.google.codeClient) {
@@ -599,7 +602,7 @@ async function prefetchGoogleClient() {
       console.warn('Google client 초기화 실패', error)
       if (error instanceof Error && error.message === 'GOOGLE_CLIENT_ID_MISSING') {
         setGoogleButtonState('disabled')
-        setGoogleLoginHelper('Google 로그인 구성이 필요합니다. 관리자에게 문의해주세요.', 'danger')
+        setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
       } else {
         setGoogleButtonState('error')
         setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
@@ -723,8 +726,7 @@ function scheduleGoogleAutoRetry(reason = 'recoverable_error') {
     handleGoogleLogin(new Event('retry'))
   }, delay)
 
-  const statusTone = reason === 'interaction_required' ? 'info' : 'warning'
-  setStatus(`${describeGoogleRetry(reason)} 자동으로 다시 시도합니다.`, statusTone)
+  setStatus('Google 로그인이 잠시 지연되고 있습니다. 자동 재시도를 진행합니다.', 'info', 3600)
   announceGoogleRetry(delay, reason)
   return true
 }
@@ -1082,12 +1084,6 @@ function canAccessView(rawView) {
 }
 
 function determineDefaultView() {
-  if (state.admin.isLoggedIn && canAccessView('admin')) {
-    return 'admin'
-  }
-  if (canAccessView('community')) {
-    return 'community'
-  }
   return 'home'
 }
 
@@ -1120,7 +1116,8 @@ function updateViewVisibility() {
 function setView(rawView, options = {}) {
   const requested = typeof rawView === 'string' && rawView.trim() ? rawView.trim() : 'home'
   const forceUpdate = Boolean(options.force)
-  const accessible = canAccessView(requested)
+  const bypassAccess = Boolean(options.bypassAccess)
+  const accessible = bypassAccess || canAccessView(requested)
   const targetView = accessible ? requested : determineDefaultView()
   if (!forceUpdate && state.view === targetView) {
     updateNavActiveState()
@@ -1185,9 +1182,9 @@ function updateNavigationAccess() {
   })
 
   if (requiresFallback) {
-    setView(determineDefaultView(), { force: true })
+    setView(determineDefaultView(), { force: true, bypassAccess: runtime.allowViewBypass })
   } else {
-    setView(state.view, { force: true })
+    setView(state.view, { force: true, bypassAccess: runtime.allowViewBypass })
   }
 }
 
@@ -1737,6 +1734,18 @@ async function handleAdminLogin(event) {
           startAdminCooldown(20000)
           runtime.admin.retryCount = 0
         }
+      } else if (response.status === 429) {
+        const detail = await response.json().catch(() => ({}))
+        const retryAfterSeconds = Number(detail?.retryAfter ?? 0)
+        const boundedSeconds = Number.isFinite(retryAfterSeconds) ? Math.max(1, Math.ceil(retryAfterSeconds)) : 0
+        const message =
+          boundedSeconds > 0
+            ? `로그인 시도가 너무 많습니다. 약 ${boundedSeconds}초 후 다시 시도해주세요.`
+            : '로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.'
+        setAdminMessage(message, 'danger')
+        const cooldownMs = boundedSeconds > 0 ? boundedSeconds * 1000 : 20000
+        startAdminCooldown(Math.max(15000, cooldownMs))
+        runtime.admin.retryCount = 0
       } else if (response.status === 500) {
         setAdminMessage('관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.', 'danger')
         startAdminCooldown(12000)
@@ -2591,8 +2600,9 @@ async function handleGoogleLogin(event) {
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
-    setStatus('Google 로그인 설정이 아직 완료되지 않았습니다. 관리자에게 문의해주세요.', 'danger')
+    setStatus('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     setGoogleButtonState('disabled')
+    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
   }
 
@@ -2706,7 +2716,7 @@ async function handleGoogleLogin(event) {
     if (error instanceof Error) {
       switch (error.message) {
         case 'GOOGLE_CLIENT_ID_MISSING':
-          message = 'Google 로그인 설정이 아직 완료되지 않았습니다. 관리자에게 문의해주세요.'
+          message = '현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.'
           disableDueToConfig = true
           break
         case 'GOOGLE_EMAIL_NOT_VERIFIED':
@@ -2744,7 +2754,8 @@ async function handleGoogleLogin(event) {
           break
         default:
           if (error.message && error.message.startsWith('clientId')) {
-            message = 'Google 로그인 구성이 올바르지 않습니다. 관리자에게 문의해주세요.'
+            message = '현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.'
+            disableDueToConfig = true
           }
           break
       }
@@ -2764,7 +2775,8 @@ async function handleGoogleLogin(event) {
     let helperMessage = ''
     let helperTone = 'danger'
     if (disableDueToConfig) {
-      helperMessage = 'Google 로그인 구성이 필요합니다. 관리자에게 문의해주세요.'
+      helperMessage = '현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.'
+      helperTone = 'info'
     } else if (isPopupDismissed) {
       helperMessage = 'Google 로그인 창이 닫혔습니다. 버튼을 다시 눌러 진행해주세요.'
       helperTone = 'warning'
@@ -2783,7 +2795,7 @@ async function handleGoogleLogin(event) {
         fallbackReason === 'interaction_required' ? 'info' : isRecoverable ? 'warning' : 'danger'
     }
 
-    const statusTone = disableDueToConfig ? 'danger' : isPopupDismissed ? 'warning' : isRecoverable ? 'info' : 'danger'
+    const statusTone = disableDueToConfig ? 'info' : isPopupDismissed ? 'warning' : isRecoverable ? 'info' : 'danger'
     setStatus(message, statusTone)
 
     if (!disableDueToConfig) {
@@ -5414,6 +5426,29 @@ function attachEventListeners() {
 }
 
 function init() {
+  const config = getAppConfig()
+  const allowedViews = new Set(['home', 'community', 'admin'])
+  const initialView =
+    typeof config.initialView === 'string' && allowedViews.has(config.initialView) ? config.initialView : 'home'
+
+  runtime.config = config
+  runtime.initialView = initialView
+  runtime.allowViewBypass = initialView !== 'home'
+  state.view = initialView
+
+  if (elements.communityLink instanceof HTMLAnchorElement) {
+    const configuredUrl = typeof config.communityUrl === 'string' ? config.communityUrl.trim() : ''
+    if (configuredUrl) {
+      elements.communityLink.href = configuredUrl
+    }
+  }
+
+  if (runtime.allowViewBypass) {
+    setView(initialView, { force: true, bypassAccess: true })
+  } else {
+    setView(initialView, { force: true })
+  }
+
   updateOperationAvailability()
   updateResultActionAvailability()
   attachEventListeners()
@@ -5425,7 +5460,16 @@ function init() {
   renderResults()
   displayAnalysisFor(null)
   refreshAccessStates()
-  syncAdminSession()
+
+  syncAdminSession().finally(() => {
+    if (runtime.initialView === 'admin' && !state.admin.isLoggedIn) {
+      window.setTimeout(() => {
+        if (!state.admin.isLoggedIn) {
+          openAdminModal()
+        }
+      }, 400)
+    }
+  })
 }
 
 document.addEventListener('DOMContentLoaded', init)
