@@ -8,7 +8,7 @@
 ## 현재 구현 기능
 - **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
 - **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
-- **Google 계정 로그인 UX**: Google Identity Services 코드 플로우, 팝업 인터랙션 실패/토큰 교환 오류에 대한 세부 메시지, 최대 3회 지수 백오프 + 지터 기반 자동 재시도, 장애 시 이메일 로그인 모드 자동 유도
+- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, Google 로그인은 비활성화되어 이메일 인증만 지원
 - **관리자 인증 & 보안 강화**
   - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
@@ -25,7 +25,7 @@
 - **헤더 커뮤니티 링크**: 로그인 버튼 옆 “미치나 커뮤니티” 버튼을 새 탭으로 열어 외부 커뮤니티 또는 내부 뷰(`/?view=community`)에 접근 가능
 
 ## 관리자 & 챌린지 운영 흐름
-0. **Google 로그인**: 로그인 모달 → “Google 계정으로 계속하기” → 팝업 인터랙션 후 OAuth 코드 발급, 오류 시 자동 재시도 및 이메일 로그인 안내
+0. **이메일 로그인**: 로그인 모달에서 이메일 주소 입력 → 6자리 인증 코드 전송 → 코드 확인 후 로그인(샌드박스에서는 코드가 즉시 안내됨)
 1. **관리자 로그인**: `/api/auth/admin/login`으로 이메일·비밀번호 제출 → SHA-256 해시 비교 후 JWT 서명, HttpOnly 세션 쿠키 발급(8시간). 로그인 성공 후에는 자동 이동 없이 상태 배너/안내 패널의 CTA(현재 창 이동 또는 새 탭 열기)를 통해 대시보드 진입 방식을 선택
 2. **명단 등록**: CSV 업로드(이메일, 이름, 종료일) 또는 textarea 입력 → KV/in-memory에 참가자 레코드 저장, 미치나 플랜 권한 부여
 3. **대시보드 모니터링**: 진행률/미제출 현황 표, 완료 상태 필터, 새로고침·완주 판별 버튼 제공
@@ -91,9 +91,9 @@
 | `ADMIN_RATE_LIMIT_MAX_ATTEMPTS` | 관리자 로그인 허용 시도 횟수 | 선택 (기본 `5`) | 1~20 범위 |
 | `ADMIN_RATE_LIMIT_WINDOW_SECONDS` | 레이트 리밋 윈도우(초) | 선택 (기본 `60`) | 10~3600 범위 |
 | `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS` | 최대 시도 초과 시 추가 쿨다운 | 선택 (기본 `300`) | 윈도우 이상 7200 이하 |
-| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 클라이언트 ID | 필수 | 브라우저용, 공개 가능 |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 필수 | Cloudflare Pages Secret으로만 저장 |
-| `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 기본값 `https://project-9cf3a0d0.pages.dev/auth/google/callback` |
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 클라이언트 ID | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
+| `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
 | `CHALLENGE_KV` | Cloudflare KV 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | Cloudflare KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
@@ -115,9 +115,10 @@ ADMIN_SESSION_VERSION="1"
 ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
 ADMIN_RATE_LIMIT_WINDOW_SECONDS="60"
 ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
-GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
-GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
-GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
+# Google OAuth 변수 (현재 Google 로그인 비활성화 상태이므로 입력하지 않아도 됩니다)
+# GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
+# GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
+# GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
 MICHINA_COMMUNITY_URL="https://community.example.com"
 # CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 Cloudflare 바인딩 시 자동 주입
 EOF
@@ -138,7 +139,7 @@ curl http://localhost:3000/api/health
 - 비밀번호 해시 생성 예시: `echo -n 'test1234!' | shasum -a 256 | awk '{print tolower($1)}'`
 
 ## 테스트/검증 로그
-- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 자동 재시도 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋, 상태 배너 CTA 템플릿)
+- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 비활성화 및 이메일 로그인 전용 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋, 상태 배너 CTA 템플릿)
 - 2025-10-04 관리자 로그인 직후 상태 배너 CTA(“관리자 로그인 완료! ...”)·내비 하이라이트·안내 패널 연동 검증(세션 동기화 포함, 자동 이동 제거, 8초 지속·`status--interactive` 적용)
 - `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
 - 관리자 로그인 플로우: 잘못된 해시 입력 시 401 + 지연 응답, 3회 초과 시 429 + `Retry-After`, 성공 시 세션 쿠키(`admin_session`) 발급·만료 8h
@@ -192,17 +193,17 @@ curl http://localhost:3000/api/health
    - Secrets: `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
 
 ## 사용자 가이드 요약
-- **게스트**: 이미지 업로드 → 로그인 모달에서 Google 계정 선택(자동 재시도 지원) 또는 이메일 OTP 인증 → 무료 크레딧 충전 후 편집 진행
+- **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
 - **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
 - **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
 - **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
 
 ## URL & 배포 상태
-- **Production**: https://image-editor.pages.dev
-- **Latest Preview**: https://78abe933.project-9cf3a0d0.pages.dev (2025-10-04 배포)
+- **Production**: https://project-9cf3a0d0.pages.dev
+- **Latest Preview**: https://35f57e10.project-9cf3a0d0.pages.dev (2025-10-04 배포)
 - **GitHub**: https://github.com/elliesbang/Easy-Image-Editer
 
 ## 라이선스 & 고지
 - 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
 
-_Last updated: 2025-10-04 (관리자 로그인 자동 이동 제거 + 배너 CTA 복수 선택 안내(대시보드 이동/새 탭)·네비 하이라이트 · OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지)_
+_Last updated: 2025-10-04 (Google 로그인 비활성화 및 이메일 전용 인증 UX · 관리자 로그인 자동 이동 제거 + 배너 CTA 복수 선택 안내(대시보드 이동/새 탭) · 네비 하이라이트 · OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지)_

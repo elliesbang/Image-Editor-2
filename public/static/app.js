@@ -23,6 +23,8 @@ const GOOGLE_SIGNIN_TEXT = {
   retrying: 'Google 로그인 자동 재시도 준비 중…',
 }
 
+const ENABLE_GOOGLE_LOGIN = false
+
 const GOOGLE_MAX_AUTO_RETRY = 3
 const GOOGLE_BACKOFF_BASE_DELAY = 1500
 const GOOGLE_BACKOFF_MAX_DELAY = 30000
@@ -303,6 +305,9 @@ function createDeferred() {
 }
 
 async function ensureGoogleClient() {
+  if (!ENABLE_GOOGLE_LOGIN) {
+    throw new Error('GOOGLE_CLIENT_ID_MISSING')
+  }
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
@@ -582,8 +587,31 @@ function setGoogleLoginHelper(message = '', tone = 'muted') {
   }
 }
 
+function disableGoogleLoginUI() {
+  if (elements.googleLoginButton instanceof HTMLElement) {
+    elements.googleLoginButton.hidden = true
+    elements.googleLoginButton.setAttribute('aria-hidden', 'true')
+    elements.googleLoginButton.setAttribute('aria-disabled', 'true')
+    if (elements.googleLoginButton instanceof HTMLButtonElement) {
+      elements.googleLoginButton.disabled = true
+    }
+  }
+  if (elements.googleLoginText instanceof HTMLElement) {
+    elements.googleLoginText.textContent = 'Google 로그인은 현재 지원되지 않습니다.'
+  }
+  if (elements.googleLoginSpinner instanceof HTMLElement) {
+    elements.googleLoginSpinner.hidden = true
+  }
+  setGoogleLoginHelper('현재 이메일 로그인만 지원합니다.', 'info')
+}
+
 function updateGoogleProviderAvailability() {
+  if (!ENABLE_GOOGLE_LOGIN) {
+    disableGoogleLoginUI()
+    return
+  }
   if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
+    disableGoogleLoginUI()
     return
   }
 
@@ -627,6 +655,10 @@ function updateGoogleProviderAvailability() {
 }
 
 async function prefetchGoogleClient() {
+  if (!ENABLE_GOOGLE_LOGIN) {
+    disableGoogleLoginUI()
+    return null
+  }
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
@@ -1245,15 +1277,35 @@ function updateNavigationAccess() {
   let requiresFallback = false
 
   buttons.forEach((button) => {
-    if (!(button instanceof HTMLButtonElement)) return
+    if (!(button instanceof HTMLElement)) return
     const target = button.dataset.viewTarget || 'home'
     const accessible = canAccessView(target)
+    const isButton = button instanceof HTMLButtonElement
     if (target === 'home') {
       button.hidden = false
-      button.disabled = false
+      if (isButton) {
+        button.disabled = false
+      } else {
+        button.classList.remove('is-disabled')
+        button.removeAttribute('aria-disabled')
+      }
     } else {
       button.hidden = !accessible
-      button.disabled = !accessible
+      if (isButton) {
+        button.disabled = !accessible
+        if (!accessible) {
+          button.setAttribute('aria-disabled', 'true')
+        } else {
+          button.removeAttribute('aria-disabled')
+        }
+      } else {
+        button.classList.toggle('is-disabled', !accessible)
+        if (!accessible) {
+          button.setAttribute('aria-disabled', 'true')
+        } else {
+          button.removeAttribute('aria-disabled')
+        }
+      }
     }
     if (!accessible && state.view === target) {
       requiresFallback = true
@@ -1272,19 +1324,19 @@ function clearAdminNavHighlight() {
     window.clearTimeout(adminNavHighlightTimer)
     adminNavHighlightTimer = null
   }
-  if (elements.adminNavButton instanceof HTMLButtonElement) {
+  if (elements.adminNavButton instanceof HTMLElement) {
     elements.adminNavButton.classList.remove('nav-button--highlight')
   }
 }
 
 function highlightAdminNavButton(duration = 12000) {
-  if (!(elements.adminNavButton instanceof HTMLButtonElement)) {
+  if (!(elements.adminNavButton instanceof HTMLElement)) {
     return
   }
   clearAdminNavHighlight()
   elements.adminNavButton.classList.add('nav-button--highlight')
   adminNavHighlightTimer = window.setTimeout(() => {
-    if (elements.adminNavButton instanceof HTMLButtonElement) {
+    if (elements.adminNavButton instanceof HTMLElement) {
       elements.adminNavButton.classList.remove('nav-button--highlight')
     }
     adminNavHighlightTimer = null
@@ -1322,7 +1374,7 @@ function showAdminDashboardShortcut(options = {}) {
     if (elements.adminDashboard instanceof HTMLElement) {
       elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-    if (elements.adminNavButton instanceof HTMLButtonElement) {
+    if (elements.adminNavButton instanceof HTMLElement) {
       elements.adminNavButton.focus()
     }
     dismissAdminDashboardPrompt()
@@ -1724,13 +1776,17 @@ function updateAdminUI() {
       elements.adminCategoryBadge.textContent = '카테고리: 미치나'
     }
   }
-  if (elements.adminLoginButton instanceof HTMLButtonElement) {
+  if (elements.adminLoginButton instanceof HTMLElement) {
     elements.adminLoginButton.textContent = isAdmin ? '관리자 패널' : '관리자 전용'
     elements.adminLoginButton.dataset.mode = isAdmin ? 'panel' : 'login'
   }
-  if (elements.adminNavButton instanceof HTMLButtonElement) {
+  if (elements.adminNavButton instanceof HTMLElement) {
     elements.adminNavButton.hidden = !isAdmin
-    elements.adminNavButton.disabled = !isAdmin
+    if (elements.adminNavButton instanceof HTMLButtonElement) {
+      elements.adminNavButton.disabled = !isAdmin
+    } else {
+      elements.adminNavButton.classList.toggle('is-disabled', !isAdmin)
+    }
     if (isAdmin) {
       elements.adminNavButton.removeAttribute('aria-disabled')
     } else {
@@ -1740,7 +1796,7 @@ function updateAdminUI() {
   if (isAdmin && !hasAnnouncedAdminNav) {
     hasAnnouncedAdminNav = true
     window.setTimeout(() => {
-      if (elements.adminNavButton instanceof HTMLButtonElement && document.body.contains(elements.adminNavButton)) {
+      if (elements.adminNavButton instanceof HTMLElement && document.body.contains(elements.adminNavButton)) {
         elements.adminNavButton.focus()
       }
     }, 150)
@@ -2896,9 +2952,13 @@ function openLoginModal() {
   elements.loginModal.classList.add('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'false')
   document.body.classList.add('is-modal-open')
-  prefetchGoogleClient().catch((error) => {
-    console.warn('Google 로그인 초기화 중 오류', error)
-  })
+  if (ENABLE_GOOGLE_LOGIN) {
+    prefetchGoogleClient().catch((error) => {
+      console.warn('Google 로그인 초기화 중 오류', error)
+    })
+  } else {
+    disableGoogleLoginUI()
+  }
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     window.requestAnimationFrame(() => elements.loginEmailInput.focus())
   }
@@ -2915,6 +2975,12 @@ function closeLoginModal() {
 async function handleGoogleLogin(event) {
   if (event && typeof event.preventDefault === 'function') {
     event.preventDefault()
+  }
+
+  if (!ENABLE_GOOGLE_LOGIN) {
+    disableGoogleLoginUI()
+    setStatus('현재 이메일 로그인만 지원합니다.', 'info')
+    return
   }
 
   const isAutoRetry = event instanceof Event && event.type === 'retry'
@@ -5651,14 +5717,15 @@ function attachEventListeners() {
     })
   }
 
-  if (elements.adminLoginButton instanceof HTMLButtonElement) {
-    elements.adminLoginButton.addEventListener('click', () => {
+  if (elements.adminLoginButton instanceof HTMLElement) {
+    elements.adminLoginButton.addEventListener('click', (event) => {
+      event.preventDefault()
       if (state.admin.isLoggedIn) {
         setView('admin')
         if (elements.adminDashboard instanceof HTMLElement) {
           elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }
-        if (elements.adminNavButton instanceof HTMLButtonElement) {
+        if (elements.adminNavButton instanceof HTMLElement) {
           elements.adminNavButton.focus()
         }
       } else {
@@ -5668,8 +5735,11 @@ function attachEventListeners() {
   }
 
   elements.navButtons?.forEach((button) => {
-    if (!(button instanceof HTMLButtonElement)) return
-    button.addEventListener('click', () => handleNavigationClick(button.dataset.viewTarget || 'home'))
+    if (!(button instanceof HTMLElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      handleNavigationClick(button.dataset.viewTarget || 'home')
+    })
   })
 
   if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
@@ -5720,7 +5790,7 @@ function attachEventListeners() {
     loginBackdrop.addEventListener('click', closeLoginModal)
   }
 
-  if (elements.googleLoginButton instanceof HTMLButtonElement) {
+  if (ENABLE_GOOGLE_LOGIN && elements.googleLoginButton instanceof HTMLButtonElement) {
     elements.googleLoginButton.addEventListener('click', handleGoogleLogin)
     elements.googleLoginButton.addEventListener('pointerenter', () => {
       if (!runtime.google.codeClient && !runtime.google.prefetchPromise) {
@@ -5736,6 +5806,8 @@ function attachEventListeners() {
         })
       }
     })
+  } else {
+    disableGoogleLoginUI()
   }
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
@@ -5919,7 +5991,11 @@ function init() {
   updateAdminUI()
   initCookieBanner()
   resetLoginFlow()
-  prefetchGoogleClient()
+  if (ENABLE_GOOGLE_LOGIN) {
+    prefetchGoogleClient()
+  } else {
+    disableGoogleLoginUI()
+  }
   renderUploads()
   renderResults()
   displayAnalysisFor(null)
