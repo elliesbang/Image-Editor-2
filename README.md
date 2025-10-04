@@ -22,6 +22,7 @@
   - 인증된 참가자는 #fef568 배경과 어두운 텍스트(`--certificate-text`) 기반 카드 미리보기 제공
 - **보안 헤더 & 보호**: 전역 CSP, HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, Cross-Origin-Opener-Policy 적용
 - **법적 문서 & 쿠키 배너**: 개인정보 처리방침(`/privacy`), 이용약관(`/terms`), 쿠키 정책(`/cookies`) 및 선택형 쿠키 배너
+- **역할 기반 내비게이션**: 헤더 상단 탭을 통해 홈/커뮤니티/관리자 뷰를 전환하며, 미치나 플랜 또는 관리자 세션 여부에 따라 버튼 노출이 자동 제어됩니다.
 
 ## 관리자 & 챌린지 운영 흐름
 0. **Google 로그인**: 로그인 모달에서 “Google 계정으로 계속하기” 선택 → Google 계정 선택 팝업 → OAuth 코드가 발급되면 `/api/auth/google`이 Google 토큰 엔드포인트와 통신해 ID 토큰을 검증하고 프론트 세션을 초기화합니다.
@@ -33,6 +34,7 @@
 6. **세션 종료**: `/api/auth/admin/logout` 호출 또는 401 응답 시 프론트에서 세션 제거 및 관리자 모달 재요청
 
 ## 참가자 UI 가이드
+0. **커뮤니티 뷰 이동**: 헤더 내비게이션에서 “커뮤니티” 탭을 선택하면 미치나 플랜 참가자용 페이지로 이동하며, 자격이 없으면 버튼이 표시되지 않습니다.
 1. **프로필 확인**: 로그인 후 이메일이 챌린지 참가자라면 `/api/challenge/profile` 로드 → 진행률·남은 제출 수 표시
 2. **일일 제출**: Day 선택 → URL 입력 또는 이미지 업로드(이미지 선택 시 URL보다 우선) → 제출 시 `/api/challenge/submit`
 3. **진행률 추적**: 진행률 바(퍼센트), 남은 횟수, 각 Day 카드(`예정/제출 대기/완주/기록 없음`) 확인
@@ -173,8 +175,8 @@ curl http://localhost:3000/api/health
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 Google 계정 선택 또는 이메일 OTP 인증 → 무료 크레딧 충전 후 편집 진행
-- **관리자**: 헤더의 “관리자” 버튼 → 이메일/비밀번호 입력 → 대시보드에서 명단 업로드·완주 판별·CSV 다운로드
-- **참가자**: 챌린지 카드에서 진행률 확인 → Day 제출 폼에 URL/이미지 등록 → 완주 시 수료증 PNG 다운로드
+- **관리자**: 헤더 내비게이션에서 “관리자” 탭을 열고 이메일·비밀번호로 로그인하면 대시보드에서 명단 업로드·완주 판별·CSV 다운로드 수행
+- **참가자**: 로그인 후 헤더의 “커뮤니티” 탭으로 이동해 진행률을 확인하고 Day 제출 폼(URL/이미지) 등록 → 완주 시 수료증 PNG 다운로드
 - **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
 
 ## URL & 배포 상태
@@ -184,4 +186,4 @@ curl http://localhost:3000/api/health
 ## 라이선스 & 고지
 - 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
 
-_Last updated: 2025-10-03 (Google Sign-In 통합)_
+_Last updated: 2025-10-04 (커뮤니티/관리자 전용 내비게이션 분리)_

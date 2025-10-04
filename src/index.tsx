@@ -938,6 +938,22 @@ app.get('/', (c) => {
             <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
         </div>
+        <nav class="app-header__nav" aria-label="주요 내비게이션">
+          <button
+            class="app-header__nav-item is-active"
+            type="button"
+            data-view-target="home"
+            aria-current="page"
+          >
+            홈
+          </button>
+          <button class="app-header__nav-item" type="button" data-view-target="community" hidden>
+            커뮤니티
+          </button>
+          <button class="app-header__nav-item" type="button" data-view-target="admin" hidden>
+            관리자
+          </button>
+        </nav>
         <div class="app-header__right">
           <div class="app-header__credit" data-role="credit-display" data-state="locked">
             <span class="app-header__plan-badge" data-role="plan-badge">게스트 모드</span>
@@ -955,7 +971,7 @@ app.get('/', (c) => {
         </div>
       </header>
 
-      <section class="hero" aria-labelledby="hero-heading">
+      <section class="hero" data-view="home" aria-labelledby="hero-heading">
         <p class="hero__badge">크레딧 기반 Freemium 베타</p>
         <h1 class="hero__heading" id="hero-heading">
           멀티 이미지 편집 스튜디오
@@ -966,7 +982,7 @@ app.get('/', (c) => {
         </p>
       </section>
 
-      <section class="features" aria-label="주요 기능 안내">
+      <section class="features" data-view="home" aria-label="주요 기능 안내">
         <h2 class="features__title">더 나은 편집 경험을 위한 핵심 기능</h2>
         <div class="features__grid">
           <article class="feature-card">
@@ -984,7 +1000,7 @@ app.get('/', (c) => {
         </div>
       </section>
 
-      <section class="stage" aria-label="작업 단계 안내">
+      <section class="stage" data-view="home" aria-label="작업 단계 안내">
         <ol class="stage__list" data-role="stage-indicator">
           <li class="stage__item is-active" data-stage="1">
             <span class="stage__step">1</span>
@@ -1146,7 +1162,7 @@ app.get('/', (c) => {
         </div>
       </div>
 
-      <section class="workspace" aria-label="이미지 작업 영역">
+      <section class="workspace" data-view="home" aria-label="이미지 작업 영역">
         <div class="workspace__actions">
           <button class="btn btn--primary" type="button" data-trigger="file">
             이미지 업로드
@@ -1300,14 +1316,78 @@ app.get('/', (c) => {
         </div>
       </section>
 
-      <section class="challenge" aria-label="미치나 플랜 챌린지" data-role="challenge-section">
+      <section
+        class="challenge challenge--community"
+        aria-label="미치나 커뮤니티"
+        data-role="challenge-section"
+        data-view="community"
+        hidden
+      >
         <header class="challenge__header">
           <div>
             <span class="challenge__eyebrow">Michina Plan</span>
-            <h2 class="challenge__title">미치나 플랜 챌린지 트래킹</h2>
+            <h2 class="challenge__title">미치나 커뮤니티</h2>
           </div>
           <p class="challenge__description">
-            총 3주 · 15회 제출 챌린지를 한눈에 관리하세요. 관리자는 참가자 명단을 업로드하고, 챌린저는 일일 과제를 제출하며 진행률을 확인할 수 있습니다.
+            총 3주 · 15회 제출 챌린지를 한눈에 관리하세요. 미치나 참가자는 진행률을 확인하고 자료를 제출하며,
+            수료증을 바로 다운로드할 수 있습니다.
+          </p>
+        </header>
+        <div class="challenge__panels">
+          <article class="challenge-card challenge-card--participant" data-role="challenge-dashboard" hidden>
+            <header class="challenge-card__header">
+              <h3>나의 챌린지 현황</h3>
+              <p data-role="challenge-summary">미치나 플랜에 참여하면 일일 제출 현황을 여기에서 확인할 수 있습니다.</p>
+            </header>
+            <section class="challenge-card__section">
+              <div class="challenge-progress" data-role="challenge-progress"></div>
+              <form class="challenge-submit" data-role="challenge-submit-form">
+                <div class="challenge-submit__grid">
+                  <label class="challenge-submit__label" for="challengeDay">Day 선택</label>
+                  <select id="challengeDay" data-role="challenge-day">
+                    {Array.from({ length: 15 }).map((_, index) => (
+                      <option value={index + 1}>Day {index + 1}</option>
+                    ))}
+                  </select>
+                  <label class="challenge-submit__label" for="challengeUrl">제출 URL</label>
+                  <input id="challengeUrl" type="url" placeholder="https://" data-role="challenge-url" />
+                  <label class="challenge-submit__label" for="challengeFile">이미지 업로드</label>
+                  <input id="challengeFile" type="file" accept="image/*" data-role="challenge-file" />
+                </div>
+                <p class="challenge-submit__hint" data-role="challenge-submit-hint">URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.</p>
+                <button class="btn btn--primary challenge-submit__button" type="submit">제출 저장</button>
+              </form>
+            </section>
+            <section class="challenge-card__section">
+              <h4 class="challenge-card__section-title">일별 제출 현황</h4>
+              <ul class="challenge-days" data-role="challenge-days"></ul>
+            </section>
+            <section class="challenge-card__section challenge-card__section--certificate" data-role="challenge-certificate" hidden>
+              <div class="certificate__header">
+                <h4>수료증이 도착했습니다!</h4>
+                <p>완주를 축하드립니다. 아래 수료증을 확인하고 PNG로 다운로드하세요.</p>
+              </div>
+              <div class="certificate__preview" data-role="certificate-preview"></div>
+              <button class="btn btn--outline certificate__download" type="button" data-role="certificate-download">수료증 다운로드 (PNG)</button>
+            </section>
+          </article>
+          <article class="challenge-card challenge-card--locked" data-role="challenge-locked">
+            <header class="challenge-card__header">
+              <h3>미치나 플랜 참가 안내</h3>
+            </header>
+            <p>관리자에게 참가자 명단 등록을 요청하면 챌린지 기능이 열립니다. 등록 후에는 일일 제출과 진행률을 실시간으로 확인할 수 있어요.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="challenge challenge--admin" aria-label="관리자 대시보드" data-view="admin" hidden>
+        <header class="challenge__header">
+          <div>
+            <span class="challenge__eyebrow">Michina Plan</span>
+            <h2 class="challenge__title">관리자 전용 대시보드</h2>
+          </div>
+          <p class="challenge__description">
+            참가자 명단 업로드부터 완주 검증까지 모든 미치나 운영 작업을 한곳에서 처리하세요.
           </p>
         </header>
         <div class="challenge__panels">
@@ -1359,51 +1439,6 @@ app.get('/', (c) => {
                 </table>
               </div>
             </section>
-          </article>
-
-          <article class="challenge-card challenge-card--participant" data-role="challenge-dashboard" hidden>
-            <header class="challenge-card__header">
-              <h3>나의 챌린지 현황</h3>
-              <p data-role="challenge-summary">미치나 플랜에 참여하면 일일 제출 현황을 여기에서 확인할 수 있습니다.</p>
-            </header>
-            <section class="challenge-card__section">
-              <div class="challenge-progress" data-role="challenge-progress"></div>
-              <form class="challenge-submit" data-role="challenge-submit-form">
-                <div class="challenge-submit__grid">
-                  <label class="challenge-submit__label" for="challengeDay">Day 선택</label>
-                  <select id="challengeDay" data-role="challenge-day">
-                    {Array.from({ length: 15 }).map((_, index) => (
-                      <option value={index + 1}>Day {index + 1}</option>
-                    ))}
-                  </select>
-                  <label class="challenge-submit__label" for="challengeUrl">제출 URL</label>
-                  <input id="challengeUrl" type="url" placeholder="https://" data-role="challenge-url" />
-                  <label class="challenge-submit__label" for="challengeFile">이미지 업로드</label>
-                  <input id="challengeFile" type="file" accept="image/*" data-role="challenge-file" />
-                </div>
-                <p class="challenge-submit__hint" data-role="challenge-submit-hint">URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.</p>
-                <button class="btn btn--primary challenge-submit__button" type="submit">제출 저장</button>
-              </form>
-            </section>
-            <section class="challenge-card__section">
-              <h4 class="challenge-card__section-title">일별 제출 현황</h4>
-              <ul class="challenge-days" data-role="challenge-days"></ul>
-            </section>
-            <section class="challenge-card__section challenge-card__section--certificate" data-role="challenge-certificate" hidden>
-              <div class="certificate__header">
-                <h4>수료증이 도착했습니다!</h4>
-                <p>완주를 축하드립니다. 아래 수료증을 확인하고 PNG로 다운로드하세요.</p>
-              </div>
-              <div class="certificate__preview" data-role="certificate-preview"></div>
-              <button class="btn btn--outline certificate__download" type="button" data-role="certificate-download">수료증 다운로드 (PNG)</button>
-            </section>
-          </article>
-
-          <article class="challenge-card challenge-card--locked" data-role="challenge-locked">
-            <header class="challenge-card__header">
-              <h3>미치나 플랜 참가 안내</h3>
-            </header>
-            <p>관리자에게 참가자 명단 등록을 요청하면 챌린지 기능이 열립니다. 등록 후에는 일일 제출과 진행률을 실시간으로 확인할 수 있어요.</p>
           </article>
         </div>
       </section>

@@ -108,6 +108,7 @@ const state = {
     attempts: 0,
   },
   stage: 'upload',
+  view: 'home',
 }
 
 const runtime = {
@@ -396,6 +397,8 @@ const elements = {
   analysisKeywords: document.querySelector('[data-role="analysis-keywords"]'),
   analysisSummary: document.querySelector('[data-role="analysis-summary"]'),
   analysisButton: document.querySelector('[data-action="analyze-current"]'),
+  navButtons: Array.from(document.querySelectorAll('[data-view-target]')),
+  viewSections: Array.from(document.querySelectorAll('[data-view]')),
   loginModal: document.querySelector('[data-role="login-modal"]'),
   googleLoginButton: document.querySelector('[data-role="google-login-button"]'),
   googleLoginText: document.querySelector('[data-role="google-login-text"]'),
@@ -1061,6 +1064,131 @@ function refreshAccessStates() {
   updateAccessGates()
   updateStageUI()
   updatePlanExperience()
+  updateNavigationAccess()
+}
+
+function canAccessView(rawView) {
+  const view = typeof rawView === 'string' ? rawView.trim() : ''
+  if (!view || view === 'home') {
+    return true
+  }
+  if (view === 'community') {
+    return state.user.isLoggedIn && state.user.plan === 'michina'
+  }
+  if (view === 'admin') {
+    return state.admin.isLoggedIn
+  }
+  return false
+}
+
+function determineDefaultView() {
+  if (state.admin.isLoggedIn && canAccessView('admin')) {
+    return 'admin'
+  }
+  if (canAccessView('community')) {
+    return 'community'
+  }
+  return 'home'
+}
+
+function updateNavActiveState() {
+  const buttons = elements.navButtons || []
+  buttons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    const target = button.dataset.viewTarget || 'home'
+    const isActive = state.view === target
+    button.classList.toggle('is-active', isActive)
+    if (isActive) {
+      button.setAttribute('aria-current', 'page')
+    } else {
+      button.removeAttribute('aria-current')
+    }
+  })
+}
+
+function updateViewVisibility() {
+  const sections = elements.viewSections || []
+  sections.forEach((section) => {
+    if (!(section instanceof HTMLElement)) return
+    const target = section.dataset.view || 'home'
+    const isActive = state.view === target
+    section.hidden = !isActive
+    section.classList.toggle('is-active-view', isActive)
+  })
+}
+
+function setView(rawView, options = {}) {
+  const requested = typeof rawView === 'string' && rawView.trim() ? rawView.trim() : 'home'
+  const forceUpdate = Boolean(options.force)
+  const accessible = canAccessView(requested)
+  const targetView = accessible ? requested : determineDefaultView()
+  if (!forceUpdate && state.view === targetView) {
+    updateNavActiveState()
+    updateViewVisibility()
+    if (document.body) {
+      document.body.dataset.activeView = targetView
+    }
+    return targetView
+  }
+  state.view = targetView
+  updateNavActiveState()
+  updateViewVisibility()
+  if (document.body) {
+    document.body.dataset.activeView = targetView
+  }
+  return targetView
+}
+
+function handleNavigationClick(targetView) {
+  const view = typeof targetView === 'string' ? targetView.trim() : ''
+  if (!view || view === 'home') {
+    setView('home')
+    return
+  }
+  if (canAccessView(view)) {
+    setView(view)
+    return
+  }
+  if (view === 'community') {
+    if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
+      setStatus('미치나 커뮤니티는 로그인 후 이용할 수 있습니다.', 'warning')
+      openLoginModal()
+    } else {
+      setStatus('미치나 플랜 참가자로 등록된 계정만 접근할 수 있습니다.', 'warning')
+    }
+    return
+  }
+  if (view === 'admin') {
+    setStatus('관리자 로그인이 필요합니다.', 'warning')
+    openAdminModal()
+  }
+}
+
+function updateNavigationAccess() {
+  const buttons = elements.navButtons || []
+  let requiresFallback = false
+
+  buttons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    const target = button.dataset.viewTarget || 'home'
+    const accessible = canAccessView(target)
+    if (target === 'home') {
+      button.hidden = false
+      button.disabled = false
+    } else {
+      button.hidden = !accessible
+      button.disabled = !accessible
+    }
+    if (!accessible && state.view === target) {
+      requiresFallback = true
+    }
+  })
+
+  if (requiresFallback) {
+    setView(determineDefaultView(), { force: true })
+  } else {
+    setView(state.view, { force: true })
+  }
 }
 
 function getActivePlanKey() {
@@ -1170,6 +1298,7 @@ async function handleLogout() {
   state.user.totalUsed = 0
   state.challenge.profile = null
   state.challenge.certificate = null
+  setView('home', { force: true })
   refreshAccessStates()
   renderChallengeDashboard()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
@@ -1634,6 +1763,7 @@ async function handleAdminLogin(event) {
     setStatus('관리자 모드가 활성화되었습니다. 모든 기능을 무제한으로 테스트할 수 있습니다.', 'success')
     await fetchAdminParticipants()
     updateAdminUI()
+    setView('admin')
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
       elements.adminPasswordInput.value = ''
       elements.adminPasswordInput.removeAttribute('aria-invalid')
@@ -5079,9 +5209,15 @@ function attachEventListeners() {
     })
   }
 
+  elements.navButtons?.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    button.addEventListener('click', () => handleNavigationClick(button.dataset.viewTarget || 'home'))
+  })
+
   if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
     elements.adminModalDashboardButton.addEventListener('click', () => {
       closeAdminModal()
+      setView('admin')
       if (elements.adminDashboard instanceof HTMLElement) {
         elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
