@@ -1200,6 +1200,10 @@ function setView(rawView, options = {}) {
     return targetView
   }
   state.view = targetView
+  if (targetView === 'admin') {
+    clearAdminNavHighlight()
+    dismissAdminDashboardPrompt()
+  }
   updateNavActiveState()
   updateViewVisibility()
   if (document.body) {
@@ -1771,7 +1775,7 @@ function getOrCreateAdminDashboardPrompt() {
       <div class="admin-dashboard-prompt__body" role="alert" aria-live="assertive">
         <strong class="admin-dashboard-prompt__title">관리자 대시보드 안내</strong>
         <p class="admin-dashboard-prompt__description">
-          관리자 대시보드는 상단 내비게이션의 <span class="admin-dashboard-prompt__highlight">관리자 대시보드</span> 섹션에서 확인할 수 있습니다.
+          관리자 대시보드는 상단 내비게이션의 <span class="admin-dashboard-prompt__highlight">관리자 대시보드</span> 섹션에서 확인할 수 있습니다. 동일 창 이동 또는 새 탭 열기 중 원하는 방식을 선택해 주세요.
         </p>
         <div class="admin-dashboard-prompt__actions">
           <button type="button" class="admin-dashboard-prompt__action" data-action="open-admin-dashboard" data-open-target="self">
@@ -1817,7 +1821,7 @@ function announceAdminDashboardAccess(options = {}) {
   const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
   setStatus({
     html: `
-      <span><strong>관리자 로그인 완료!</strong> 대시보드에서 참가자 관리와 챌린지 현황을 확인하세요.</span>
+      <span><strong>관리자 로그인 완료!</strong> 대시보드를 현재 페이지에서 열거나 새 탭으로 띄울 수 있습니다.</span>
       <div class="status__actions" role="group" aria-label="관리자 대시보드 바로가기">
         <button type="button" class="status__link status__link--primary" data-action="open-admin-dashboard" data-open-target="self">
           대시보드 이동
@@ -2091,10 +2095,6 @@ async function handleAdminLogin(event) {
     announceAdminDashboardAccess({ force: true })
     await fetchAdminParticipants()
     updateAdminUI()
-    setView('admin')
-    if (elements.adminDashboard instanceof HTMLElement) {
-      elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
       elements.adminPasswordInput.value = ''
       elements.adminPasswordInput.removeAttribute('aria-invalid')
