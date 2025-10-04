@@ -180,10 +180,11 @@ curl http://localhost:3000/api/health
 - **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
 
 ## URL & 배포 상태
-- **Production**: https://image-editor.pages.dev (예시, 실제 배포 시 업데이트 필요)
-- **GitHub**: https://github.com/username/webapp (사용자 저장소로 교체)
+- **Production**: https://image-editor.pages.dev
+- **Latest Preview**: https://78abe933.project-9cf3a0d0.pages.dev (2025-10-04 배포)
+- **GitHub**: https://github.com/elliesbang/Easy-Image-Editer
 
 ## 라이선스 & 고지
 - 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
 
-_Last updated: 2025-10-04 (커뮤니티/관리자 전용 내비게이션 분리)_
+_Last updated: 2025-10-04 (커뮤니티/관리자 전용 내비게이션 분리 & Cloudflare Pages 배포)_
