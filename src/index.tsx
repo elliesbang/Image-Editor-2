@@ -426,8 +426,17 @@ app.post('/api/auth/admin/logout', async (c) => {
   return c.json({ ok: true })
 })
 
+type GoogleUserInfoResponse = {
+  email?: string
+  email_verified?: boolean | string
+  verified_email?: boolean | string
+  name?: string
+  given_name?: string
+  picture?: string
+}
+
 app.post('/api/auth/google', async (c) => {
-  let payload: { code?: string } | undefined
+  let payload: { code?: string; accessToken?: string } | undefined
   try {
     payload = await c.req.json()
   } catch (error) {
@@ -435,7 +444,9 @@ app.post('/api/auth/google', async (c) => {
   }
 
   const code = typeof payload?.code === 'string' ? payload.code.trim() : ''
-  if (!code) {
+  const accessToken = typeof payload?.accessToken === 'string' ? payload.accessToken.trim() : ''
+
+  if (!code && !accessToken) {
     return c.json({ error: 'AUTH_CODE_REQUIRED' }, 400)
   }
 
@@ -443,90 +454,138 @@ app.post('/api/auth/google', async (c) => {
   const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
   const redirectUri = resolveGoogleRedirectUri(c)
 
-  if (!clientId || !clientSecret) {
+  if (code) {
+    if (!clientId || !clientSecret) {
+      return c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 500)
+    }
+
+    try {
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }),
+      })
+
+      if (!tokenResponse.ok) {
+        const detail = await tokenResponse.text().catch(() => '')
+        return c.json(
+          { error: 'GOOGLE_TOKEN_EXCHANGE_FAILED', detail: detail.slice(0, 4000) },
+          502,
+        )
+      }
+
+      const tokenJson = (await tokenResponse.json()) as {
+        id_token?: string
+        expires_in?: number
+        scope?: string
+        token_type?: string
+        refresh_token?: string
+      }
+
+      const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
+      if (!idToken) {
+        return c.json({ error: 'GOOGLE_ID_TOKEN_MISSING' }, 502)
+      }
+
+      const idPayload = decodeGoogleIdToken(idToken)
+      if (!idPayload) {
+        return c.json({ error: 'GOOGLE_ID_TOKEN_INVALID' }, 502)
+      }
+
+      if (idPayload.aud !== clientId) {
+        return c.json({ error: 'GOOGLE_ID_TOKEN_AUDIENCE_MISMATCH' }, 401)
+      }
+
+      if (
+        idPayload.iss &&
+        idPayload.iss !== 'https://accounts.google.com' &&
+        idPayload.iss !== 'accounts.google.com'
+      ) {
+        return c.json({ error: 'GOOGLE_ID_TOKEN_ISSUER_INVALID' }, 401)
+      }
+
+      const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
+      if (!isValidEmail(email)) {
+        return c.json({ error: 'GOOGLE_EMAIL_INVALID' }, 400)
+      }
+
+      if (!isGoogleEmailVerified(idPayload.email_verified)) {
+        return c.json({ error: 'GOOGLE_EMAIL_NOT_VERIFIED' }, 403)
+      }
+
+      const expiresAt =
+        typeof idPayload.exp === 'number'
+          ? idPayload.exp
+          : typeof idPayload.exp === 'string'
+            ? Number(idPayload.exp)
+            : undefined
+
+      return c.json({
+        ok: true,
+        profile: {
+          email,
+          name: idPayload.name ?? idPayload.given_name ?? '',
+          picture: idPayload.picture ?? '',
+          expiresAt: expiresAt && Number.isFinite(expiresAt) ? expiresAt : null,
+          plan: 'free',
+        },
+      })
+    } catch (error) {
+      console.error('[auth/google] Unexpected error', error)
+      return c.json({ error: 'GOOGLE_AUTH_UNEXPECTED_ERROR' }, 502)
+    }
+  }
+
+  if (!clientId) {
     return c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 500)
   }
 
   try {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
+    const userInfoResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Bearer ${accessToken}`,
       },
-      body: new URLSearchParams({
-        code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      }),
     })
 
-    if (!tokenResponse.ok) {
-      const detail = await tokenResponse.text().catch(() => '')
+    if (!userInfoResponse.ok) {
+      const detail = await userInfoResponse.text().catch(() => '')
       return c.json(
-        { error: 'GOOGLE_TOKEN_EXCHANGE_FAILED', detail: detail.slice(0, 4000) },
+        { error: 'GOOGLE_USERINFO_FAILED', detail: detail.slice(0, 4000) },
         502,
       )
     }
 
-    const tokenJson = (await tokenResponse.json()) as {
-      id_token?: string
-      expires_in?: number
-      scope?: string
-      token_type?: string
-      refresh_token?: string
-    }
-
-    const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
-    if (!idToken) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_MISSING' }, 502)
-    }
-
-    const idPayload = decodeGoogleIdToken(idToken)
-    if (!idPayload) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_INVALID' }, 502)
-    }
-
-    if (idPayload.aud !== clientId) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_AUDIENCE_MISMATCH' }, 401)
-    }
-
-    if (
-      idPayload.iss &&
-      idPayload.iss !== 'https://accounts.google.com' &&
-      idPayload.iss !== 'accounts.google.com'
-    ) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_ISSUER_INVALID' }, 401)
-    }
-
-    const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
+    const info = (await userInfoResponse.json()) as GoogleUserInfoResponse
+    const email = typeof info.email === 'string' ? info.email.trim().toLowerCase() : ''
     if (!isValidEmail(email)) {
       return c.json({ error: 'GOOGLE_EMAIL_INVALID' }, 400)
     }
 
-    if (!isGoogleEmailVerified(idPayload.email_verified)) {
+    const verified =
+      isGoogleEmailVerified(info.email_verified) || isGoogleEmailVerified(info.verified_email)
+    if (!verified) {
       return c.json({ error: 'GOOGLE_EMAIL_NOT_VERIFIED' }, 403)
     }
-
-    const expiresAt =
-      typeof idPayload.exp === 'number'
-        ? idPayload.exp
-        : typeof idPayload.exp === 'string'
-          ? Number(idPayload.exp)
-          : undefined
 
     return c.json({
       ok: true,
       profile: {
         email,
-        name: idPayload.name ?? idPayload.given_name ?? '',
-        picture: idPayload.picture ?? '',
-        expiresAt: expiresAt && Number.isFinite(expiresAt) ? expiresAt : null,
+        name: typeof info.name === 'string' ? info.name : undefined,
+        picture: typeof info.picture === 'string' ? info.picture : undefined,
+        plan: 'free',
       },
     })
   } catch (error) {
-    console.error('[auth/google] Unexpected error', error)
+    console.error('[auth/google] userinfo error', error)
     return c.json({ error: 'GOOGLE_AUTH_UNEXPECTED_ERROR' }, 502)
   }
 })
@@ -928,9 +987,15 @@ app.get('/', (c) => {
   const currentYear = new Date().getFullYear()
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
+  const googleAuthConfigured = Boolean(googleClientId) && Boolean(c.env.GOOGLE_CLIENT_SECRET?.trim())
 
   return c.render(
-    <main class="page">
+    <main
+      class="page"
+      data-google-client-id={googleClientId || undefined}
+      data-google-redirect-uri={googleRedirectUri || undefined}
+      data-google-auth-configured={googleAuthConfigured ? 'true' : 'false'}
+    >
       <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
         <div class="app-header__left">
           <a class="app-header__logo" href="/" aria-label="Easy Image Editor 홈">
@@ -946,6 +1011,9 @@ app.get('/', (c) => {
               <strong data-role="credit-count">0</strong> 크레딧
             </span>
           </div>
+          <button class="btn btn--primary btn--sm app-header__upgrade" type="button" data-action="open-plans">
+            업그레이드
+          </button>
           <button class="btn btn--outline btn--sm" type="button" data-role="admin-login">
             관리자
           </button>
@@ -984,6 +1052,188 @@ app.get('/', (c) => {
         </div>
       </section>
 
+      <section class="plans" id="plans" aria-labelledby="plans-heading">
+        <header class="plans__header">
+          <p class="plans__eyebrow">Pricing</p>
+          <h2 class="plans__title" id="plans-heading">구독 플랜 구성 및 주요 기능</h2>
+          <p class="plans__description">
+            프로젝트 규모에 맞춰 FREE부터 PREMIUM까지 확장 가능한 플랜을 제공합니다. 미치나 플랜은 챌린지 참여자에게만
+            제공되며 PREMIUM 혜택을 동일하게 이용할 수 있습니다.
+          </p>
+        </header>
+        <div class="plans__table-card">
+          <table class="data-table" data-role="plan-table">
+            <caption>Easy Image Editor 구독 플랜 비교</caption>
+            <thead>
+              <tr>
+                <th scope="col">구분</th>
+                <th scope="col">FREE (무료)</th>
+                <th scope="col">BASIC</th>
+                <th scope="col">PRO</th>
+                <th scope="col">PREMIUM</th>
+                <th scope="col">미치나 플랜</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">월 가격 (KRW)</th>
+                <td>0원</td>
+                <td>9,900원</td>
+                <td>19,900원</td>
+                <td>39,900원</td>
+                <td>(신청 시 해당)</td>
+              </tr>
+              <tr>
+                <th scope="row">연간 할인</th>
+                <td>-</td>
+                <td>10%</td>
+                <td>10%</td>
+                <td>10%</td>
+                <td>-</td>
+              </tr>
+              <tr>
+                <th scope="row">월별 크레딧 제공량</th>
+                <td>30개</td>
+                <td>150개</td>
+                <td>1,000개</td>
+                <td>10,000개</td>
+                <td>10,000개</td>
+              </tr>
+              <tr>
+                <th scope="row">주요 기능 (잠금 해제)</th>
+                <td>기본 처리 + 저해상도 제한</td>
+                <td>FREE 기능 + 고해상도 다운로드</td>
+                <td>BASIC + SVG 변환</td>
+                <td>PRO + 키워드 분석</td>
+                <td>PREMIUM 기능</td>
+              </tr>
+              <tr>
+                <th scope="row">미치나 조건</th>
+                <td>-</td>
+                <td>-</td>
+                <td>-</td>
+                <td>-</td>
+                <td>미리캔버스 요소 챌린지 미치나 신청 시 해당</td>
+              </tr>
+            </tbody>
+          </table>
+          <button class="table-export" type="button" data-action="export-table" data-export-target="plan-table">
+            Sheets로 내보내기
+          </button>
+        </div>
+      </section>
+
+      <section class="policy" id="credit-policy" aria-labelledby="policy-heading">
+        <header class="policy__header">
+          <p class="policy__eyebrow">Credits</p>
+          <h2 class="policy__title" id="policy-heading">크레딧 운영 정책 및 잔액 관리</h2>
+          <p class="policy__description">
+            구독 크레딧과 충전 크레딧을 통합하여 관리하며, 만료일과 우선 소진 정책을 명확히 안내합니다.
+          </p>
+        </header>
+        <div class="policy__table-card">
+          <table class="data-table" data-role="policy-table">
+            <caption>Easy Image Editor 크레딧 운영 정책</caption>
+            <thead>
+              <tr>
+                <th scope="col">정책 / 항목</th>
+                <th scope="col">내용</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">FREE 크레딧</th>
+                <td>매월 1일에 30 크레딧 자동 지급. 이월 불가.</td>
+              </tr>
+              <tr>
+                <th scope="row">유료 구독 크레딧</th>
+                <td>월별/연간 구독 모두 이월되지 않고 소멸된다.</td>
+              </tr>
+              <tr>
+                <th scope="row">충전 크레딧</th>
+                <td>별도 구매 가능하며 유효 기간이 길고, 구독 크레딧보다 우선 소진되도록 설계.</td>
+              </tr>
+              <tr>
+                <th scope="row">잔액 표시</th>
+                <td>월별/연간/충전 크레딧을 합쳐 하나의 통합 수치로 표시한다.</td>
+              </tr>
+            </tbody>
+          </table>
+          <button class="table-export" type="button" data-action="export-table" data-export-target="policy-table">
+            Sheets로 내보내기
+          </button>
+        </div>
+      </section>
+
+      <section class="guidance" id="ux-guidance" aria-labelledby="guidance-heading">
+        <header class="guidance__header">
+          <p class="guidance__eyebrow">Upgrade Triggers</p>
+          <h2 class="guidance__title" id="guidance-heading">UI/UX 유도 전략 및 버튼 위치</h2>
+          <p class="guidance__description">
+            주요 기능 사용 시 업그레이드 동선을 강조하여 자연스럽게 유료 플랜으로 전환하도록 설계했습니다.
+          </p>
+        </header>
+        <div class="guidance__table-card">
+          <table class="data-table" data-role="guidance-table">
+            <caption>업그레이드 유도 UI/UX 전략</caption>
+            <thead>
+              <tr>
+                <th scope="col">위치 / 기능</th>
+                <th scope="col">UI/UX 배치 및 유도 내용</th>
+                <th scope="col">유도 목표</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">헤더 (Header)</th>
+                <td>크레딧 잔액 옆에 업그레이드 버튼 배치.</td>
+                <td>상시 노출로 플랜 탐색 및 전환 유도.</td>
+              </tr>
+              <tr>
+                <th scope="row">푸터 (Footer)</th>
+                <td>요금제 안내 링크 배치.</td>
+                <td>서비스 방해 없이 정보 탐색 경로 제공.</td>
+              </tr>
+              <tr>
+                <th scope="row">BASIC 유도</th>
+                <td>고해상도 다운로드 클릭 시 "BASIC 이상 필요" 모달 노출.</td>
+                <td>최초 유료 결제 진입점 확보.</td>
+              </tr>
+              <tr>
+                <th scope="row">PRO 유도</th>
+                <td>SVG 변환 클릭 시 "PRO 이상 필요" 모달 강조.</td>
+                <td>고품질 디자인 작업자를 PRO 플랜으로 유치.</td>
+              </tr>
+              <tr>
+                <th scope="row">PREMIUM 유도</th>
+                <td>키워드 분석 클릭 시 "PREMIUM 이상 필요" 모달 강조.</td>
+                <td>운영 효율을 위한 최고가 플랜 유치.</td>
+              </tr>
+              <tr>
+                <th scope="row">미치나 플랜 로직</th>
+                <td>만료 시 자동으로 FREE 플랜으로 전환.</td>
+                <td>챌린지 혜택의 명확한 종료 시점 설정.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="michina" id="michina-plan" aria-labelledby="michina-heading">
+        <div class="michina__content">
+          <h2 class="michina__title" id="michina-heading">미치나 플랜 혜택</h2>
+          <p class="michina__subtitle">챌린지 기간 동안 PREMIUM과 동일한 10,000 크레딧과 모든 기능을 무제한으로 이용하세요.</p>
+          <ul class="michina__list">
+            <li>혜택: PREMIUM 플랜과 동일한 기능 + 10,000 크레딧 제공</li>
+            <li>로직: 챌린지 기간 만료 시 자동으로 FREE 플랜으로 전환</li>
+            <li>신청: 미리캔버스 요소 챌린지 미치나 신청 시 즉시 활성화</li>
+          </ul>
+          <button class="btn btn--outline btn--sm" type="button" data-action="open-plans">
+            플랜 비교 다시 보기
+          </button>
+        </div>
+      </section>
+
       <section class="stage" aria-label="작업 단계 안내">
         <ol class="stage__list" data-role="stage-indicator">
           <li class="stage__item is-active" data-stage="1">
@@ -1014,6 +1264,29 @@ app.get('/', (c) => {
           </div>
         </div>
       </section>
+
+      <div class="plan-modal" data-role="plan-modal" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-title">
+          <header class="plan-modal__header">
+            <p class="plan-modal__eyebrow" data-role="plan-modal-eyebrow">업그레이드 안내</p>
+            <h2 class="plan-modal__title" id="plan-modal-title" data-role="plan-modal-title">상위 플랜이 필요합니다.</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="업그레이드 안내 창 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="plan-modal__body">
+            <p class="plan-modal__message" data-role="plan-modal-message">
+              고해상도 다운로드는 BASIC 이상 플랜에서 이용할 수 있습니다.
+            </p>
+            <ul class="plan-modal__list" data-role="plan-modal-benefits"></ul>
+          </div>
+          <footer class="plan-modal__footer">
+            <button class="btn btn--primary" type="button" data-action="plan-modal-upgrade">업그레이드 페이지로 이동</button>
+            <button class="btn btn--ghost" type="button" data-action="close-plan-modal">나중에</button>
+          </footer>
+        </div>
+      </div>
 
 
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
@@ -1266,7 +1539,14 @@ app.get('/', (c) => {
               </div>
               <div class="results-toolbar__actions">
                 <button class="btn btn--ghost" type="button" data-result-operation="svg">PNG → SVG 변환</button>
-                <button class="btn btn--outline" type="button" data-result-download="selected">선택 다운로드</button>
+                <button
+                  class="btn btn--outline"
+                  type="button"
+                  data-action="download-hd"
+                  data-result-download="selected"
+                >
+                  고해상도 다운로드
+                </button>
                 <button class="btn btn--primary" type="button" data-result-download="all">전체 다운로드</button>
               </div>
             </div>
@@ -1420,6 +1700,7 @@ app.get('/', (c) => {
             <a href="/privacy">개인정보 처리방침</a>
             <a href="/terms">이용약관</a>
             <a href="/cookies">쿠키 정책</a>
+            <a href="#plans">요금제 안내</a>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>
@@ -1462,6 +1743,7 @@ app.get('/', (c) => {
         {JSON.stringify({
           googleClientId,
           googleRedirectUri,
+          googleAuthConfigured,
         })}
       </script>
     </main>

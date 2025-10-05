@@ -490,6 +490,234 @@ main.page {
 
 .workspace__actions .btn {
   min-width: 220px;
+  justify-content: center;
+  text-align: center;
+}
+
+.plans,
+.policy,
+.guidance,
+.michina {
+  display: grid;
+  gap: 24px;
+  padding: 32px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.plans__header,
+.policy__header,
+.guidance__header {
+  display: grid;
+  gap: 12px;
+}
+
+.plans__eyebrow,
+.policy__eyebrow,
+.guidance__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+
+.plans__title,
+.policy__title,
+.guidance__title,
+.michina__title {
+  font-size: 1.65rem;
+  margin: 0;
+  color: var(--heading);
+}
+
+.plans__description,
+.policy__description,
+.guidance__description,
+.michina__subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.plans__table-card,
+.policy__table-card,
+.guidance__table-card {
+  display: grid;
+  gap: 18px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.data-table caption {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 0 0 12px;
+}
+
+.data-table thead {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.data-table th,
+.data-table td {
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 0.92rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  color: var(--heading);
+  font-weight: 600;
+}
+
+.data-table tbody tr:last-child th,
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table-export {
+  justify-self: flex-end;
+  background: rgba(139, 92, 246, 0.16);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  color: var(--heading);
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+
+.table-export:hover {
+  background: rgba(139, 92, 246, 0.24);
+  transform: translateY(-1px);
+}
+
+.michina {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.28) 0%, rgba(59, 130, 246, 0.18) 100%);
+  border: 1px solid rgba(139, 92, 246, 0.32);
+}
+
+.michina__content {
+  display: grid;
+  gap: 16px;
+}
+
+.michina__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  color: var(--heading);
+  font-size: 0.95rem;
+}
+
+.michina__list li::before {
+  content: '•';
+  margin-right: 8px;
+  color: var(--accent);
+}
+
+.plan-modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  z-index: 80;
+}
+
+.plan-modal.is-active {
+  display: block;
+}
+
+.plan-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(6px);
+}
+
+.plan-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(420px, calc(100% - 36px));
+  margin: 64px auto;
+  background: var(--surface-solid);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-strong);
+  padding: 28px 32px;
+  display: grid;
+  gap: 18px;
+}
+
+.plan-modal__header {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-modal__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.7rem;
+  color: var(--accent);
+  margin: 0;
+}
+
+.plan-modal__title {
+  margin: 0;
+  font-size: 1.35rem;
+  color: var(--heading);
+}
+
+.plan-modal__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.plan-modal__message {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.plan-modal__list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.plan-modal__footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.plan-modal__footer .btn {
+  min-width: 0;
 }
 
 .btn {
@@ -504,7 +732,10 @@ main.page {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  justify-content: center;
+  text-align: center;
 }
+
 
 .btn:focus-visible,
 .btn-icon:focus-visible {
