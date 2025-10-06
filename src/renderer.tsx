@@ -1,6 +1,12 @@
 import { jsxRenderer } from 'hono/jsx-renderer'
 
 export const renderer = jsxRenderer(({ children }) => {
+  const assetBase = import.meta.env.BASE_URL ?? '/'
+  const withBase = (path: string) => {
+    const normalizedBase = assetBase.endsWith('/') ? assetBase : `${assetBase}/`
+    return `${normalizedBase}${path}`
+  }
+
   return (
     <html lang="ko">
       <head>
@@ -19,7 +25,7 @@ export const renderer = jsxRenderer(({ children }) => {
           rel="stylesheet"
         />
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.3.0/fonts/remixicon.css" />
-        <link href="/static/style.css" rel="stylesheet" />
+        <link href={withBase('static/style.css')} rel="stylesheet" />
         <script src="https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js" defer data-lib="imagetracer"></script>
         <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer></script>
         <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" defer></script>
@@ -27,7 +33,7 @@ export const renderer = jsxRenderer(({ children }) => {
       </head>
       <body>
         {children}
-        <script type="module" src="/static/app.js"></script>
+        <script type="module" src={withBase('static/app.js')}></script>
       </body>
     </html>
   )
