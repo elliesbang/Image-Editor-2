@@ -1939,16 +1939,6 @@ app.get('/', (c) => {
             <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
         </div>
-        <nav class="app-header__nav" aria-label="주요 내비게이션">
-          <button
-            class="app-header__nav-item is-active"
-            type="button"
-            data-view-target="home"
-            aria-current="page"
-          >
-            홈
-          </button>
-        </nav>
         <div class="app-header__right">
           <div class="app-header__credit" data-role="credit-display" data-state="locked">
             <span class="app-header__plan-badge" data-role="plan-badge">게스트 모드</span>
