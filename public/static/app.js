@@ -5693,7 +5693,7 @@ async function downloadResults(ids, mode = 'selected') {
     const url = URL.createObjectURL(zipBlob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `easy-image-results-${Date.now()}.zip`
+    link.download = `elliesbang-image-results-${Date.now()}.zip`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)

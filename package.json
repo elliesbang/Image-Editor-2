@@ -1,5 +1,5 @@
 {
-  "name": "easy-image-editer",
+  "name": "elliesbang-image-editor",
   "type": "module",
   "scripts": {
     "dev": "vite",

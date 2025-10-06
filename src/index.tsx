@@ -111,8 +111,8 @@ type RateLimitStatus = {
 }
 
 const ADMIN_SESSION_COOKIE = 'admin_session'
-const ADMIN_SESSION_ISSUER = 'easy-image-editor'
-const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
+const ADMIN_SESSION_ISSUER = 'elliesbang-image-editor'
+const ADMIN_SESSION_AUDIENCE = 'elliesbang-image-editor/admin'
 const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -120,7 +120,7 @@ const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://easy-image-editor.netlify.app/auth/google/callback'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
 const API_BASE_PATH = '/.netlify/functions/server'
 
 const inMemoryStore = new Map<string, string>()
@@ -1924,8 +1924,8 @@ app.get('/', (c) => {
       </script>
       <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
         <div class="app-header__left">
-          <a class="app-header__logo" href="/" aria-label="Easy Image Editor 홈">
-            <span class="app-header__brand">Easy Image Editor</span>
+          <a class="app-header__logo" href="/" aria-label="Elliesbang Image Editor 홈">
+            <span class="app-header__brand">Elliesbang Image Editor</span>
             <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
         </div>
@@ -2027,7 +2027,7 @@ app.get('/', (c) => {
         <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
         <div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
           <header class="login-modal__header">
-            <h2 class="login-modal__title" id="login-modal-title">Easy Image Editor 로그인</h2>
+            <h2 class="login-modal__title" id="login-modal-title">Elliesbang Image Editor 로그인</h2>
             <button class="login-modal__close" type="button" data-action="close-login" aria-label="로그인 창 닫기">
               <i class="ri-close-line" aria-hidden="true"></i>
             </button>
@@ -2310,7 +2310,7 @@ app.get('/', (c) => {
       <footer class="site-footer" aria-label="사이트 하단">
         <div class="site-footer__inner">
           <div class="site-footer__brand">
-            <span class="site-footer__title">Easy Image Editor</span>
+            <span class="site-footer__title">Elliesbang Image Editor</span>
             <span class="site-footer__contact">
               문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
             </span>
@@ -2370,11 +2370,11 @@ app.get('/privacy', (c) => {
       <header class="legal-page__header">
         <p class="legal-page__eyebrow">Privacy Policy</p>
         <h1 class="legal-page__title" id="privacy-heading">
-          Easy Image Editor 개인정보 처리방침
+          Elliesbang Image Editor 개인정보 처리방침
         </h1>
         <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
         <p class="legal-page__lead">
-          Easy Image Editor(이하 “서비스”)는 이용자의 개인정보를 소중하게 생각하며, 관련 법령을 준수합니다.
+          Elliesbang Image Editor(이하 “서비스”)는 이용자의 개인정보를 소중하게 생각하며, 관련 법령을 준수합니다.
           본 처리는 수집 항목, 이용 목적, 보관 기간 등을 투명하게 안내드리기 위한 문서입니다.
         </p>
       </header>
@@ -2452,11 +2452,11 @@ app.get('/terms', (c) => {
       <header class="legal-page__header">
         <p class="legal-page__eyebrow">Terms of Service</p>
         <h1 class="legal-page__title" id="terms-heading">
-          Easy Image Editor 이용약관
+          Elliesbang Image Editor 이용약관
         </h1>
         <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
         <p class="legal-page__lead">
-          본 약관은 Easy Image Editor가 제공하는 모든 서비스의 이용 조건과 절차, 이용자와 서비스의 권리·의무 및 책임사항을 규정합니다.
+          본 약관은 Elliesbang Image Editor가 제공하는 모든 서비스의 이용 조건과 절차, 이용자와 서비스의 권리·의무 및 책임사항을 규정합니다.
         </p>
       </header>
 
@@ -2530,11 +2530,11 @@ app.get('/cookies', (c) => {
       <header class="legal-page__header">
         <p class="legal-page__eyebrow">Cookie Policy</p>
         <h1 class="legal-page__title" id="cookies-heading">
-          Easy Image Editor 쿠키 정책
+          Elliesbang Image Editor 쿠키 정책
         </h1>
         <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
         <p class="legal-page__lead">
-          본 쿠키 정책은 Easy Image Editor(이하 “서비스”)가 이용자의 디바이스에 저장하는 쿠키의 종류와 사용 목적,
+          본 쿠키 정책은 Elliesbang Image Editor(이하 “서비스”)가 이용자의 디바이스에 저장하는 쿠키의 종류와 사용 목적,
           관리 방법을 안내하기 위해 마련되었습니다.
         </p>
       </header>
