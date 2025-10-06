@@ -47,7 +47,7 @@
 - 관리자 로그인 레이트 리밋: 고정 윈도우 + 쿨다운 + IP 기반 키(`ratelimit:admin-login:*`), 429 시 `Retry-After` 헤더 포함
 - CSP `default-src 'self'`, script/style CDN 화이트리스트, 이미지 data/blob 허용, frame-ancestors 'none'
 - Strict-Transport-Security(180일, preload), Referrer-Policy(`strict-origin-when-cross-origin`), Permissions-Policy(카메라/마이크/geolocation 차단)
-- Cloudflare KV + 백업 KV를 우선 사용, 미바인딩 시 in-memory Map으로 기본/백업 저장소 분리 유지
+- KV 기반 저장소 + 백업 저장소 연동(선택): 배포 환경에서 제공하는 KV/데이터 스토리지와 연결하고, 미바인딩 시 in-memory Map으로 기본/백업 저장소를 분리 유지
 
 ## URL & 엔드포인트 요약
 | Method | Path | 설명 | 인증 |
@@ -74,7 +74,7 @@
 > 관리자 API는 세션 쿠키(HttpOnly) 기반으로만 접근 가능합니다. 프론트엔드 fetch 시 항상 `credentials: 'include'` 설정을 잊지 마세요. 429 응답 시 `Retry-After`를 읽어 재시도 시간을 안내하세요.
 
 ## 데이터 아키텍처
-- **Cloudflare KV (선택)**: `CHALLENGE_KV` 바인딩 시 참가자 레코드/제출 로그를 글로벌 분산 키-값 저장소에 영속화
+- **KV 스토리지 (선택)**: `CHALLENGE_KV` 환경 변수를 통해 참가자 레코드/제출 로그를 외부 키-값 저장소에 영속화
 - **백업 KV (선택)**: `CHALLENGE_KV_BACKUP` 바인딩 시 기본 KV와 동기화, 스냅샷 백업 키(`backup:snapshot:*`) 저장
 - **In-memory fallback**: 로컬 개발 또는 KV 미바인딩 시 Map 기반 임시 저장 (기본/백업 각각 유지), 재시작 시 데이터 초기화
 - **OpenAI API**: `POST /api/analyze`에서 Responses API(gpt-4o-mini + JSON Schema `response_format`, 25초 타임아웃, `x-request-id` 전달) 호출, 이미지 data URL을 `input_image`로 전달해 25개 키워드/제목/요약을 구조화 수신, 서버 측 키워드 정규화·보강(문자열 응답/중복 제거, 25개 보장), 실패 시 상세 코드와 함께 로컬 캔버스 분석으로 자동 대체
@@ -83,7 +83,7 @@
 ## 환경 변수 & 시크릿
 | 변수 | 용도 | 필수 여부 | 비고 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | Cloudflare Pages Secret 권장 |
+| `OPENAI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | Netlify 환경 변수 등록 권장 |
 | `ADMIN_EMAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
 | `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수 | `echo -n 'password' | shasum -a 256` |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
@@ -95,8 +95,8 @@
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
-| `CHALLENGE_KV` | Cloudflare KV 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
-| `CHALLENGE_KV_BACKUP` | Cloudflare KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
+| `CHALLENGE_KV` | 외부 KV/데이터 스토리지 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
+| `CHALLENGE_KV_BACKUP` | 외부 KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 
 > 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다. Google OAuth 값(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)도 동일하게 관리하세요.
 
@@ -120,13 +120,13 @@ ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
 # GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
 # GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
 MICHINA_COMMUNITY_URL="https://community.example.com"
-# CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 Cloudflare 바인딩 시 자동 주입
+# CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 배포 환경에서 제공하는 KV/데이터 스토리지 바인딩으로 교체 가능
 EOF
 
 # 3. 번들 생성
 npm run build
 
-# 4. 포트 정리 및 개발 서버 실행 (PM2 + wrangler pages dev)
+# 4. 포트 정리 및 개발 서버 실행 (PM2 + Vite dev server)
 fuser -k 3000/tcp 2>/dev/null || true
 pm2 delete webapp 2>/dev/null || true
 pm2 start ecosystem.config.cjs
@@ -134,8 +134,7 @@ pm2 start ecosystem.config.cjs
 # 5. 헬스 체크
 curl http://localhost:3000/api/health
 ```
-- `ecosystem.config.cjs`: `wrangler pages dev dist --ip 0.0.0.0 --port 3000`
-- KV 개발용: `wrangler pages dev dist --d1=<name> --local` 형태로 수정 가능
+- `ecosystem.config.cjs`: `npm run dev -- --host 0.0.0.0 --port 3000`
 - 비밀번호 해시 생성 예시: `echo -n 'test1234!' | shasum -a 256 | awk '{print tolower($1)}'`
 
 ## 테스트/검증 로그
@@ -149,17 +148,17 @@ curl http://localhost:3000/api/health
 - `/api/challenge/submit` → URL 제출 성공, 15회 이후 자동 완주 → `/api/challenge/certificate` 200 응답 확인
 
 ## 미구현/예정 기능
-- Cloudflare D1 연동 후 제출 로그·완주 로그 SQL 관리
+- 서버리스 SQL/데이터베이스 연동 후 제출 로그·완주 로그 관리
 - 실서비스용 이메일/OTP 인증 백엔드 구현 및 크레딧 영속화
 - 관리자 다계정 지원 및 감사 로그 페이지
 - 챌린지 통계 시각화(그래프, 주차별 히트맵 등)
 - Lighthouse 자동화/접근성 테스트 스위트
 
 ## 향후 권장 작업
-1. **KV 바인딩 적용**: `wrangler kv:namespace create <name>` → `wrangler.jsonc` 바인딩 후 Pages 프로젝트에 연결
-2. **OpenAI API 키 보호**: Cloudflare Pages Secret에 등록 후 로컬 `.dev.vars` 분리
+1. **KV/영속 스토리지 연동**: Netlify Functions, Fauna, Supabase 등과 연결해 `CHALLENGE_KV`/`CHALLENGE_KV_BACKUP` 환경 변수를 실제 저장소로 매핑
+2. **OpenAI API 키 보호**: Netlify 환경 변수 또는 시크릿 매니저에 등록하고 로컬 `.dev.vars`는 개발 전용으로 유지
 3. **UI 개선**: 모바일에서 챌린지 카드 및 수료증 슬라이더 도입, 관리자 표 정렬/필터 추가
-4. **빌드 파이프라인**: GitHub Actions + Wrangler Deploy 자동화 구성, main 브랜치 → 프로덕션 자동 배포
+4. **빌드 파이프라인**: GitHub Actions + Netlify CLI 배포 자동화 구성, main 브랜치 → 프로덕션 자동 배포
 5. **로컬 OAuth 리디렉션 추가**: Google Cloud Console에 `http://localhost:3000/auth/google/callback`을 리디렉션 URI로 등록해 개발 테스트 편의 확보
 
 ## 배포 절차
@@ -175,32 +174,30 @@ curl http://localhost:3000/api/health
    ```
    > 원격 저장소는 사용자 지정 GitHub 리포지토리를 우선 사용합니다.
 
-2. **Cloudflare Pages 배포**
+2. **Netlify 배포**
    ```bash
-   # Cloudflare API 토큰 설정 (최초 1회)
-   # setup_cloudflare_api_key 도구 호출
+   # Netlify CLI 로그인 (최초 1회)
+   npx netlify login
 
-   # 프로젝트명 확인/등록
-   meta_info(action="read", key="cloudflare_project_name")
-   # 없을 경우 meta_info(action="write", key="cloudflare_project_name", value="easy-image-editor")
+   # 사이트 초기화 (최초 1회, 기존 사이트가 있다면 건너뛰기)
+   npx netlify init --manual
 
    npm run build
-   npx wrangler whoami
-   npx wrangler pages project create <project-name> --production-branch main --compatibility-date 2025-10-03
-   npx wrangler pages deploy dist --project-name <project-name>
+    # 미리보기 배포: npx netlify deploy --dir=dist
+   npx netlify deploy --prod --dir=dist
    ```
-   - 배포 성공 후 README `URL` 섹션과 `meta_info`에 최종 프로젝트명 기록
-   - Secrets: `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+   - 배포 성공 후 README `URL` 섹션과 Netlify 대시보드에 최종 도메인을 기록
+   - Secrets: `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 Netlify 환경 변수에 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
 - **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
 - **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
-- **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
+- **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Netlify 환경 변수로만 관리하고 프론트엔드에 노출하지 마세요.
 
 ## URL & 배포 상태
-- **Production**: https://project-9cf3a0d0.pages.dev
-- **Latest Preview**: https://35f57e10.project-9cf3a0d0.pages.dev (2025-10-04 배포)
+- **Production**: https://<your-site>.netlify.app (Netlify 배포 후 업데이트)
+- **Latest Preview**: Netlify CLI 미리보기 배포 URL 또는 브랜치 배포 URL을 배포 후 기록하세요.
 - **GitHub**: https://github.com/elliesbang/Easy-Image-Editer
 
 ## 라이선스 & 고지
