@@ -1,42 +1,528 @@
 <!doctype html>
 <html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Elliesbang Image Editor</title>
-    <meta name="description" content="Elliesbang Image Editor 초기 로딩 화면" />
-    <script>
-      ;(async () => {
-        const target = window.location.pathname + window.location.search + window.location.hash
-        const normalizedTarget = target === '/' ? '' : target
-        const endpoint =
-          '/.netlify/functions/server' +
-          (normalizedTarget.startsWith('/') || normalizedTarget === ''
-            ? normalizedTarget
-            : '/' + normalizedTarget)
-        try {
-          const response = await fetch(endpoint, {
-            headers: {
-              'x-spa-bootstrap': '1'
-            }
-          })
-          if (!response.ok) {
-            throw new Error('Failed to load application shell: ' + response.status)
-          }
-          const html = await response.text()
-          document.open()
-          document.write(html)
-          document.close()
-        } catch (error) {
-          console.error(error)
-          const message = document.createElement('p')
-          message.textContent = '애플리케이션을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.'
-          message.setAttribute('style', 'margin:2rem;font-family:system-ui,sans-serif;color:#1f2933;')
-          document.body.innerHTML = ''
-          document.body.appendChild(message)
-        }
-      })()
-    </script>
-  </head>
-  <body></body>
+<head>
+<meta charSet="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="theme-color" content="#8b5cf6"/>
+<meta name="description" content="모던하고 직관적인 Elliesbang Image Editor에서 드래그 앤 드롭으로 이미지를 업로드하고, 실시간으로 필터와 회전을 조정해 감각적인 이미지를 완성해 보세요."/>
+<title>멀티 이미지 편집 스튜디오</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.3.0/fonts/remixicon.css"/>
+<link href="/static/style.css" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js" defer="" data-lib="imagetracer">
+</script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer="">
+</script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" defer="">
+</script>
+<script src="https://accounts.google.com/gsi/client" async="" defer="" data-role="google-sdk">
+</script>
+</head>
+<body>
+<main class="page">
+<script type="application/json" data-role="app-config">{
+  &quot;googleClientId&quot;: &quot;&quot;,
+  &quot;googleRedirectUri&quot;: &quot;https://elliesbang.github.io/Image-Editor-2/auth/google/callback&quot;,
+  &quot;communityUrl&quot;: &quot;./?view=community&quot;,
+  &quot;apiBase&quot;: &quot;https://elliesbang-image-editor.netlify.app/.netlify/functions/server&quot;
+}</script>
+<header class="app-header" data-role="app-header" aria-label="서비스 헤더">
+<div class="app-header__left">
+<a class="app-header__logo" href="./" aria-label="Elliesbang Image Editor 홈">
+<span class="app-header__brand">Elliesbang Image Editor</span>
+<span class="app-header__tag">크레딧 프리미엄 베타</span>
+</a>
+</div>
+<div class="app-header__right">
+<div class="app-header__credit" data-role="credit-display" data-state="locked">
+<span class="app-header__plan-badge" data-role="plan-badge">게스트 모드</span>
+<span class="app-header__credit-label" data-role="credit-label">로그인하고 무료 30 크레딧 받기</span>
+<span class="app-header__credit-value">
+<strong data-role="credit-count">0</strong> 크레딧</span>
+</div>
+<button class="btn btn--primary btn--sm app-header__upgrade" type="button" data-role="upgrade-button">업그레이드</button>
+<a class="btn btn--ghost btn--sm" href="./?view=community" target="_blank" rel="noopener" data-role="community-link">미치나 커뮤니티</a>
+<button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">로그인</button>
+</div>
+</header>
+<section class="hero" data-view="home" aria-labelledby="hero-heading">
+<p class="hero__badge">크레딧 기반 Freemium 베타</p>
+<h1 class="hero__heading" id="hero-heading">멀티 이미지 편집 스튜디오</h1>
+<p class="hero__subtitle">최대 50장의 이미지를 한 번에 업로드하고 배경 제거, 여백 크롭, 노이즈 제거, 리사이즈, PNG → SVG 벡터 변환까지 한 곳에서 처리하세요. 로그인하면 무료 30 크레딧으로 모든 기능을 바로 사용할 수 있어요.</p>
+</section>
+<section class="features" data-view="home" aria-label="주요 기능 안내">
+<h2 class="features__title">더 나은 편집 경험을 위한 핵심 기능</h2>
+<div class="features__grid">
+<article class="feature-card">
+<h3>배경 제거 &amp; 피사체 크롭</h3>
+<p>자동 컬러 감지로 피사체를 분리하고, 여백을 줄여 바로 사용할 수 있는 투명 PNG를 만듭니다.</p>
+</article>
+<article class="feature-card">
+<h3>노이즈 제거 · 고품질 리사이즈</h3>
+<p>미세한 블러 처리를 통해 노이즈를 줄이고, 가로 폭 기준으로 선명하게 리사이즈합니다.</p>
+</article>
+<article class="feature-card">
+<h3>PNG → SVG 벡터 변환</h3>
+<p>1~6색을 선택해 150KB 이하의 벡터 파일로 변환하고, 전체 결과를 ZIP으로 저장하세요.</p>
+</article>
+</div>
+</section>
+<section class="stage" data-view="home" aria-label="작업 단계 안내">
+<ol class="stage__list" data-role="stage-indicator">
+<li class="stage__item is-active" data-stage="1">
+<span class="stage__step">1</span>
+<div class="stage__meta">
+<span class="stage__title">업로드 &amp; 선택</span>
+<span class="stage__copy">이미지를 추가하고 비교하기</span>
+</div>
+</li>
+<li class="stage__item" data-stage="2">
+<span class="stage__step">2</span>
+<div class="stage__meta">
+<span class="stage__title">보정 &amp; 변환</span>
+<span class="stage__copy">배경 제거·크롭·SVG 변환</span>
+</div>
+</li>
+<li class="stage__item" data-stage="3">
+<span class="stage__step">3</span>
+<div class="stage__meta">
+<span class="stage__title">다운로드</span>
+<span class="stage__copy">결과 저장 및 키워드 분석</span>
+</div>
+</li>
+</ol>
+<div class="stage__status" data-role="stage-status">
+<div class="stage__status-text" data-role="stage-message">로그인하면 30개의 무료 크레딧이 자동으로 충전됩니다.</div>
+</div>
+</section>
+<section class="pricing" data-view="home" id="pricing" data-role="pricing-section" aria-labelledby="pricing-heading">
+<header class="pricing__header">
+<p class="pricing__eyebrow">요금제 안내</p>
+<h2 class="pricing__title" id="pricing-heading">업무 흐름에 맞춰 선택하는 크레딧 플랜</h2>
+<p class="pricing__subtitle">FREE, 구독, 충전 크레딧을 하나의 잔액으로 통합 표기하고, 충전 크레딧부터 차감되도록 설계했습니다.</p>
+</header>
+<div class="pricing__policy">
+<div class="pricing-policy__item">
+<span class="pricing-policy__label">FREE 크레딧</span>
+<span class="pricing-policy__copy">매월 1일 30 크레딧 자동 지급 · 이월 불가</span>
+</div>
+<div class="pricing-policy__item">
+<span class="pricing-policy__label">구독 크레딧</span>
+<span class="pricing-policy__copy">월/연간 플랜 모두 기간 종료 시 소멸 · 잔여량은 통합 잔액으로 표시</span>
+</div>
+<div class="pricing-policy__item">
+<span class="pricing-policy__label">충전 크레딧</span>
+<span class="pricing-policy__copy">별도 구매 가능 · 유효 기간 여유 있게 유지 · 구독 크레딧보다 먼저 차감</span>
+</div>
+</div>
+<div class="pricing__cards">
+<article class="pricing-card pricing-card--free">
+<header class="pricing-card__header">
+<span class="pricing-card__plan">FREE</span>
+</header>
+<div class="pricing-card__price">
+<span class="pricing-card__value">₩0</span>
+<span class="pricing-card__per">/월</span>
+</div>
+<p class="pricing-card__credits">매월 30 크레딧 자동 지급 · 잔액 통합 표시</p>
+<ul class="pricing-card__features">
+<li>기본 편집 도구와 표준 해상도 제공</li>
+<li>로그인만으로 즉시 시작</li>
+<li>충전 크레딧 우선 차감 정책 공유</li>
+</ul>
+<button class="btn btn--ghost pricing-card__cta" type="button" data-role="pricing-free-login">무료로 시작</button>
+</article>
+<article class="pricing-card">
+<header class="pricing-card__header">
+<span class="pricing-card__plan">BASIC</span>
+</header>
+<div class="pricing-card__price">
+<span class="pricing-card__value">₩9,900</span>
+<span class="pricing-card__per">/월</span>
+</div>
+<p class="pricing-card__credits">월 150 크레딧 · 고해상도 다운로드 포함</p>
+<ul class="pricing-card__features">
+<li>FREE 기능 + 고해상도 다운로드</li>
+<li>충전 크레딧부터 차감해 과금 리스크 축소</li>
+<li>플랜 만료 시 자동으로 FREE 전환</li>
+</ul>
+<button class="btn btn--outline pricing-card__cta" type="button" data-role="pricing-upgrade" data-plan="basic">BASIC 업그레이드</button>
+</article>
+<article class="pricing-card pricing-card--highlight">
+<header class="pricing-card__header">
+<span class="pricing-card__plan">PRO</span>
+<span class="pricing-card__tag">추천</span>
+</header>
+<div class="pricing-card__price">
+<span class="pricing-card__value">₩19,900</span>
+<span class="pricing-card__per">/월</span>
+</div>
+<p class="pricing-card__credits">월 1,000 크레딧 · SVG 변환 우선 지원</p>
+<ul class="pricing-card__features">
+<li>BASIC 기능 + PNG → SVG 벡터 변환 무제한</li>
+<li>팀 브랜드 에셋 작업을 위한 우선 큐</li>
+<li>충전/구독 크레딧 통합 잔액 표시</li>
+</ul>
+<button class="btn btn--primary pricing-card__cta" type="button" data-role="pricing-upgrade" data-plan="pro">PRO 업그레이드</button>
+</article>
+<article class="pricing-card pricing-card--premium">
+<header class="pricing-card__header">
+<span class="pricing-card__plan">PREMIUM</span>
+</header>
+<div class="pricing-card__price">
+<span class="pricing-card__value">₩39,900</span>
+<span class="pricing-card__per">/월</span>
+</div>
+<p class="pricing-card__credits">월 10,000 크레딧 · 키워드 분석 포함</p>
+<ul class="pricing-card__features">
+<li>PRO 기능 + 키워드 분석 자동화</li>
+<li>운영 효율을 위한 우선 지원 &amp; 보고서</li>
+<li>충전 크레딧 선차감 · 잔여량 통합 표시</li>
+</ul>
+<button class="btn btn--primary pricing-card__cta" type="button" data-role="pricing-upgrade" data-plan="premium">PREMIUM 업그레이드</button>
+</article>
+</div>
+<aside class="pricing__note" aria-label="미치나 플랜 안내">
+<strong>미치나 플랜</strong>
+<p>챌린지 신청 시 월 10,000 크레딧과 PREMIUM 기능을 제공하며, 기간이 끝나면 자동으로 FREE 플랜으로 전환됩니다.</p>
+</aside>
+</section>
+<div class="login-modal" data-role="login-modal" aria-hidden="true">
+<div class="login-modal__backdrop" data-action="close-login" aria-hidden="true">
+</div>
+<div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+<header class="login-modal__header">
+<h2 class="login-modal__title" id="login-modal-title">Elliesbang Image Editor 로그인</h2>
+<button class="login-modal__close" type="button" data-action="close-login" aria-label="로그인 창 닫기">
+<i class="ri-close-line" aria-hidden="true">
+</i>
+</button>
+</header>
+<p class="login-modal__subtitle">원하는 로그인 방식을 선택해 계속 진행하세요.</p>
+<div class="login-modal__providers">
+<button class="login-modal__provider login-modal__provider--google" type="button" data-action="login-google" data-role="google-login-button" aria-describedby="google-login-helper">
+<span class="login-modal__icon" aria-hidden="true">
+<i class="ri-google-fill">
+</i>
+</span>
+<span data-role="google-login-text" aria-live="polite">Google 계정으로 계속하기</span>
+<span class="login-modal__spinner" data-role="google-login-spinner" aria-hidden="true">
+</span>
+</button>
+<p class="login-modal__helper login-modal__helper--google" data-role="google-login-helper" aria-live="polite" id="google-login-helper" hidden="">
+</p>
+</div>
+<div class="login-modal__divider" role="presentation">
+<span>또는</span>
+</div>
+<form class="login-modal__form" data-role="login-email-form" data-state="idle">
+<label class="login-modal__label" for="loginEmail">이메일 로그인</label>
+<div class="login-modal__field-group">
+<input id="loginEmail" name="email" type="email" placeholder="example@email.com" required="" autocomplete="email" class="login-modal__input" data-role="login-email-input"/>
+<button class="login-modal__submit" type="submit" data-role="login-email-submit">인증 코드 받기</button>
+</div>
+<div class="login-modal__code-group">
+<input id="loginEmailCode" name="code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" placeholder="6자리 인증 코드" class="login-modal__input login-modal__input--code" data-role="login-email-code" disabled=""/>
+<button class="login-modal__resend" type="button" data-role="login-email-resend" hidden="">코드 다시 보내기</button>
+</div>
+<p class="login-modal__helper" data-role="login-email-helper">이메일 주소를 입력하면 인증 코드를 보내드립니다.</p>
+</form>
+</div>
+</div>
+<div class="plan-modal" data-role="plan-modal-basic" aria-hidden="true">
+<div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true">
+</div>
+<div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-basic-title">
+<header class="plan-modal__header">
+<span class="plan-modal__badge">BASIC 이상 필요</span>
+<h2 class="plan-modal__title" id="plan-modal-basic-title">고해상도 다운로드를 위해 업그레이드하세요</h2>
+<button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="BASIC 안내 닫기">
+<i class="ri-close-line" aria-hidden="true">
+</i>
+</button>
+</header>
+<p class="plan-modal__hint" data-role="plan-modal-hint">고해상도 다운로드는 BASIC 이상 플랜에서 제공됩니다.</p>
+<ul class="plan-modal__list">
+<li>월 150 크레딧 제공 · 잔여량은 통합 잔액으로 관리됩니다.</li>
+<li>충전 크레딧부터 차감되어 예산을 안전하게 운영할 수 있습니다.</li>
+<li>플랜 만료 시 자동으로 FREE 플랜으로 전환됩니다.</li>
+</ul>
+<div class="plan-modal__actions">
+<button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">BASIC 요금제 살펴보기</button>
+<button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+</div>
+</div>
+</div>
+<div class="plan-modal" data-role="plan-modal-pro" aria-hidden="true">
+<div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true">
+</div>
+<div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-pro-title">
+<header class="plan-modal__header">
+<span class="plan-modal__badge">PRO 이상 필요</span>
+<h2 class="plan-modal__title" id="plan-modal-pro-title">SVG 변환 기능을 바로 활용하세요</h2>
+<button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="PRO 안내 닫기">
+<i class="ri-close-line" aria-hidden="true">
+</i>
+</button>
+</header>
+<p class="plan-modal__hint" data-role="plan-modal-hint">PNG → SVG 벡터 변환은 PRO 이상 플랜에서 사용할 수 있습니다.</p>
+<ul class="plan-modal__list">
+<li>월 1,000 크레딧으로 대량의 디자인 변환을 지원합니다.</li>
+<li>충전 크레딧이 먼저 사용되어 구독 크레딧을 안전하게 보존합니다.</li>
+<li>SVG 변환, 고해상도 다운로드, ZIP 묶음 저장 모두 활성화됩니다.</li>
+</ul>
+<div class="plan-modal__actions">
+<button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">PRO 요금제 확인하기</button>
+<button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+</div>
+</div>
+</div>
+<div class="plan-modal" data-role="plan-modal-premium" aria-hidden="true">
+<div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true">
+</div>
+<div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-premium-title">
+<header class="plan-modal__header">
+<span class="plan-modal__badge">PREMIUM 이상 필요</span>
+<h2 class="plan-modal__title" id="plan-modal-premium-title">키워드 분석까지 한 번에 마무리하세요</h2>
+<button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="PREMIUM 안내 닫기">
+<i class="ri-close-line" aria-hidden="true">
+</i>
+</button>
+</header>
+<p class="plan-modal__hint" data-role="plan-modal-hint">키워드 분석 기능은 PREMIUM 이상 플랜에서 제공됩니다.</p>
+<ul class="plan-modal__list">
+<li>월 10,000 크레딧과 전 기능 무제한 사용</li>
+<li>운영 효율을 위한 우선 지원과 작업 보고서 제공</li>
+<li>충전/구독 크레딧을 합산한 통합 잔액으로 표시됩니다.</li>
+</ul>
+<div class="plan-modal__actions">
+<button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">PREMIUM 요금제 알아보기</button>
+<button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+</div>
+</div>
+</div>
+<div class="admin-modal" data-role="admin-modal" aria-hidden="true">
+<div class="admin-modal__backdrop" data-action="close-admin" aria-hidden="true">
+</div>
+<div class="admin-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="admin-modal-title">
+<header class="admin-modal__header">
+<h2 class="admin-modal__title" id="admin-modal-title">관리자 보안 로그인</h2>
+<button class="admin-modal__close" type="button" data-action="close-admin" aria-label="관리자 로그인 창 닫기">
+<i class="ri-close-line" aria-hidden="true">
+</i>
+</button>
+</header>
+<p class="admin-modal__subtitle" data-role="admin-modal-subtitle">등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.</p>
+<form class="admin-modal__form" data-role="admin-login-form" data-state="idle">
+<label class="admin-modal__label" for="adminEmail">관리자 이메일</label>
+<input id="adminEmail" name="adminEmail" type="email" required="" autocomplete="email" class="admin-modal__input" data-role="admin-email" placeholder="admin@example.com"/>
+<label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>
+<input id="adminPassword" name="adminPassword" type="password" required="" autocomplete="current-password" class="admin-modal__input" data-role="admin-password" placeholder="비밀번호"/>
+<p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite">
+</p>
+<button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>
+</form>
+<div class="admin-modal__actions" data-role="admin-modal-actions" hidden="">
+<p class="admin-modal__note">관리자 모드가 이미 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있습니다.</p>
+<div class="admin-modal__buttons">
+<button class="btn btn--outline admin-modal__action" type="button" data-role="admin-modal-dashboard">대시보드 열기</button>
+<button class="btn btn--ghost admin-modal__action" type="button" data-role="admin-modal-logout">로그아웃</button>
+</div>
+</div>
+</div>
+</div>
+<section class="workspace" data-view="home" aria-label="이미지 작업 영역">
+<div class="workspace__actions">
+<button class="btn btn--primary" type="button" data-trigger="file">이미지 업로드</button>
+</div>
+<div class="workspace__row workspace__row--top">
+<article class="panel panel--upload" aria-label="원본 이미지 관리">
+<header class="panel__header panel__header--stack">
+<div>
+<span class="panel__eyebrow">Sources</span>
+<h2 class="panel__title">업로드된 이미지</h2>
+</div>
+<div class="panel__actions">
+<button class="btn btn--subtle" type="button" data-action="upload-select-all">전체 선택</button>
+<button class="btn btn--ghost" type="button" data-action="upload-clear">전체 해제</button>
+<button class="btn btn--outline" type="button" data-action="upload-delete-selected">선택 삭제</button>
+</div>
+</header>
+<div class="dropzone" data-role="dropzone">
+<input id="fileInput" type="file" accept="image/*" multiple=""/>
+<div class="dropzone__content">
+<div class="dropzone__icon" aria-hidden="true">
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M24 6v24m0 0-8-8m8 8 8-8M10 34h28a4 4 0 0 1 0 8H10a4 4 0 0 1 0-8Z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+</path>
+</svg>
+</div>
+<p class="dropzone__text">파일을 끌어다 놓거나 <span class="dropzone__accent">클릭</span>하여 업로드</p>
+<p class="dropzone__hint">최대 50개 · PNG, JPG, JPEG, WebP 지원 · 최대 12MB</p>
+</div>
+</div>
+<p class="panel__hint">업로드된 이미지는 아래 썸네일 리스트에서 한눈에 확인하고 선택할 수 있습니다.</p>
+<div class="asset-grid asset-grid--compact" id="uploadList" data-empty-text="아직 업로드한 이미지가 없습니다.">
+</div>
+</article>
+<article class="panel panel--operations" aria-label="일괄 처리 도구">
+<header class="panel__header panel__header--stack">
+<div>
+<span class="panel__eyebrow">Batch tools</span>
+<h2 class="panel__title">선택한 이미지 처리</h2>
+</div>
+<p class="panel__caption">업로드 목록에서 이미지를 선택한 뒤 아래 기능을 실행하세요.</p>
+</header>
+<div class="gate gate--operations" data-role="operations-gate" data-state="locked">
+<i class="ri-shield-keyhole-line gate__icon" aria-hidden="true">
+</i>
+<div class="gate__body">
+<p class="gate__title">이미지 처리에는 크레딧이 필요합니다.</p>
+<p class="gate__copy">실행 시 잔여 크레딧이 차감되며, 로그인하면 <strong>무료 30 크레딧</strong>이 자동으로 지급됩니다.</p>
+<div class="gate__actions">
+<button class="btn btn--outline btn--sm" type="button" data-role="operations-gate-login">로그인하고 무료 크레딧 받기</button>
+</div>
+</div>
+</div>
+<div class="operations-grid">
+<button class="btn btn--primary" type="button" data-operation="remove-bg">
+<i class="ri-brush-3-line" aria-hidden="true">
+</i>배경 제거</button>
+<button class="btn btn--primary" type="button" data-operation="auto-crop">
+<i class="ri-crop-line" aria-hidden="true">
+</i>피사체 크롭</button>
+<button class="btn btn--primary" type="button" data-operation="remove-bg-crop">
+<i class="ri-magic-line" aria-hidden="true">
+</i>배경 제거 + 크롭</button>
+<button class="btn btn--primary" type="button" data-operation="denoise">
+<i class="ri-sparkling-2-line" aria-hidden="true">
+</i>노이즈 제거</button>
+</div>
+<div class="operations__resize">
+<label class="operations__label" for="resizeWidth">리사이즈 가로(px)</label>
+<div class="operations__resize-controls">
+<input id="resizeWidth" type="number" min="32" max="4096" placeholder="예: 1200"/>
+<button class="btn btn--outline" type="button" data-operation="resize">리사이즈 적용</button>
+</div>
+<p class="operations__note">세로 길이는 원본 비율에 맞추어 자동 계산됩니다.</p>
+</div>
+<p class="status status--hidden" data-role="status" aria-live="polite">
+</p>
+</article>
+</div>
+<div class="workspace__row workspace__row--bottom">
+<article class="panel panel--results" aria-label="처리 결과 관리">
+<header class="panel__header panel__header--stack">
+<div>
+<span class="panel__eyebrow">Outputs</span>
+<h2 class="panel__title">처리 결과</h2>
+</div>
+<div class="panel__actions">
+<button class="btn btn--subtle" type="button" data-action="result-select-all">전체 선택</button>
+<button class="btn btn--ghost" type="button" data-action="result-clear">전체 해제</button>
+<button class="btn btn--outline" type="button" data-action="result-delete-selected">선택 삭제</button>
+</div>
+</header>
+<div class="results-toolbar">
+<div class="results-toolbar__group">
+<label class="results-toolbar__label" for="svgColorCount">SVG 색상 수</label>
+<select id="svgColorCount">
+<option value="1">단색</option>
+<option value="2">2색</option>
+<option value="3">3색</option>
+<option value="4">4색</option>
+<option value="5">5색</option>
+<option value="6" selected="">6색</option>
+</select>
+</div>
+<div class="results-toolbar__actions">
+<button class="btn btn--ghost" type="button" data-result-operation="svg">PNG → SVG 변환</button>
+<button class="btn btn--outline" type="button" data-result-download="selected">선택 다운로드</button>
+<button class="btn btn--primary" type="button" data-result-download="all">전체 다운로드</button>
+</div>
+</div>
+<div class="gate results-gate" data-role="results-gate" data-state="locked">
+<i class="ri-lock-2-line results-gate__icon" aria-hidden="true">
+</i>
+<div class="results-gate__body">
+<p class="results-gate__title">로그인 후 결과 저장이 가능합니다.</p>
+<p class="results-gate__copy">벡터 변환/다운로드 시 크레딧이 차감돼요. 남은 크레딧: <strong data-role="results-credit-count">0</strong>
+</p>
+</div>
+<div class="results-gate__actions">
+<button class="btn btn--outline btn--sm" type="button" data-role="results-gate-login">로그인하고 무료 30 크레딧 받기</button>
+</div>
+</div>
+<div class="asset-grid asset-grid--results asset-grid--compact" id="resultList" data-empty-text="처리된 이미지가 이곳에 표시됩니다.">
+</div>
+<section class="analysis" data-role="analysis-panel">
+<div class="analysis__header">
+<span class="analysis__title">키워드 분석</span>
+<button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">분석 실행</button>
+</div>
+<p class="analysis__meta" data-role="analysis-meta" aria-live="polite">
+</p>
+<p class="analysis__hint" data-role="analysis-hint">분석할 결과 이미지를 선택하고 “분석 실행” 버튼을 눌러보세요.</p>
+<p class="analysis__headline" data-role="analysis-title">
+</p>
+<ul class="analysis__keywords" data-role="analysis-keywords">
+</ul>
+<p class="analysis__summary" data-role="analysis-summary">
+</p>
+</section>
+</article>
+</div>
+</section>
+<footer class="site-footer" aria-label="사이트 하단">
+<div class="site-footer__inner">
+<div class="site-footer__brand">
+<span class="site-footer__title">Elliesbang Image Editor</span>
+<span class="site-footer__contact">문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
+</span>
+</div>
+<nav class="site-footer__links" aria-label="법적 고지">
+<a href="./#pricing">요금제 안내</a>
+<a href="./privacy">개인정보 처리방침</a>
+<a href="./terms">이용약관</a>
+<a href="./cookies">쿠키 정책</a>
+<a href="./?admin=1" target="_blank" rel="noopener">관리자 전용</a>
+</nav>
+</div>
+<p class="site-footer__note">© 2025 Ellie’s Bang. 모든 권리 보유.</p>
+</footer>
+<div class="cookie-banner" data-role="cookie-banner" aria-hidden="true">
+<div class="cookie-banner__content" role="dialog" aria-modal="true" aria-labelledby="cookie-banner-title">
+<div class="cookie-banner__header">
+<h2 class="cookie-banner__title" id="cookie-banner-title">쿠키 사용에 대한 안내</h2>
+<p class="cookie-banner__description">더 나은 편집 경험을 제공하기 위해 필수 쿠키와 선택 쿠키를 사용합니다. 필수 쿠키는 서비스 기능에 반드시 필요하며, 선택 쿠키는 분석 및 기능 개선에 활용됩니다.</p>
+</div>
+<div class="cookie-banner__options">
+<label class="cookie-banner__option">
+<input type="checkbox" checked="" disabled=""/>
+<span>필수 쿠키 (기본 기능 제공을 위해 항상 활성화)</span>
+</label>
+<label class="cookie-banner__option">
+<input type="checkbox" data-role="cookie-analytics"/>
+<span>분석 쿠키 (이용 통계 및 UX 개선용)</span>
+</label>
+<label class="cookie-banner__option">
+<input type="checkbox" data-role="cookie-marketing"/>
+<span>마케팅 쿠키 (향후 캠페인 최적화용)</span>
+</label>
+<label class="cookie-banner__option cookie-banner__option--confirm">
+<input type="checkbox" data-role="cookie-confirm"/>
+<span>쿠키 정책을 확인했으며 안내에 동의합니다.</span>
+</label>
+</div>
+<div class="cookie-banner__actions">
+<a class="cookie-banner__link" href="./cookies" target="_blank" rel="noopener">쿠키 정책 자세히 보기</a>
+<button class="cookie-banner__button" type="button" data-action="accept-cookies" disabled="">동의하고 계속하기</button>
+</div>
+</div>
+</div>
+</main>
+<script type="module" src="/static/app.js"></script>
+</body>
 </html>

@@ -28,13 +28,25 @@ const serverBuildPlugin = () => {
 
 const copyRedirectsPlugin = () => {
   return {
-    name: 'copy-netlify-redirects',
+    name: 'copy-static-artifacts',
     apply: 'build',
     async writeBundle() {
-      const source = resolve(process.cwd(), '_redirects')
-      const destination = resolve(process.cwd(), 'dist/_redirects')
+      const cwd = process.cwd()
+      const distDir = resolve(cwd, 'dist')
+      const redirectsSource = resolve(cwd, '_redirects')
+      const redirectsDestination = resolve(distDir, '_redirects')
+      const indexPath = resolve(distDir, 'index.html')
+      const notFoundPath = resolve(distDir, '404.html')
       try {
-        await copyFile(source, destination)
+        await copyFile(redirectsSource, redirectsDestination)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error
+        }
+      }
+
+      try {
+        await copyFile(indexPath, notFoundPath)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
           throw error
@@ -57,7 +69,7 @@ export default defineConfig(({ command }) => {
   }
 
   return {
-    base: './',
+    base: '/Image-Editor-2/',
     build: {
       outDir: 'dist',
       emptyOutDir: true,
