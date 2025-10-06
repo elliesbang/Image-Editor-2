@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Easy Image Editor</title>
+    <meta name="description" content="Easy Image Editor 초기 로딩 화면" />
+    <script>
+      ;(async () => {
+        const target = window.location.pathname + window.location.search + window.location.hash
+        const endpoint = '/.netlify/functions/server' + (target.startsWith('/') ? target : '/' + target)
+        try {
+          const response = await fetch(endpoint, {
+            headers: {
+              'x-spa-bootstrap': '1'
+            }
+          })
+          if (!response.ok) {
+            throw new Error('Failed to load application shell: ' + response.status)
+          }
+          const html = await response.text()
+          document.open()
+          document.write(html)
+          document.close()
+        } catch (error) {
+          console.error(error)
+          const message = document.createElement('p')
+          message.textContent = '애플리케이션을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.'
+          message.setAttribute('style', 'margin:2rem;font-family:system-ui,sans-serif;color:#1f2933;')
+          document.body.innerHTML = ''
+          document.body.appendChild(message)
+        }
+      })()
+    </script>
+  </head>
+  <body></body>
+</html>

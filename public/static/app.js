@@ -13,6 +13,7 @@ const CREDIT_COSTS = {
 }
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
+const DEFAULT_API_BASE = '/.netlify/functions/server'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -125,6 +126,7 @@ const runtime = {
   config: null,
   initialView: 'home',
   allowViewBypass: false,
+  apiBase: '',
   google: {
     codeClient: null,
     deferred: null,
@@ -176,15 +178,49 @@ function getAppConfig() {
   const script = document.querySelector('script[data-role="app-config"]')
   if (!script) {
     runtime.config = {}
+    runtime.apiBase = normalizeApiBase()
     return runtime.config
   }
   try {
     runtime.config = JSON.parse(script.textContent || '{}') || {}
+    runtime.apiBase = normalizeApiBase(runtime.config.apiBase)
   } catch (error) {
     console.error('앱 설정을 불러오지 못했습니다.', error)
     runtime.config = {}
+    runtime.apiBase = normalizeApiBase()
   }
   return runtime.config
+}
+
+function normalizeApiBase(value = DEFAULT_API_BASE) {
+  if (typeof value !== 'string') {
+    return DEFAULT_API_BASE
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return DEFAULT_API_BASE
+  }
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
+}
+
+function getApiBase() {
+  if (runtime.apiBase) {
+    return runtime.apiBase
+  }
+  const config = getAppConfig()
+  runtime.apiBase = normalizeApiBase(config.apiBase)
+  return runtime.apiBase
+}
+
+function buildApiUrl(path) {
+  const base = getApiBase()
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base
+  return `${normalizedBase}${normalizedPath}`
+}
+
+function apiFetch(path, options) {
+  return fetch(buildApiUrl(path), options)
 }
 
 function waitForGoogleSdk(timeout = 8000) {
@@ -1501,7 +1537,7 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
 
 async function handleLogout() {
   try {
-    await fetch('/api/auth/admin/logout', { method: 'POST' })
+    await apiFetch('/api/auth/admin/logout', { method: 'POST' })
   } catch (error) {
     // ignore network errors
   }
@@ -1657,7 +1693,7 @@ function revokeAdminSessionState() {
 
 async function syncAdminSession() {
   try {
-    const response = await fetch('/api/auth/session', {
+    const response = await apiFetch('/api/auth/session', {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
       credentials: 'include',
@@ -2014,7 +2050,7 @@ async function fetchAdminParticipants() {
     return []
   }
   try {
-    const response = await fetch('/api/admin/challenge/participants', {
+    const response = await apiFetch('/api/admin/challenge/participants', {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
       credentials: 'include',
@@ -2091,7 +2127,7 @@ async function handleAdminLogin(event) {
   }
 
   try {
-    const response = await fetch('/api/auth/admin/login', {
+    const response = await apiFetch('/api/auth/admin/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -2219,7 +2255,7 @@ async function handleAdminImport(event) {
       }
     }
 
-    const response = await fetch('/api/admin/challenge/import', {
+    const response = await apiFetch('/api/admin/challenge/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -2281,7 +2317,7 @@ async function handleAdminRunCompletion() {
     return
   }
   try {
-    const response = await fetch('/api/admin/challenge/run-completion-check', {
+    const response = await apiFetch('/api/admin/challenge/run-completion-check', {
       method: 'POST',
       credentials: 'include',
     })
@@ -2311,7 +2347,7 @@ async function handleAdminDownloadCompletion() {
     return
   }
   try {
-    const response = await fetch('/api/admin/challenge/completions?format=csv', {
+    const response = await apiFetch('/api/admin/challenge/completions?format=csv', {
       credentials: 'include',
     })
     if (response.status === 401) {
@@ -2547,7 +2583,7 @@ async function ensureChallengeCertificate(email) {
     return null
   }
   try {
-    const response = await fetch(`/api/challenge/certificate?email=${encodeURIComponent(email)}`, {
+    const response = await apiFetch(`/api/challenge/certificate?email=${encodeURIComponent(email)}`, {
       cache: 'no-store',
     })
     if (!response.ok) {
@@ -2604,7 +2640,7 @@ async function syncChallengeProfile(explicitEmail) {
   }
   state.challenge.loading = true
   try {
-    const response = await fetch(`/api/challenge/profile?email=${encodeURIComponent(email)}`, {
+    const response = await apiFetch(`/api/challenge/profile?email=${encodeURIComponent(email)}`, {
       cache: 'no-store',
     })
     if (!response.ok) {
@@ -2702,7 +2738,7 @@ async function handleChallengeSubmit(event) {
   setStatus(`Day ${day} 제출을 저장하는 중입니다…`, 'info')
 
   try {
-    const response = await fetch('/api/challenge/submit', {
+    const response = await apiFetch('/api/challenge/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3038,7 +3074,7 @@ async function handleGoogleLogin(event) {
 
     setStatus('Google 계정을 확인하고 있습니다…', 'info', 0)
 
-    const response = await fetch('/api/auth/google', {
+    const response = await apiFetch('/api/auth/google', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -4878,7 +4914,7 @@ async function analyzeCurrentImage() {
 
     let fallbackReason = ''
     try {
-      const response = await fetch('/api/analyze', {
+      const response = await apiFetch('/api/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5943,8 +5979,35 @@ function attachEventListeners() {
   document.addEventListener('keydown', handleGlobalKeydown)
 }
 
-function init() {
-  const config = getAppConfig()
+async function init() {
+  let config = getAppConfig()
+  const needsRemoteConfig = !config || Object.keys(config).length === 0 || !config.apiBase
+
+  if (needsRemoteConfig) {
+    try {
+      const response = await apiFetch('/api/config', {
+        headers: {
+          Accept: 'application/json',
+        },
+      })
+      if (response.ok) {
+        const remoteConfig = await response.json()
+        if (remoteConfig && typeof remoteConfig === 'object') {
+          config = { ...config, ...remoteConfig }
+          runtime.config = config
+          runtime.apiBase = normalizeApiBase(config.apiBase)
+          const script = document.querySelector('script[data-role="app-config"]')
+          if (script) {
+            script.textContent = JSON.stringify(config)
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('원격 앱 구성을 불러오지 못했습니다.', error)
+    }
+  }
+
+  config = runtime.config || config || {}
   const allowedViews = new Set(['home', 'community', 'admin'])
   const normalizeView = (value) => {
     if (typeof value !== 'string') return ''
@@ -6012,4 +6075,6 @@ function init() {
   })
 }
 
-document.addEventListener('DOMContentLoaded', init)
+document.addEventListener('DOMContentLoaded', () => {
+  void init()
+})

@@ -1,9 +1,30 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
+
+type KeyValueListKey = {
+  name: string
+}
+
+type KeyValueListResult = {
+  keys: KeyValueListKey[]
+  list_complete: boolean
+  cursor?: string
+}
+
+type KeyValueListOptions = {
+  prefix: string
+  cursor?: string
+}
+
+interface KeyValueStore {
+  get(key: string): Promise<string | null>
+  put(key: string, value: string): Promise<void>
+  delete(key: string): Promise<void>
+  list(options: KeyValueListOptions): Promise<KeyValueListResult>
+}
 
 type Bindings = {
   OPENAI_API_KEY?: string
@@ -14,8 +35,8 @@ type Bindings = {
   ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
   ADMIN_RATE_LIMIT_WINDOW_SECONDS?: string
   ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
-  CHALLENGE_KV?: KVNamespace
-  CHALLENGE_KV_BACKUP?: KVNamespace
+  CHALLENGE_KV?: KeyValueStore
+  CHALLENGE_KV_BACKUP?: KeyValueStore
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REDIRECT_URI?: string
@@ -99,7 +120,8 @@ const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://easy-image-editor.netlify.app/auth/google/callback'
+const API_BASE_PATH = '/.netlify/functions/server'
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
@@ -844,12 +866,24 @@ app.use('*', async (c, next) => {
   c.res.headers.set('Cross-Origin-Opener-Policy', 'same-origin')
 })
 
-app.use('/static/*', serveStatic({ root: './public' }))
 app.use(renderer)
 
 app.get('/api/auth/session', async (c) => {
   const adminEmail = await requireAdminSession(c)
   return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
+})
+
+app.get('/api/config', (c) => {
+  const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
+  const googleRedirectUri = resolveGoogleRedirectUri(c)
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
+
+  return c.json({
+    googleClientId,
+    googleRedirectUri,
+    communityUrl,
+    apiBase: API_BASE_PATH,
+  })
 })
 
 app.post('/api/auth/admin/login', async (c) => {
@@ -1877,6 +1911,7 @@ app.get('/', (c) => {
       googleClientId,
       googleRedirectUri,
       communityUrl,
+      apiBase: API_BASE_PATH,
     },
     null,
     2,
