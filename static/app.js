@@ -132,10 +132,12 @@ const state = {
   },
   auth: {
     step: 'idle',
+    intent: 'login',
     pendingEmail: '',
-    code: '',
     expiresAt: 0,
+    issuedAt: 0,
     attempts: 0,
+    cooldownUntil: 0,
   },
   stage: 'upload',
   view: 'home',
@@ -261,6 +263,7 @@ function getPlanTier(plan) {
 function getRequiredPlanTier(action) {
   switch (action) {
     case 'download':
+      return 0
     case 'downloadAll':
       return 1
     case 'svg':
@@ -301,8 +304,8 @@ function getPlanModalElement(planKey) {
 
 const PLAN_UPSELL_MESSAGES = {
   basic: {
-    default: '고해상도 다운로드와 배치 저장은 BASIC 이상 플랜에서 제공됩니다.',
-    download: '고해상도 다운로드를 실행하려면 BASIC 이상 플랜으로 업그레이드하세요.',
+    default: '고해상도와 일괄 저장 기능은 BASIC 이상 플랜에서 제공됩니다.',
+    download: '고해상도 저장을 이용하려면 BASIC 이상 플랜으로 업그레이드하세요.',
     downloadAll: '여러 결과를 한 번에 저장하려면 BASIC 이상 플랜이 필요합니다.',
   },
   pro: {
@@ -803,6 +806,7 @@ const elements = {
   navButtons: Array.from(document.querySelectorAll('[data-view-target]')),
   viewSections: Array.from(document.querySelectorAll('[data-view]')),
   loginModal: document.querySelector('[data-role="login-modal"]'),
+  loginIntentButtons: document.querySelectorAll('[data-role="login-intent"]'),
   googleLoginButton: document.querySelector('[data-role="google-login-button"]'),
   googleLoginText: document.querySelector('[data-role="google-login-text"]'),
   googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
@@ -860,6 +864,14 @@ function formatBytes(bytes) {
 
 function baseName(filename) {
   return filename.replace(/\.[^/.]+$/, '')
+}
+
+function deriveDisplayName(email) {
+  if (!email) return '크리에이터'
+  const local = email.split('@')[0] || ''
+  const cleaned = local.replace(/[._-]+/g, ' ').trim()
+  if (!cleaned) return '크리에이터'
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
 }
 
 function setStatus(message, tone = 'info', duration = 3200) {
@@ -1488,7 +1500,7 @@ function updateResultsGate() {
     title = '잔여 크레딧이 1개 이하입니다.'
     copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환은 이미지당 ${CREDIT_COSTS.svg} 크레딧이 필요합니다.`
   } else if (planKey === 'free') {
-    copy = `${badge} 플랜은 표준 해상도 저장만 지원합니다. 고해상도 다운로드는 BASIC 이상 플랜에서 제공됩니다.`
+    copy = `${badge} 플랜은 표준 해상도 저장을 바로 이용할 수 있습니다. 고해상도와 일괄 저장은 BASIC 이상 플랜에서 제공됩니다.`
   } else if (planKey === 'basic') {
     copy = `BASIC 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 고해상도 다운로드 사용 시 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
   } else if (planKey === 'pro') {
@@ -3372,6 +3384,40 @@ function setLoginHelper(message) {
   }
 }
 
+function getDefaultLoginHelper(intent = state.auth.intent) {
+  return intent === 'register'
+    ? '이메일 주소를 입력하면 가입 인증 코드를 보내드립니다.'
+    : '이메일 주소를 입력하면 로그인 인증 코드를 보내드립니다.'
+}
+
+function refreshLoginIntentUI() {
+  const disabled = state.auth.step === 'code' || state.auth.step === 'loading'
+  elements.loginIntentButtons?.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    const targetIntent = button.dataset.intent === 'register' ? 'register' : 'login'
+    const isActive = targetIntent === state.auth.intent
+    button.classList.toggle('is-active', isActive)
+    button.setAttribute('aria-pressed', isActive ? 'true' : 'false')
+    button.disabled = disabled
+    button.setAttribute('aria-disabled', disabled ? 'true' : 'false')
+  })
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.dataset.intent = state.auth.intent
+  }
+}
+
+function setAuthIntent(intent, options = {}) {
+  const normalized = intent === 'register' ? 'register' : 'login'
+  state.auth.intent = normalized
+  if (!options.skipHelper) {
+    setLoginHelper(getDefaultLoginHelper(normalized))
+  }
+  refreshLoginIntentUI()
+  if (!options.skipSyncState) {
+    updateLoginFormState(state.auth.step)
+  }
+}
+
 function encourageEmailFallback() {
   if (state.auth.step !== 'idle') return
   if (!(elements.loginEmailHelper instanceof HTMLElement)) return
@@ -3387,8 +3433,14 @@ function updateLoginFormState(step) {
     elements.loginEmailForm.dataset.state = step
   }
   if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
-    elements.loginEmailSubmit.textContent = step === 'code' ? '코드 확인 후 로그인' : '인증 코드 받기'
-    elements.loginEmailSubmit.disabled = false
+    let label = '인증 코드 받기'
+    if (step === 'code') {
+      label = state.auth.intent === 'register' ? '코드 확인 후 가입 완료' : '코드 확인 후 로그인'
+    } else if (step === 'loading') {
+      label = '처리 중…'
+    }
+    elements.loginEmailSubmit.textContent = label
+    elements.loginEmailSubmit.disabled = step === 'loading'
   }
   if (elements.loginEmailResend instanceof HTMLButtonElement) {
     elements.loginEmailResend.hidden = step !== 'code'
@@ -3396,21 +3448,27 @@ function updateLoginFormState(step) {
   }
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.readOnly = step === 'code'
+    elements.loginEmailInput.disabled = step === 'loading'
   }
   if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
     elements.loginEmailCodeInput.disabled = step !== 'code'
     if (step !== 'code') {
       elements.loginEmailCodeInput.value = ''
+    } else {
+      window.requestAnimationFrame(() => elements.loginEmailCodeInput.focus())
     }
   }
+  refreshLoginIntentUI()
 }
 
 function resetLoginFlow() {
   state.auth.step = 'idle'
+  state.auth.intent = 'login'
   state.auth.pendingEmail = ''
-  state.auth.code = ''
   state.auth.expiresAt = 0
+  state.auth.issuedAt = 0
   state.auth.attempts = 0
+  state.auth.cooldownUntil = 0
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
     elements.loginEmailForm.reset()
@@ -3418,6 +3476,7 @@ function resetLoginFlow() {
   }
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.readOnly = false
+    elements.loginEmailInput.disabled = false
   }
   if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
     elements.loginEmailCodeInput.disabled = true
@@ -3431,51 +3490,98 @@ function resetLoginFlow() {
     elements.loginEmailResend.hidden = true
     elements.loginEmailResend.disabled = true
   }
-  setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+  setAuthIntent('login', { skipHelper: false, skipSyncState: true })
+  setLoginHelper(getDefaultLoginHelper('login'))
+  updateLoginFormState('idle')
   clearGoogleCooldown()
   runtime.google.retryCount = 0
   updateGoogleProviderAvailability()
-}
-
-function generateVerificationCode() {
-  return `${Math.floor(100000 + Math.random() * 900000)}`
 }
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
-function startEmailVerification(email) {
+async function startEmailVerification(email, options = {}) {
   const normalizedEmail = email.trim().toLowerCase()
   state.auth.pendingEmail = normalizedEmail
-  state.auth.code = generateVerificationCode()
-  state.auth.expiresAt = Date.now() + 5 * 60 * 1000
-  state.auth.attempts = 0
-
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.value = normalizedEmail
   }
 
-  updateLoginFormState('code')
+  updateLoginFormState('loading')
 
-  if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
-    window.requestAnimationFrame(() => elements.loginEmailCodeInput.focus())
-  }
+  try {
+    const response = await apiFetch('/api/auth/email/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalizedEmail, intent: state.auth.intent }),
+      credentials: 'include',
+    })
 
-  const helperMessage = `입력한 주소(${normalizedEmail})로 인증 코드를 전송했습니다. 5분 내에 6자리 코드를 입력하세요. (샌드박스 테스트용 코드: ${state.auth.code})`
-  setLoginHelper(helperMessage)
-  setStatus(`${normalizedEmail} 주소로 인증 코드를 전송했습니다. 이메일을 확인한 뒤 코드를 입력해주세요.`, 'info')
-}
+    const detail = await response.json().catch(() => ({}))
 
-function isVerificationCodeValid(code) {
-  if (!state.auth.code || Date.now() > state.auth.expiresAt) {
-    return { valid: false, reason: 'expired' }
+    if (!response.ok) {
+      const errorCode = detail?.error
+      switch (errorCode) {
+        case 'ACCOUNT_NOT_FOUND': {
+          setStatus('가입되지 않은 이메일 주소입니다. 회원가입 탭으로 전환해 인증 코드를 받아보세요.', 'warning')
+          setAuthIntent('register', { skipHelper: false })
+          break
+        }
+        case 'EMAIL_ALREADY_REGISTERED': {
+          setStatus('이미 가입된 이메일 주소입니다. 로그인 탭에서 인증 코드를 요청해주세요.', 'warning')
+          setAuthIntent('login', { skipHelper: false })
+          break
+        }
+        case 'VERIFICATION_RATE_LIMITED': {
+          const retryAfterSeconds = Number(detail?.retryAfter ?? 0)
+          const bounded = Number.isFinite(retryAfterSeconds) ? Math.max(1, Math.ceil(retryAfterSeconds)) : 30
+          state.auth.cooldownUntil = Date.now() + bounded * 1000
+          setStatus(`인증 코드 요청이 너무 잦습니다. 약 ${bounded}초 후 다시 시도해주세요.`, 'danger')
+          break
+        }
+        case 'EMAIL_SENDER_NOT_CONFIGURED':
+        case 'EMAIL_DELIVERY_FAILED': {
+          setStatus('인증 이메일을 전송할 수 없습니다. 관리자에게 문의해주세요.', 'danger')
+          break
+        }
+        case 'INVALID_EMAIL': {
+          setStatus('이메일 주소 형식이 올바르지 않습니다. 다시 입력해주세요.', 'danger')
+          break
+        }
+        default: {
+          setStatus('인증 코드를 요청하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+        }
+      }
+      updateLoginFormState('idle')
+      return
+    }
+
+    const issuedAt = Number(detail?.issuedAt ?? Date.now())
+    const expiresAt = Number(detail?.expiresAt ?? issuedAt + 5 * 60 * 1000)
+    state.auth.issuedAt = Number.isFinite(issuedAt) ? issuedAt : Date.now()
+    state.auth.expiresAt = Number.isFinite(expiresAt) ? expiresAt : state.auth.issuedAt + 5 * 60 * 1000
+    state.auth.attempts = 0
+    state.auth.cooldownUntil = 0
+
+    updateLoginFormState('code')
+
+    const helperMessage =
+      state.auth.intent === 'register'
+        ? `${normalizedEmail} 주소로 인증 코드를 전송했습니다. 받은 코드를 입력하면 가입이 완료됩니다.`
+        : `${normalizedEmail} 주소로 인증 코드를 전송했습니다. 받은 코드를 입력하면 로그인할 수 있습니다.`
+    setLoginHelper(helperMessage)
+
+    const statusMessage = options.resend
+      ? `${normalizedEmail} 주소로 새로운 인증 코드를 전송했습니다.`
+      : `${normalizedEmail} 주소로 인증 코드를 전송했습니다.`
+    setStatus(statusMessage, 'success')
+  } catch (error) {
+    console.error('email verification request error', error)
+    setStatus('인증 코드를 요청하는 중 오류가 발생했습니다. 네트워크 상태를 확인한 뒤 다시 시도해주세요.', 'danger')
+    updateLoginFormState('idle')
   }
-  if (code !== state.auth.code) {
-    state.auth.attempts += 1
-    return { valid: false, reason: 'mismatch' }
-  }
-  return { valid: true }
 }
 
 function updateOperationAvailability() {
@@ -3801,7 +3907,7 @@ async function handleGoogleLogin(event) {
   }
 }
 
-function handleEmailResend(event) {
+async function handleEmailResend(event) {
   event.preventDefault()
   const currentEmail =
     state.auth.pendingEmail ||
@@ -3819,11 +3925,191 @@ function handleEmailResend(event) {
     updateLoginFormState('idle')
     return
   }
-  startEmailVerification(currentEmail)
-  setStatus(`${currentEmail} 주소로 새로운 인증 코드를 전송했습니다.`, 'success')
+  await startEmailVerification(currentEmail, { resend: true })
 }
 
-function handleEmailLogin(event) {
+async function verifyEmailCode(submittedCode) {
+  const email = state.auth.pendingEmail
+  if (!email) {
+    setStatus('이메일 정보를 확인할 수 없습니다. 다시 인증 코드를 요청해주세요.', 'danger')
+    updateLoginFormState('idle')
+    setLoginHelper(getDefaultLoginHelper())
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+    return
+  }
+
+  updateLoginFormState('loading')
+
+  try {
+    const response = await apiFetch('/api/auth/email/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code: submittedCode, intent: state.auth.intent }),
+      credentials: 'include',
+    })
+
+    const detail = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      const errorCode = detail?.error
+      switch (errorCode) {
+        case 'CODE_INVALID': {
+          const remaining = Number(detail?.remainingAttempts ?? 0)
+          const bounded = Number.isFinite(remaining) ? Math.max(0, Math.floor(remaining)) : 0
+          const helper =
+            bounded > 0
+              ? `코드가 일치하지 않습니다. 다시 입력해주세요. (남은 시도 ${bounded}회)`
+              : '인증 코드를 여러 번 잘못 입력했습니다. 새 코드를 요청해주세요.'
+          setLoginHelper(helper)
+          setStatus('인증 코드가 일치하지 않습니다.', 'danger')
+          if (bounded <= 0) {
+            state.auth.pendingEmail = ''
+            state.auth.expiresAt = 0
+            state.auth.issuedAt = 0
+            updateLoginFormState('idle')
+            setLoginHelper(getDefaultLoginHelper())
+            if (elements.loginEmailInput instanceof HTMLInputElement) {
+              elements.loginEmailInput.focus()
+            }
+          } else {
+            updateLoginFormState('code')
+            if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+              elements.loginEmailCodeInput.select()
+            }
+          }
+          return
+        }
+        case 'CODE_EXPIRED': {
+          setStatus('인증 코드가 만료되었습니다. 새 코드를 요청해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+        case 'VERIFICATION_NOT_FOUND': {
+          setStatus('인증 정보를 찾을 수 없습니다. 다시 요청해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          return
+        }
+        case 'VERIFICATION_ATTEMPTS_EXCEEDED': {
+          setStatus('인증 시도 횟수를 초과했습니다. 새 코드를 요청해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          return
+        }
+        case 'ACCOUNT_NOT_FOUND': {
+          setStatus('계정을 찾을 수 없습니다. 회원가입 후 이용해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setAuthIntent('register', { skipHelper: false })
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+        case 'EMAIL_ALREADY_REGISTERED': {
+          setStatus('이미 가입된 이메일 주소입니다. 로그인 탭에서 진행해주세요.', 'warning')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setAuthIntent('login', { skipHelper: false })
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+        case 'INVALID_CODE_FORMAT': {
+          setStatus('인증 코드 형식이 올바르지 않습니다.', 'danger')
+          updateLoginFormState('code')
+          if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+            elements.loginEmailCodeInput.select()
+          }
+          return
+        }
+        default: {
+          setStatus('인증 코드를 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+      }
+    }
+
+    const profile = detail?.profile ?? {}
+    const normalizedEmail =
+      typeof profile.email === 'string' && profile.email.trim().length > 0 ? profile.email.trim() : email
+    const displayName =
+      typeof profile.name === 'string' && profile.name.trim().length > 0
+        ? profile.name.trim()
+        : deriveDisplayName(normalizedEmail)
+
+    applyLoginProfile({
+      name: displayName,
+      email: normalizedEmail,
+      plan: profile.plan || 'free',
+      subscriptionCredits: profile.subscriptionCredits,
+      topUpCredits: profile.topUpCredits,
+      planExpiresAt: profile.planExpiresAt,
+      credits: profile.credits,
+    })
+    refreshAccessStates()
+
+    state.auth.pendingEmail = ''
+    state.auth.expiresAt = 0
+    state.auth.issuedAt = 0
+    state.auth.attempts = 0
+    state.auth.cooldownUntil = 0
+
+    closeLoginModal()
+
+    const resolvedIntent = detail?.intent === 'register' ? 'register' : state.auth.intent
+    const successMessage =
+      resolvedIntent === 'register'
+        ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
+        : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
+    setStatus(successMessage, 'success')
+
+    if (normalizedEmail) {
+      await syncChallengeProfile(normalizedEmail)
+    }
+  } catch (error) {
+    console.error('verify email code error', error)
+    setStatus('인증 코드를 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    state.auth.pendingEmail = ''
+    state.auth.expiresAt = 0
+    state.auth.issuedAt = 0
+    updateLoginFormState('idle')
+    setLoginHelper(getDefaultLoginHelper())
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+  }
+}
+
+async function handleEmailLogin(event) {
   event.preventDefault()
   if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
 
@@ -3834,58 +4120,7 @@ function handleEmailLogin(event) {
       setStatus('이메일로 받은 인증 코드를 입력해주세요.', 'danger')
       return
     }
-    const result = isVerificationCodeValid(submittedCode)
-    if (!result.valid) {
-      if (result.reason === 'expired') {
-        setStatus('인증 코드가 만료되었습니다. 새 코드를 요청해주세요.', 'danger')
-        state.auth.pendingEmail = ''
-        state.auth.code = ''
-        state.auth.expiresAt = 0
-        updateLoginFormState('idle')
-        setLoginHelper('인증 코드가 만료되었습니다. 이메일을 확인한 뒤 다시 요청해주세요.')
-        if (elements.loginEmailInput instanceof HTMLInputElement) {
-          elements.loginEmailInput.focus()
-        }
-        return
-      }
-      if (result.reason === 'mismatch') {
-        const remaining = Math.max(0, 5 - state.auth.attempts)
-        const helper =
-          remaining > 0
-            ? `코드가 일치하지 않습니다. 다시 입력해주세요. (남은 시도 ${remaining}회)`
-            : '인증 코드를 여러 번 잘못 입력했습니다. 새 코드를 요청해주세요.'
-        setLoginHelper(helper)
-        setStatus('인증 코드가 일치하지 않습니다.', 'danger')
-        if (remaining <= 0) {
-          state.auth.pendingEmail = ''
-          state.auth.code = ''
-          state.auth.expiresAt = 0
-          updateLoginFormState('idle')
-          setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
-          if (elements.loginEmailInput instanceof HTMLInputElement) {
-            elements.loginEmailInput.focus()
-          }
-        } else if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
-          elements.loginEmailCodeInput.select()
-        }
-        return
-      }
-    }
-
-    const email = state.auth.pendingEmail
-    if (!email) {
-      setStatus('이메일 정보를 확인할 수 없습니다. 다시 시도해주세요.', 'danger')
-      state.auth.pendingEmail = ''
-      state.auth.code = ''
-      state.auth.expiresAt = 0
-      updateLoginFormState('idle')
-      setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
-      return
-    }
-    const nickname = email.includes('@') ? email.split('@')[0] : email
-    applyLoginProfile({ name: nickname, email, plan: 'free' })
-    closeLoginModal()
-    setStatus(`${email} 계정으로 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`, 'success')
+    await verifyEmailCode(submittedCode)
     return
   }
 
@@ -3899,7 +4134,12 @@ function handleEmailLogin(event) {
     setStatus('유효한 이메일 주소인지 확인해주세요.', 'danger')
     return
   }
-  startEmailVerification(email)
+  if (state.auth.cooldownUntil && Date.now() < state.auth.cooldownUntil) {
+    const remainingSeconds = Math.max(1, Math.ceil((state.auth.cooldownUntil - Date.now()) / 1000))
+    setStatus(`인증 코드 요청은 약 ${remainingSeconds}초 후 다시 시도할 수 있습니다.`, 'warning')
+    return
+  }
+  await startEmailVerification(email)
 }
 
 function handleGlobalKeydown(event) {
@@ -6369,6 +6609,20 @@ function attachEventListeners() {
         openLoginModal()
       })
     }
+  })
+
+  elements.loginIntentButtons?.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      if (state.auth.step === 'code' || state.auth.step === 'loading') {
+        return
+      }
+      const targetIntent = button.dataset.intent === 'register' ? 'register' : 'login'
+      if (targetIntent !== state.auth.intent) {
+        setAuthIntent(targetIntent)
+      }
+    })
   })
 
   document.querySelectorAll('[data-action="open-admin-modal"]').forEach((button) => {

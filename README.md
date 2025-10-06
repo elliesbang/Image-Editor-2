@@ -8,7 +8,7 @@
 ## 현재 구현 기능
 - **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
 - **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
-- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, Google 로그인은 비활성화되어 이메일 인증만 지원
+- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, 실제 메일 발송(SMTP/Resend/SendGrid) 기반 OTP 전달, Google 로그인은 비활성화되어 이메일 인증만 지원
 - **관리자 인증 & 보안 강화**
   - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
@@ -25,7 +25,7 @@
 - **헤더 커뮤니티 링크**: 로그인 버튼 옆 “미치나 커뮤니티” 버튼을 새 탭으로 열어 외부 커뮤니티 또는 내부 뷰(`/?view=community`)에 접근 가능
 
 ## 관리자 & 챌린지 운영 흐름
-0. **이메일 로그인**: 로그인 모달에서 이메일 주소 입력 → 6자리 인증 코드 전송 → 코드 확인 후 로그인(샌드박스에서는 코드가 즉시 안내됨)
+0. **이메일 로그인**: 로그인/회원가입 모달에서 이메일 주소 입력 → 실제 이메일로 6자리 인증 코드 전송 → 코드 입력 후 로그인/가입(쿨다운, 중복 가입 방지 포함)
 1. **관리자 로그인**: `/api/auth/admin/login`으로 이메일·비밀번호 제출 → SHA-256 해시 비교 후 JWT 서명, HttpOnly 세션 쿠키 발급(8시간). 로그인 성공 후에는 자동 이동 없이 상태 배너/안내 패널의 CTA(현재 창 이동 또는 새 탭 열기)를 통해 대시보드 진입 방식을 선택
 2. **명단 등록**: CSV 업로드(이메일, 이름, 종료일) 또는 textarea 입력 → KV/in-memory에 참가자 레코드 저장, 미치나 플랜 권한 부여
 3. **대시보드 모니터링**: 진행률/미제출 현황 표, 완료 상태 필터, 새로고침·완주 판별 버튼 제공
@@ -59,6 +59,8 @@
 | POST | `/api/analyze` | OpenAI GPT-4o-mini 기반 키워드/제목 분석 (data URL 입력) | Server-side API key |
 | POST | `/api/auth/google` | Google OAuth 코드 ↔ ID 토큰 교환 및 프로필 반환 | Google OAuth 코드 |
 | GET | `/api/auth/session` | 관리자 세션 상태 확인 | 세션 쿠키 |
+| POST | `/api/auth/email/request` | 이메일 OTP 요청 (body: `{ email, intent }`) | - |
+| POST | `/api/auth/email/verify` | 이메일 OTP 검증/로그인 (body: `{ email, intent, code }`) | - |
 | POST | `/api/auth/admin/login` | 관리자 로그인 (body: `{ email, password }`) | 세션 쿠키 발급 |
 | POST | `/api/auth/admin/logout` | 관리자 로그아웃 | 세션 쿠키 |
 | POST | `/api/admin/challenge/import` | 참가자 명단 등록(CSV/JSON/textarea) | 관리자 세션 |
@@ -85,7 +87,8 @@
 | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | Netlify 환경 변수 등록 권장 |
 | `ADMIN_EMAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
-| `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수 | `echo -n 'password' | shasum -a 256` |
+| `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수* | `echo -n 'password' | shasum -a 256` (*`ADMIN_PASSWORD` 제공 시 선택) |
+| `ADMIN_PASSWORD` | 관리자 비밀번호(플레인 텍스트) | 필수* | 배포 환경에서 SHA-256 해시 자동 생성(로컬/테스트용 권장) |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
 | `ADMIN_SESSION_VERSION` | 관리자 세션 버전 문자열 | 선택 (기본 `1`) | 변경 시 기존 쿠키 무효화 |
 | `ADMIN_RATE_LIMIT_MAX_ATTEMPTS` | 관리자 로그인 허용 시도 횟수 | 선택 (기본 `5`) | 1~20 범위 |
@@ -95,6 +98,17 @@
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
+| `EMAIL_FROM_ADDRESS` | OTP 메일 발송 발신 주소 | 필수 | SMTP/Resend/SendGrid 공통 사용 |
+| `EMAIL_FROM_NAME` | OTP 메일 발신자 이름 | 선택 | 미설정 시 브랜드명 사용 |
+| `EMAIL_BRAND_NAME` | OTP 메일에 표기할 브랜드명 | 선택 | 기본값 `Elliesbang Image Editor` |
+| `EMAIL_SMTP_HOST` | SMTP 호스트 이름 | 필수* | SMTP 사용 시 필수 (*API 사용 시 미필요) |
+| `EMAIL_SMTP_PORT` | SMTP 포트 번호 | 선택 | 기본 465 (secure) / 587 (starttls) |
+| `EMAIL_SMTP_SECURE` | SMTP 보안 플래그(`true`/`false`) | 선택 | 기본 포트 기반 자동 판별 |
+| `EMAIL_SMTP_USER` | SMTP 인증 사용자 | 필수* | SMTP 사용 시 필수 |
+| `EMAIL_SMTP_PASSWORD` | SMTP 인증 비밀번호 | 필수* | SMTP 사용 시 필수 |
+| `RESEND_API_KEY` | Resend 이메일 API 키 | 선택 | 설정 시 Resend 우선 시도 |
+| `SENDGRID_API_KEY` | SendGrid 이메일 API 키 | 선택 | Resend 실패 시 2차 시도 |
+| `EMAIL_OTP_EXPIRY_SECONDS` | OTP 만료 시간(초) | 선택 | 60~1800 사이, 기본 300 |
 | `CHALLENGE_KV` | 외부 KV/데이터 스토리지 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | 외부 KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 
@@ -109,7 +123,8 @@ npm install
 cat <<'EOF' > .dev.vars
 OPENAI_API_KEY="sk-..."
 ADMIN_EMAIL="admin@example.com"
-ADMIN_PASSWORD_HASH="<SHA256_HEX>"
+ADMIN_PASSWORD_HASH="<SHA256_HEX>" # 또는 ADMIN_PASSWORD 사용
+ADMIN_PASSWORD="<PlainPassword>"
 SESSION_SECRET="<랜덤 32자 이상>"
 ADMIN_SESSION_VERSION="1"
 ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
@@ -120,6 +135,12 @@ ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
 # GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
 # GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
 MICHINA_COMMUNITY_URL="https://community.example.com"
+EMAIL_FROM_ADDRESS="noreply@example.com"
+EMAIL_FROM_NAME="Elliesbang Image Editor"
+EMAIL_SMTP_HOST="smtp.example.com"
+EMAIL_SMTP_USER="smtp-user"
+EMAIL_SMTP_PASSWORD="smtp-password"
+# RESEND_API_KEY / SENDGRID_API_KEY 중 하나 이상을 설정하면 API 기반 발송을 우선 사용합니다.
 # CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 배포 환경에서 제공하는 KV/데이터 스토리지 바인딩으로 교체 가능
 EOF
 
@@ -149,7 +170,7 @@ curl http://localhost:3000/api/health
 
 ## 미구현/예정 기능
 - 서버리스 SQL/데이터베이스 연동 후 제출 로그·완주 로그 관리
-- 실서비스용 이메일/OTP 인증 백엔드 구현 및 크레딧 영속화
+- 이메일 발송 모니터링/실패 알림(Resend/SendGrid/SMTP) 및 크레딧 영속화
 - 관리자 다계정 지원 및 감사 로그 페이지
 - 챌린지 통계 시각화(그래프, 주차별 히트맵 등)
 - Lighthouse 자동화/접근성 테스트 스위트

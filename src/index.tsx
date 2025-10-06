@@ -2,6 +2,9 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
+import { createHash } from 'node:crypto'
+import { createConnection } from 'node:net'
+import { connect as createTlsConnection } from 'node:tls'
 import { renderer } from './renderer'
 
 type KeyValueListKey = {
@@ -29,6 +32,7 @@ interface KeyValueStore {
 type Bindings = {
   OPENAI_API_KEY?: string
   ADMIN_EMAIL?: string
+  ADMIN_PASSWORD?: string
   ADMIN_PASSWORD_HASH?: string
   SESSION_SECRET?: string
   ADMIN_SESSION_VERSION?: string
@@ -41,6 +45,17 @@ type Bindings = {
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REDIRECT_URI?: string
   MICHINA_COMMUNITY_URL?: string
+  RESEND_API_KEY?: string
+  SENDGRID_API_KEY?: string
+  EMAIL_FROM_ADDRESS?: string
+  EMAIL_FROM_NAME?: string
+  EMAIL_SMTP_HOST?: string
+  EMAIL_SMTP_PORT?: string
+  EMAIL_SMTP_SECURE?: string
+  EMAIL_SMTP_USER?: string
+  EMAIL_SMTP_PASSWORD?: string
+  EMAIL_BRAND_NAME?: string
+  EMAIL_OTP_EXPIRY_SECONDS?: string
 }
 
 type ChallengeSubmission = {
@@ -91,6 +106,48 @@ type AdminRateLimitConfig = {
   cooldownSeconds: number
 }
 
+type UserPlan = 'public' | 'free' | 'basic' | 'pro' | 'premium' | 'michina' | 'admin'
+
+type UserAccount = {
+  email: string
+  name?: string
+  plan: UserPlan
+  createdAt: string
+  updatedAt: string
+  lastLoginAt?: string
+  subscriptionCredits?: number
+  topUpCredits?: number
+  planExpiresAt?: string
+  lastOtpAt?: string
+  metadata?: Record<string, unknown>
+}
+
+type EmailVerificationIntent = 'login' | 'register'
+
+type EmailVerificationRecord = {
+  email: string
+  codeHash: string
+  intent: EmailVerificationIntent
+  issuedAt: number
+  expiresAt: number
+  attempts: number
+  createdAt: string
+  updatedAt: string
+}
+
+type EmailDispatchContext = {
+  brand: string
+  from: string
+  expirySeconds: number
+}
+
+type EmailSendPayload = {
+  to: string
+  subject: string
+  text: string
+  html: string
+}
+
 type AdminConfigValidationResult = {
   config: AdminConfig | null
   issues: string[]
@@ -117,10 +174,18 @@ const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
 const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
+const MIN_ADMIN_PASSWORD_LENGTH = 12
 const PARTICIPANT_KEY_PREFIX = 'participant:'
+const USER_ACCOUNT_KEY_PREFIX = 'user:'
+const EMAIL_VERIFICATION_KEY_PREFIX = 'email-verification:'
+const EMAIL_VERIFICATION_COOLDOWN_MS = 30_000
+const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5
+const EMAIL_VERIFICATION_CODE_LENGTH = 6
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
+const DEFAULT_EMAIL_OTP_EXPIRY_SECONDS = 300
+const FREE_MONTHLY_CREDITS = 30
 const SERVER_FUNCTION_PATH = '/.netlify/functions/server'
 const API_BASE_PATH = SERVER_FUNCTION_PATH
 const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
@@ -137,10 +202,20 @@ const runtimeProcess =
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
+const inMemoryExpiryStore = new Map<string, number>()
+const inMemoryBackupExpiryStore = new Map<string, number>()
 const rateLimitMemoryStore = new Map<string, RateLimitRecord>()
 
 function encodeKey(email: string) {
   return `${PARTICIPANT_KEY_PREFIX}${email.toLowerCase()}`
+}
+
+function encodeUserKey(email: string) {
+  return `${USER_ACCOUNT_KEY_PREFIX}${email.toLowerCase()}`
+}
+
+function buildVerificationKey(email: string) {
+  return `${EMAIL_VERIFICATION_KEY_PREFIX}${email.toLowerCase()}`
 }
 
 function isValidEmail(value: unknown): value is string {
@@ -194,10 +269,22 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   }
 
   const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
-  if (!passwordHashRaw) {
-    issues.push('ADMIN_PASSWORD_HASH is not configured')
-  } else if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-    issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
+  const passwordPlain = env.ADMIN_PASSWORD?.trim() ?? ''
+  let passwordHash = ''
+  if (passwordHashRaw) {
+    if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
+      issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
+    } else {
+      passwordHash = passwordHashRaw
+    }
+  } else if (passwordPlain) {
+    if (passwordPlain.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      issues.push(`ADMIN_PASSWORD must be at least ${MIN_ADMIN_PASSWORD_LENGTH} characters`)
+    } else {
+      passwordHash = createHash('sha256').update(passwordPlain, 'utf8').digest('hex')
+    }
+  } else {
+    issues.push('ADMIN_PASSWORD or ADMIN_PASSWORD_HASH must be configured')
   }
 
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
@@ -221,7 +308,7 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   return {
     config: {
       email: emailRaw,
-      passwordHash: passwordHashRaw,
+      passwordHash,
       sessionSecret: sessionSecretRaw,
       sessionVersion: sessionVersionRaw,
     },
@@ -589,13 +676,25 @@ async function kvGet(env: Bindings, key: string) {
   if (!primary) {
     const memoryValue = inMemoryStore.get(key)
     if (memoryValue) {
-      return memoryValue
+      const expiry = inMemoryExpiryStore.get(key)
+      if (typeof expiry === 'number' && expiry > 0 && expiry <= Date.now()) {
+        inMemoryStore.delete(key)
+        inMemoryExpiryStore.delete(key)
+      } else {
+        return memoryValue
+      }
     }
   }
   if (!backup) {
     const backupMemoryValue = inMemoryBackupStore.get(key)
     if (backupMemoryValue) {
-      return backupMemoryValue
+      const expiry = inMemoryBackupExpiryStore.get(key)
+      if (typeof expiry === 'number' && expiry > 0 && expiry <= Date.now()) {
+        inMemoryBackupStore.delete(key)
+        inMemoryBackupExpiryStore.delete(key)
+      } else {
+        return backupMemoryValue
+      }
     }
   }
   return null
@@ -606,12 +705,33 @@ async function kvPut(env: Bindings, key: string, value: string) {
     await env.CHALLENGE_KV.put(key, value)
   } else {
     inMemoryStore.set(key, value)
+    inMemoryExpiryStore.delete(key)
   }
 
   if (env.CHALLENGE_KV_BACKUP) {
     await env.CHALLENGE_KV_BACKUP.put(key, value)
   } else if (!env.CHALLENGE_KV) {
     inMemoryBackupStore.set(key, value)
+    inMemoryBackupExpiryStore.delete(key)
+  }
+}
+
+async function kvPutWithTTL(env: Bindings, key: string, value: string, ttlSeconds: number) {
+  const normalizedTtl = Math.max(1, Math.ceil(ttlSeconds))
+  const ttlMs = normalizedTtl * 1000
+
+  if (env.CHALLENGE_KV) {
+    await env.CHALLENGE_KV.put(key, value, { expirationTtl: normalizedTtl })
+  } else {
+    inMemoryStore.set(key, value)
+    inMemoryExpiryStore.set(key, Date.now() + ttlMs)
+  }
+
+  if (env.CHALLENGE_KV_BACKUP) {
+    await env.CHALLENGE_KV_BACKUP.put(key, value, { expirationTtl: normalizedTtl })
+  } else if (!env.CHALLENGE_KV) {
+    inMemoryBackupStore.set(key, value)
+    inMemoryBackupExpiryStore.set(key, Date.now() + ttlMs)
   }
 }
 
@@ -620,13 +740,522 @@ async function kvDelete(env: Bindings, key: string) {
     await env.CHALLENGE_KV.delete(key)
   } else {
     inMemoryStore.delete(key)
+    inMemoryExpiryStore.delete(key)
   }
 
   if (env.CHALLENGE_KV_BACKUP) {
     await env.CHALLENGE_KV_BACKUP.delete(key)
   } else if (!env.CHALLENGE_KV) {
     inMemoryBackupStore.delete(key)
+    inMemoryBackupExpiryStore.delete(key)
   }
+}
+
+async function getUserAccount(env: Bindings, email: string): Promise<UserAccount | null> {
+  const key = encodeUserKey(email)
+  const stored = await kvGet(env, key)
+  if (!stored) return null
+  try {
+    const parsed = JSON.parse(stored) as UserAccount
+    if (typeof parsed.email !== 'string' || !parsed.email) {
+      return null
+    }
+    if (!parsed.plan) {
+      parsed.plan = 'free'
+    }
+    return parsed
+  } catch (error) {
+    console.error('[auth/email] Failed to parse user account record', error)
+    return null
+  }
+}
+
+async function saveUserAccount(env: Bindings, account: UserAccount) {
+  const normalizedEmail = account.email.trim().toLowerCase()
+  const nowIso = new Date().toISOString()
+  const record: UserAccount = {
+    email: normalizedEmail,
+    name: account.name,
+    plan: account.plan || 'free',
+    createdAt: account.createdAt || nowIso,
+    updatedAt: nowIso,
+    lastLoginAt: account.lastLoginAt,
+    subscriptionCredits: account.subscriptionCredits,
+    topUpCredits: account.topUpCredits,
+    planExpiresAt: account.planExpiresAt,
+    lastOtpAt: account.lastOtpAt,
+    metadata: account.metadata,
+  }
+  await kvPut(env, encodeUserKey(normalizedEmail), JSON.stringify(record))
+}
+
+async function deleteUserAccount(env: Bindings, email: string) {
+  await kvDelete(env, encodeUserKey(email))
+}
+
+async function getEmailVerificationRecord(env: Bindings, email: string): Promise<EmailVerificationRecord | null> {
+  const key = buildVerificationKey(email)
+  const stored = await kvGet(env, key)
+  if (!stored) return null
+  try {
+    const parsed = JSON.parse(stored) as EmailVerificationRecord
+    if (!parsed.email || !parsed.codeHash) {
+      await kvDelete(env, key)
+      return null
+    }
+    if (typeof parsed.attempts !== 'number' || !Number.isFinite(parsed.attempts)) {
+      parsed.attempts = 0
+    }
+    if (typeof parsed.issuedAt !== 'number' || typeof parsed.expiresAt !== 'number') {
+      await kvDelete(env, key)
+      return null
+    }
+    if (parsed.expiresAt <= Date.now()) {
+      await kvDelete(env, key)
+      return null
+    }
+    return parsed
+  } catch (error) {
+    console.error('[auth/email] Failed to parse verification record', error)
+    await kvDelete(env, key)
+    return null
+  }
+}
+
+async function saveEmailVerificationRecord(env: Bindings, record: EmailVerificationRecord) {
+  const updated: EmailVerificationRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+  }
+  if (!updated.createdAt) {
+    updated.createdAt = updated.updatedAt
+  }
+  const ttlSeconds = Math.max(60, Math.ceil((updated.expiresAt - Date.now()) / 1000))
+  await kvPutWithTTL(env, buildVerificationKey(updated.email), JSON.stringify(updated), ttlSeconds)
+}
+
+async function deleteEmailVerificationRecord(env: Bindings, email: string) {
+  await kvDelete(env, buildVerificationKey(email))
+}
+
+async function computeVerificationHash(email: string, code: string) {
+  return sha256(`${email.toLowerCase()}::${code}`)
+}
+
+function createMessageId(domain: string) {
+  try {
+    if (typeof crypto.randomUUID === 'function') {
+      return `<${crypto.randomUUID()}@${domain}>`
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16)
+      crypto.getRandomValues(bytes)
+      const hex = Array.from(bytes)
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+      return `<${hex}@${domain}>`
+    }
+  } catch (error) {
+    // ignore entropy errors
+  }
+  const fallback = `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+  return `<${fallback}@${domain}>`
+}
+
+function generateNumericCode(length: number) {
+  const digits = '0123456789'
+  if (length <= 0) return ''
+  try {
+    const values = new Uint32Array(length)
+    if (typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(values)
+      return Array.from(values, (value) => digits[value % digits.length]).join('')
+    }
+  } catch (error) {
+    // ignore entropy errors and fall back to Math.random
+  }
+  let code = ''
+  for (let index = 0; index < length; index += 1) {
+    code += digits.charAt(Math.floor(Math.random() * digits.length))
+  }
+  return code
+}
+
+function deriveDisplayName(email: string) {
+  if (!email) {
+    return '크리에이터'
+  }
+  const local = email.split('@')[0] || ''
+  const cleaned = local.replace(/[._-]+/g, ' ').trim()
+  if (!cleaned) {
+    return '크리에이터'
+  }
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+}
+
+function getEmailBrand(env: Bindings) {
+  return env.EMAIL_BRAND_NAME?.trim() || 'Elliesbang Image Editor'
+}
+
+function getEmailDispatchContext(env: Bindings): EmailDispatchContext & { fromName: string } {
+  const brand = getEmailBrand(env)
+  const fromAddress = env.EMAIL_FROM_ADDRESS?.trim() || env.EMAIL_SMTP_USER?.trim() || ''
+  const fromName = env.EMAIL_FROM_NAME?.trim() || brand
+  const expirySeconds = parsePositiveInteger(env.EMAIL_OTP_EXPIRY_SECONDS, DEFAULT_EMAIL_OTP_EXPIRY_SECONDS, 60, 1800)
+  return { brand, from: fromAddress, fromName, expirySeconds }
+}
+
+async function openSmtpConnection(host: string, port: number, secure: boolean) {
+  return await new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {
+    let settled = false
+    const handleError = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const cleanup = () => {
+      socket.removeListener('error', handleError)
+      socket.removeListener('close', handleError)
+    }
+    const handleConnect = () => {
+      if (settled) {
+        cleanup()
+        return
+      }
+      settled = true
+      cleanup()
+      socket.setEncoding('utf8')
+      resolve(socket)
+    }
+
+    const socket = secure
+      ? createTlsConnection({ host, port, servername: host }, handleConnect)
+      : createConnection({ host, port }, handleConnect)
+
+    socket.once('error', handleError)
+    socket.once('close', handleError)
+  })
+}
+
+async function smtpSend(options: {
+  host: string
+  port: number
+  secure: boolean
+  user: string
+  pass: string
+  from: string
+  to: string
+  data: string
+}) {
+  const { host, port, secure, user, pass, from, to, data } = options
+  const socket = await openSmtpConnection(host, port, secure)
+  let closed = false
+
+  const close = () => {
+    if (!closed) {
+      closed = true
+      try {
+        socket.end()
+      } catch (error) {
+        socket.destroy()
+      }
+    }
+  }
+
+  const writeRaw = async (content: string) => {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        socket.removeListener('error', onError)
+        reject(error)
+      }
+      socket.once('error', onError)
+      socket.write(content, (error) => {
+        socket.removeListener('error', onError)
+        if (error) {
+          reject(error)
+        } else {
+          resolve()
+        }
+      })
+    })
+  }
+
+  const writeLine = async (line: string) => {
+    await writeRaw(`${line}\r\n`)
+  }
+
+  const waitFor = async (expectedCodes: number[], timeoutMs = 15000) => {
+    return await new Promise<void>((resolve, reject) => {
+      let buffer = ''
+      const timer = setTimeout(() => {
+        cleanup()
+        reject(new Error('SMTP_RESPONSE_TIMEOUT'))
+      }, timeoutMs)
+
+      const cleanup = () => {
+        clearTimeout(timer)
+        socket.removeListener('data', onData)
+        socket.removeListener('error', onError)
+        socket.removeListener('close', onClose)
+      }
+
+      const onError = (error: Error) => {
+        cleanup()
+        reject(error)
+      }
+
+      const onClose = () => {
+        cleanup()
+        reject(new Error('SMTP_CONNECTION_CLOSED'))
+      }
+
+      const onData = (chunk: Buffer | string) => {
+        buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        const lines = buffer.split('\r\n').filter((line) => line.length > 0)
+        if (lines.length === 0) {
+          return
+        }
+        const lastLine = lines[lines.length - 1]
+        const match = /^(\d{3})([ \-])(.*)$/.exec(lastLine)
+        if (!match) {
+          return
+        }
+        const [, codeRaw, continuation] = match
+        const code = Number.parseInt(codeRaw, 10)
+        if (continuation === '-') {
+          return
+        }
+        cleanup()
+        if (!expectedCodes.includes(code)) {
+          reject(new Error(`SMTP_UNEXPECTED_RESPONSE_${code}`))
+          return
+        }
+        resolve()
+      }
+
+      socket.on('data', onData)
+      socket.on('error', onError)
+      socket.on('close', onClose)
+    })
+  }
+
+  try {
+    await waitFor([220])
+    await writeLine(`EHLO ${host || 'elliesbang-image-editor.local'}`)
+    await waitFor([250])
+    await writeLine('AUTH LOGIN')
+    await waitFor([334])
+    await writeLine(Buffer.from(user, 'utf8').toString('base64'))
+    await waitFor([334])
+    await writeLine(Buffer.from(pass, 'utf8').toString('base64'))
+    await waitFor([235])
+    await writeLine(`MAIL FROM:<${from}>`)
+    await waitFor([250])
+    await writeLine(`RCPT TO:<${to}>`)
+    await waitFor([250, 251])
+    await writeLine('DATA')
+    await waitFor([354])
+    await writeRaw(data)
+    await waitFor([250])
+    await writeLine('QUIT')
+    await waitFor([221])
+  } finally {
+    close()
+  }
+}
+
+async function sendEmailViaSmtp(env: Bindings, context: EmailDispatchContext & { fromName: string }, payload: EmailSendPayload) {
+  const host = env.EMAIL_SMTP_HOST?.trim()
+  const user = env.EMAIL_SMTP_USER?.trim()
+  const pass = env.EMAIL_SMTP_PASSWORD?.trim()
+  if (!host || !user || !pass || !context.from) {
+    throw new Error('SMTP_NOT_CONFIGURED')
+  }
+  const securePreference = env.EMAIL_SMTP_SECURE?.trim().toLowerCase()
+  const defaultPort = securePreference === 'false' || securePreference === '0' ? 587 : 465
+  const port = parsePositiveInteger(env.EMAIL_SMTP_PORT, defaultPort, 1, 65535)
+  const secure = securePreference
+    ? !(securePreference === 'false' || securePreference === '0')
+    : port === 465
+
+  const fromHeader = context.fromName ? `${context.fromName} <${context.from}>` : context.from
+  const boundary = `----=_Elliesbang_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`
+  const normalizedText = payload.text.replace(/\r?\n/g, '\n')
+  const normalizedHtml = payload.html.replace(/\r?\n/g, '\n')
+  const messageLines = [
+    `Message-ID: ${createMessageId(host)}`,
+    `Date: ${new Date().toUTCString()}`,
+    `From: ${fromHeader}`,
+    `To: ${payload.to}`,
+    `Subject: ${payload.subject}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    normalizedText,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    normalizedHtml,
+    '',
+    `--${boundary}--`,
+    '',
+  ]
+
+  const rawMessage = messageLines.join('\r\n')
+  const preparedMessage = `${rawMessage.replace(/\r?\n/g, '\r\n').replace(/\r\n\./g, '\r\n..')}\r\n.\r\n`
+
+  await smtpSend({
+    host,
+    port,
+    secure,
+    user,
+    pass,
+    from: context.from,
+    to: payload.to,
+    data: preparedMessage,
+  })
+}
+
+async function sendEmailViaResend(env: Bindings, context: EmailDispatchContext & { fromName: string }, payload: EmailSendPayload) {
+  const apiKey = env.RESEND_API_KEY?.trim()
+  if (!apiKey) {
+    throw new Error('RESEND_NOT_CONFIGURED')
+  }
+  const fromHeader = context.fromName ? `${context.fromName} <${context.from}>` : context.from
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: fromHeader,
+      to: payload.to,
+      subject: payload.subject,
+      text: payload.text,
+      html: payload.html,
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`RESEND_REQUEST_FAILED_${response.status}_${detail}`)
+  }
+}
+
+async function sendEmailViaSendGrid(env: Bindings, context: EmailDispatchContext & { fromName: string }, payload: EmailSendPayload) {
+  const apiKey = env.SENDGRID_API_KEY?.trim()
+  if (!apiKey) {
+    throw new Error('SENDGRID_NOT_CONFIGURED')
+  }
+  const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      personalizations: [
+        {
+          to: [{ email: payload.to }],
+          subject: payload.subject,
+        },
+      ],
+      from: { email: context.from, name: context.fromName },
+      content: [
+        { type: 'text/plain', value: payload.text },
+        { type: 'text/html', value: payload.html },
+      ],
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`SENDGRID_REQUEST_FAILED_${response.status}_${detail}`)
+  }
+}
+
+async function dispatchEmail(
+  env: Bindings,
+  payload: EmailSendPayload,
+  providedContext?: EmailDispatchContext & { fromName: string },
+) {
+  const context = providedContext ?? getEmailDispatchContext(env)
+  if (!context.from) {
+    throw new Error('EMAIL_FROM_NOT_CONFIGURED')
+  }
+  if (env.RESEND_API_KEY?.trim()) {
+    try {
+      await sendEmailViaResend(env, context, payload)
+      return
+    } catch (error) {
+      console.error('[auth/email] Failed to send via Resend', error)
+    }
+  }
+  if (env.SENDGRID_API_KEY?.trim()) {
+    try {
+      await sendEmailViaSendGrid(env, context, payload)
+      return
+    } catch (error) {
+      console.error('[auth/email] Failed to send via SendGrid', error)
+    }
+  }
+  await sendEmailViaSmtp(env, context, payload)
+}
+
+async function sendVerificationEmail(
+  env: Bindings,
+  email: string,
+  code: string,
+  intent: EmailVerificationIntent,
+  context: EmailDispatchContext & { fromName: string },
+) {
+  const capitalizedIntent = intent === 'register' ? '회원가입' : '로그인'
+  const brand = context.brand
+  const subject = `[${brand}] ${capitalizedIntent} 인증 코드`
+  const minutes = Math.max(1, Math.ceil(context.expirySeconds / 60))
+  const text = [
+    `${brand} ${capitalizedIntent} 인증 코드`,
+    '',
+    `인증 코드: ${code}`,
+    `유효 시간: ${minutes}분`,
+    '',
+    '안전한 사용을 위해 타인과 인증 코드를 공유하지 마세요.',
+  ].join('\n')
+
+  const html = `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>${brand} 인증 코드</title>
+  </head>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #111827; background-color: #f9fafb; padding: 24px;">
+    <div style="max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 32px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);">
+      <h1 style="margin: 0 0 16px; font-size: 20px;">${brand} ${capitalizedIntent}</h1>
+      <p style="margin: 0 0 12px; font-size: 16px;">요청하신 인증 코드를 아래에 안내드립니다.</p>
+      <p style="margin: 16px 0; font-size: 32px; font-weight: 700; letter-spacing: 8px; text-align: center; color: #1f2937;">${code}</p>
+      <p style="margin: 16px 0; font-size: 14px; color: #6b7280;">해당 코드는 ${minutes}분 동안 유효하며, 한 번만 사용할 수 있습니다.</p>
+      <p style="margin: 16px 0 0; font-size: 14px; color: #6b7280;">안전한 사용을 위해 타인과 인증 코드를 공유하지 마세요.</p>
+    </div>
+    <p style="margin: 24px auto 0; max-width: 480px; font-size: 12px; color: #9ca3af; text-align: center;">이메일을 요청하지 않았다면 본 메시지를 무시해 주세요.</p>
+  </body>
+</html>`
+
+  await dispatchEmail(
+    env,
+    {
+      to: email,
+      subject,
+      text,
+      html,
+    },
+    context,
+  )
 }
 
 async function listParticipantKeys(env: Bindings) {
@@ -896,6 +1525,208 @@ app.get('/api/config', (c) => {
     communityUrl,
     apiBase: API_BASE_PATH,
   })
+})
+
+app.post('/api/auth/email/request', async (c) => {
+  let payload: { email?: string; intent?: string } | undefined
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const rawIntent = typeof payload?.intent === 'string' ? payload.intent.toLowerCase() : 'login'
+  const intent: EmailVerificationIntent = rawIntent === 'register' ? 'register' : 'login'
+
+  const emailRaw = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  if (!isValidEmail(emailRaw)) {
+    const response = c.json({ error: 'INVALID_EMAIL' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const user = await getUserAccount(c.env, emailRaw)
+  if (intent === 'register' && user) {
+    const response = c.json({ error: 'EMAIL_ALREADY_REGISTERED' }, 409)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+  if (intent === 'login' && !user) {
+    const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const dispatchContext = getEmailDispatchContext(c.env)
+  if (!dispatchContext.from) {
+    const response = c.json({ error: 'EMAIL_SENDER_NOT_CONFIGURED' }, 500)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const now = Date.now()
+  const existingRecord = await getEmailVerificationRecord(c.env, emailRaw)
+  if (existingRecord && now - existingRecord.issuedAt < EMAIL_VERIFICATION_COOLDOWN_MS) {
+    const retryAfterMs = EMAIL_VERIFICATION_COOLDOWN_MS - (now - existingRecord.issuedAt)
+    const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000))
+    const response = c.json({ error: 'VERIFICATION_RATE_LIMITED', retryAfter }, 429)
+    response.headers.set('Retry-After', String(retryAfter))
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const code = generateNumericCode(EMAIL_VERIFICATION_CODE_LENGTH)
+  const codeHash = await computeVerificationHash(emailRaw, code)
+  const issuedAt = now
+  const expiresAt = issuedAt + dispatchContext.expirySeconds * 1000
+  const record: EmailVerificationRecord = {
+    email: emailRaw,
+    codeHash,
+    intent,
+    issuedAt,
+    expiresAt,
+    attempts: 0,
+    createdAt: existingRecord?.createdAt ?? new Date(issuedAt).toISOString(),
+    updatedAt: new Date(issuedAt).toISOString(),
+  }
+
+  await saveEmailVerificationRecord(c.env, record)
+
+  try {
+    await sendVerificationEmail(c.env, emailRaw, code, intent, dispatchContext)
+  } catch (error) {
+    console.error('[auth/email] Failed to deliver verification email', error)
+    await deleteEmailVerificationRecord(c.env, emailRaw)
+    const response = c.json({ error: 'EMAIL_DELIVERY_FAILED' }, 502)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const response = c.json({ ok: true, intent, issuedAt, expiresAt })
+  response.headers.set('Cache-Control', 'no-store')
+  return response
+})
+
+app.post('/api/auth/email/verify', async (c) => {
+  let payload: { email?: string; code?: string; intent?: string } | undefined
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const rawIntent = typeof payload?.intent === 'string' ? payload.intent.toLowerCase() : 'login'
+  const intent: EmailVerificationIntent = rawIntent === 'register' ? 'register' : 'login'
+
+  const emailRaw = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  if (!isValidEmail(emailRaw)) {
+    const response = c.json({ error: 'INVALID_EMAIL' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const code = typeof payload?.code === 'string' ? payload.code.trim() : ''
+  if (!code || !new RegExp(`^\\d{${EMAIL_VERIFICATION_CODE_LENGTH}}$`).test(code)) {
+    const response = c.json({ error: 'INVALID_CODE_FORMAT' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const record = await getEmailVerificationRecord(c.env, emailRaw)
+  if (!record) {
+    const response = c.json({ error: 'VERIFICATION_NOT_FOUND' }, 404)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  if (record.intent !== intent) {
+    const response = c.json({ error: 'INTENT_MISMATCH' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  if (record.expiresAt <= Date.now()) {
+    await deleteEmailVerificationRecord(c.env, emailRaw)
+    const response = c.json({ error: 'CODE_EXPIRED' }, 410)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const submittedHash = await computeVerificationHash(emailRaw, code)
+  if (submittedHash !== record.codeHash) {
+    const attempts = Math.min(EMAIL_VERIFICATION_MAX_ATTEMPTS, (record.attempts ?? 0) + 1)
+    record.attempts = attempts
+    if (attempts >= EMAIL_VERIFICATION_MAX_ATTEMPTS) {
+      await deleteEmailVerificationRecord(c.env, emailRaw)
+      const response = c.json({ error: 'VERIFICATION_ATTEMPTS_EXCEEDED' }, 429)
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+    await saveEmailVerificationRecord(c.env, record)
+    const remaining = Math.max(0, EMAIL_VERIFICATION_MAX_ATTEMPTS - attempts)
+    const response = c.json({ error: 'CODE_INVALID', remainingAttempts: remaining }, 401)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  await deleteEmailVerificationRecord(c.env, emailRaw)
+
+  const now = new Date()
+  const nowIso = now.toISOString()
+
+  if (intent === 'register') {
+    const existing = await getUserAccount(c.env, emailRaw)
+    if (existing) {
+      const response = c.json({ error: 'EMAIL_ALREADY_REGISTERED' }, 409)
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+    const newAccount: UserAccount = {
+      email: emailRaw,
+      name: deriveDisplayName(emailRaw),
+      plan: 'free',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastLoginAt: nowIso,
+      subscriptionCredits: 0,
+      topUpCredits: 0,
+      planExpiresAt: '',
+    }
+    await saveUserAccount(c.env, newAccount)
+  }
+
+  let account = await getUserAccount(c.env, emailRaw)
+  if (!account) {
+    const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  account.name = account.name?.trim() || deriveDisplayName(emailRaw)
+  account.plan = account.plan || 'free'
+  account.lastLoginAt = nowIso
+  account.lastOtpAt = new Date(record.issuedAt).toISOString()
+  await saveUserAccount(c.env, account)
+
+  account = (await getUserAccount(c.env, emailRaw)) ?? account
+
+  const responseProfile = {
+    email: account.email,
+    name: account.name || deriveDisplayName(account.email),
+    plan: account.plan || 'free',
+    subscriptionCredits: account.subscriptionCredits ?? 0,
+    topUpCredits: account.topUpCredits ?? 0,
+    planExpiresAt: account.planExpiresAt ?? '',
+    credits: FREE_MONTHLY_CREDITS,
+  }
+
+  const response = c.json({ ok: true, intent, profile: responseProfile })
+  response.headers.set('Cache-Control', 'no-store')
+  return response
 })
 
 app.post('/api/auth/admin/login', async (c) => {
