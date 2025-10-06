@@ -121,7 +121,17 @@ const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
-const API_BASE_PATH = '/.netlify/functions/server'
+const SERVER_BASE_PATH = '/.netlify/functions/server'
+const API_BASE_PATH = SERVER_BASE_PATH
+
+type RuntimeProcess = {
+  env?: Record<string, string | undefined>
+}
+
+const runtimeProcess =
+  typeof globalThis !== 'undefined' && 'process' in globalThis
+    ? (globalThis as { process?: RuntimeProcess }).process
+    : undefined
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
@@ -839,7 +849,15 @@ function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
   deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
 }
 
-const app = new Hono<{ Bindings: Bindings }>()
+function createApp() {
+  const baseApp = new Hono<{ Bindings: Bindings }>({ strict: false })
+  if (runtimeProcess?.env?.NETLIFY === 'true') {
+    return baseApp.basePath(SERVER_BASE_PATH)
+  }
+  return baseApp
+}
+
+const app = createApp()
 
 app.use('*', async (c, next) => {
   await next()

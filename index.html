@@ -8,7 +8,12 @@
     <script>
       ;(async () => {
         const target = window.location.pathname + window.location.search + window.location.hash
-        const endpoint = '/.netlify/functions/server' + (target.startsWith('/') ? target : '/' + target)
+        const normalizedTarget = target === '/' ? '' : target
+        const endpoint =
+          '/.netlify/functions/server' +
+          (normalizedTarget.startsWith('/') || normalizedTarget === ''
+            ? normalizedTarget
+            : '/' + normalizedTarget)
         try {
           const response = await fetch(endpoint, {
             headers: {
