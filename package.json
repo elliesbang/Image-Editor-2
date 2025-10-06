@@ -1,11 +1,12 @@
 {
   "name": "elliesbang-image-editor",
+  "version": "1.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "deploy": "npm run build && npx netlify deploy --prod --dir=dist"
+    "preview": "vite preview"
   },
   "dependencies": {
     "hono": "^4.5.2",
