@@ -16,7 +16,11 @@ const rewriteHtmlAssets = async (filePath, basePath) => {
     const normalizedBase = ensureTrailingSlash(basePath)
     const rewritten = html
       .replaceAll('href="/static/', `href="${normalizedBase}static/`)
+      .replaceAll('href="./static/', `href="${normalizedBase}static/`)
+      .replaceAll('href="static/', `href="${normalizedBase}static/`)
       .replaceAll('src="/static/', `src="${normalizedBase}static/`)
+      .replaceAll('src="./static/', `src="${normalizedBase}static/`)
+      .replaceAll('src="static/', `src="${normalizedBase}static/`)
 
     if (rewritten !== html) {
       await writeFile(filePath, rewritten, 'utf8')
