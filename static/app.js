@@ -144,8 +144,10 @@ const state = {
 const runtime = {
   config: null,
   initialView: 'home',
-  allowViewBypass: false,
   apiBase: '',
+  basePath: '/',
+  currentView: 'home',
+  lastAllowedView: 'home',
   google: {
     codeClient: null,
     deferred: null,
@@ -358,6 +360,42 @@ function openPlanUpsell(planKey, action) {
   activePlanModal = modal
 }
 
+function openAccessModal(title, message) {
+  const modal = elements.accessModal
+  if (!(modal instanceof HTMLElement)) {
+    return
+  }
+  if (elements.accessModalTitle instanceof HTMLElement && typeof title === 'string') {
+    elements.accessModalTitle.textContent = title
+  }
+  if (elements.accessModalMessage instanceof HTMLElement && typeof message === 'string') {
+    elements.accessModalMessage.textContent = message
+  }
+  modal.classList.add('is-active')
+  modal.setAttribute('aria-hidden', 'false')
+  document.body.classList.add('is-modal-open')
+  const focusTarget = modal.querySelector('[data-action="close-access-modal"]')
+  if (focusTarget instanceof HTMLElement) {
+    window.requestAnimationFrame(() => focusTarget.focus())
+  }
+}
+
+function closeAccessModal() {
+  const modal = elements.accessModal
+  if (!(modal instanceof HTMLElement)) {
+    return
+  }
+  modal.classList.remove('is-active')
+  modal.setAttribute('aria-hidden', 'true')
+  if (
+    !(elements.loginModal instanceof HTMLElement && elements.loginModal.classList.contains('is-active')) &&
+    !(elements.adminModal instanceof HTMLElement && elements.adminModal.classList.contains('is-active')) &&
+    !(activePlanModal instanceof HTMLElement && activePlanModal.classList.contains('is-active'))
+  ) {
+    document.body.classList.remove('is-modal-open')
+  }
+}
+
 function formatCreditsValue(value) {
   if (hasUnlimitedAccess()) return '∞'
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : getTotalCredits()
@@ -390,15 +428,18 @@ function getAppConfig() {
   if (!script) {
     runtime.config = {}
     runtime.apiBase = normalizeApiBase()
+    runtime.basePath = normalizeBasePath('/')
     return runtime.config
   }
   try {
     runtime.config = JSON.parse(script.textContent || '{}') || {}
     runtime.apiBase = normalizeApiBase(runtime.config.apiBase)
+    runtime.basePath = normalizeBasePath(runtime.config.basePath)
   } catch (error) {
     console.error('앱 설정을 불러오지 못했습니다.', error)
     runtime.config = {}
     runtime.apiBase = normalizeApiBase()
+    runtime.basePath = normalizeBasePath('/')
   }
   return runtime.config
 }
@@ -421,6 +462,99 @@ function getApiBase() {
   const config = getAppConfig()
   runtime.apiBase = normalizeApiBase(config.apiBase)
   return runtime.apiBase
+}
+
+function normalizeBasePath(value) {
+  if (typeof value !== 'string') {
+    return '/'
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return '/'
+  }
+  const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`
+}
+
+function getBasePath() {
+  if (runtime.basePath) {
+    return runtime.basePath
+  }
+  const config = getAppConfig()
+  const base = normalizeBasePath(config.basePath)
+  runtime.basePath = base
+  return base
+}
+
+function joinBasePath(path) {
+  const base = getBasePath()
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  if (!normalizedBase || normalizedBase === '/') {
+    return normalizedPath
+  }
+  return `${normalizedBase}${normalizedPath}`
+}
+
+function stripBasePath(pathname) {
+  const base = getBasePath()
+  if (!pathname || typeof pathname !== 'string') {
+    return '/'
+  }
+  const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`
+  if (!base || base === '/' || base === '') {
+    return normalizedPath || '/'
+  }
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`
+  const trimmedBase = normalizedBase.endsWith('/') ? normalizedBase.slice(0, -1) : normalizedBase
+  if (normalizedPath === trimmedBase) {
+    return '/'
+  }
+  if (normalizedPath.startsWith(normalizedBase)) {
+    const remainder = normalizedPath.slice(normalizedBase.length - 1)
+    return remainder || '/'
+  }
+  if (normalizedPath.startsWith(trimmedBase)) {
+    const remainder = normalizedPath.slice(trimmedBase.length)
+    return remainder.startsWith('/') ? remainder : `/${remainder}`
+  }
+  return normalizedPath || '/'
+}
+
+function normalizeRoutePath(path) {
+  if (!path) return '/'
+  if (path !== '/' && path.endsWith('/')) {
+    return path.slice(0, -1)
+  }
+  return path
+}
+
+const VIEW_ROUTES = {
+  home: '/',
+  admin: '/admin/dashboard',
+  community: '/dashboard/community',
+}
+
+const ROUTE_TO_VIEW = new Map(
+  Object.entries(VIEW_ROUTES).map(([view, route]) => [normalizeRoutePath(route), view]),
+)
+
+const ALLOWED_VIEWS = new Set(Object.keys(VIEW_ROUTES))
+
+function normalizeView(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+  const trimmed = value.trim().toLowerCase()
+  return ALLOWED_VIEWS.has(trimmed) ? trimmed : ''
+}
+
+function resolveViewFromPath(pathname) {
+  const stripped = normalizeRoutePath(stripBasePath(pathname))
+  if (ROUTE_TO_VIEW.has(stripped)) {
+    return ROUTE_TO_VIEW.get(stripped)
+  }
+  return 'home'
 }
 
 function buildApiUrl(path) {
@@ -637,6 +771,8 @@ const elements = {
   adminModalLogoutButton: document.querySelector('[data-role="admin-modal-logout"]'),
   adminCategoryBadge: document.querySelector('[data-role="admin-category"]'),
   adminDashboard: document.querySelector('[data-role="admin-dashboard"]'),
+  adminGuard: document.querySelector('[data-role="admin-guard"]'),
+  adminContent: document.querySelector('[data-role="admin-content"]'),
   adminImportForm: document.querySelector('[data-role="admin-import-form"]'),
   adminImportFile: document.querySelector('[data-role="admin-import-file"]'),
   adminImportManual: document.querySelector('[data-role="admin-import-manual"]'),
@@ -672,6 +808,7 @@ const elements = {
   googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
   googleLoginHelper: document.querySelector('[data-role="google-login-helper"]'),
   communityLink: document.querySelector('[data-role="community-link"]'),
+  footerAdminLink: document.querySelector('[data-role="footer-admin-link"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
   loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
   loginEmailCodeInput: document.querySelector('[data-role="login-email-code"]'),
@@ -701,6 +838,9 @@ const elements = {
   operationsGate: document.querySelector('[data-role="operations-gate"]'),
   resultsGate: document.querySelector('[data-role="results-gate"]'),
   resultsCreditCount: document.querySelector('[data-role="results-credit-count"]'),
+  accessModal: document.querySelector('[data-role="access-modal"]'),
+  accessModalTitle: document.querySelector('[data-role="access-modal-title"]'),
+  accessModalMessage: document.querySelector('[data-role="access-modal-message"]'),
 }
 
 let statusTimer = null
@@ -1447,16 +1587,30 @@ function refreshAccessStates() {
   updateNavigationAccess()
 }
 
+function hasCommunityAccess() {
+  if (state.admin.isLoggedIn) {
+    return true
+  }
+  if (!state.user.isLoggedIn) {
+    return false
+  }
+  const profile = state.challenge.profile
+  if (profile && !profile.expired) {
+    return true
+  }
+  return resolvePlanKey(state.user.plan) === 'michina'
+}
+
 function canAccessView(rawView) {
   const view = typeof rawView === 'string' ? rawView.trim() : ''
   if (!view || view === 'home') {
     return true
   }
   if (view === 'community') {
-    return state.user.isLoggedIn && state.user.plan === 'michina'
+    return hasCommunityAccess()
   }
   if (view === 'admin') {
-    return state.admin.isLoggedIn
+    return true
   }
   return false
 }
@@ -1506,6 +1660,10 @@ function setView(rawView, options = {}) {
     return targetView
   }
   state.view = targetView
+  runtime.currentView = targetView
+  if (accessible && requested === targetView) {
+    runtime.lastAllowedView = targetView
+  }
   if (targetView === 'admin') {
     clearAdminNavHighlight()
     dismissAdminDashboardPrompt()
@@ -1519,31 +1677,81 @@ function setView(rawView, options = {}) {
 }
 
 function handleNavigationClick(targetView) {
-  const view = typeof targetView === 'string' ? targetView.trim() : ''
-  if (!view || view === 'home') {
-    setView('home')
+  const view = typeof targetView === 'string' ? targetView.trim() : 'home'
+  navigateToView(view)
+}
+
+function navigateToView(targetView, options = {}) {
+  const normalized = normalizeView(targetView) || 'home'
+  const replace = Boolean(options.replace)
+  const silent = Boolean(options.silent)
+  const route = joinBasePath(VIEW_ROUTES[normalized] || '/')
+
+  if (normalized === 'community' && !hasCommunityAccess()) {
+    if (!silent) {
+      openAccessModal(
+        '접근 권한이 없습니다.',
+        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+      )
+      setView(runtime.lastAllowedView || 'home', { force: true, bypassAccess: true })
+    }
+    if (replace) {
+      const fallbackView = runtime.lastAllowedView || 'home'
+      const fallbackRoute = joinBasePath(VIEW_ROUTES[fallbackView] || '/')
+      window.history.replaceState({ view: fallbackView }, '', fallbackRoute)
+    }
     return
   }
-  if (canAccessView(view)) {
-    if (view === 'admin') {
-      clearAdminNavHighlight()
+
+  if (!silent) {
+    setView(normalized, { force: true, bypassAccess: true })
+    if (normalized === 'admin' && !state.admin.isLoggedIn) {
+      openAdminModal({
+        message: '관리자 전용 페이지입니다.',
+        subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+        tone: 'warning',
+      })
     }
-    setView(view)
+  }
+
+  if (replace) {
+    window.history.replaceState({ view: normalized }, '', route)
+  } else {
+    if (window.history.state?.view !== normalized || window.location.pathname !== route) {
+      window.history.pushState({ view: normalized }, '', route)
+    }
+  }
+}
+
+function handlePopState() {
+  const view = normalizeView(resolveViewFromPath(window.location.pathname)) || 'home'
+  if (view === 'admin') {
+    setView('admin', { force: true, bypassAccess: true })
+    if (!state.admin.isLoggedIn) {
+      openAdminModal({
+        message: '관리자 전용 페이지입니다.',
+        subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+        tone: 'warning',
+      })
+    }
     return
   }
   if (view === 'community') {
-    if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-      setStatus('미치나 커뮤니티는 로그인 후 이용할 수 있습니다.', 'warning')
-      openLoginModal()
+    if (hasCommunityAccess()) {
+      setView('community', { force: true, bypassAccess: true })
     } else {
-      setStatus('미치나 플랜 참가자로 등록된 계정만 접근할 수 있습니다.', 'warning')
+      openAccessModal(
+        '접근 권한이 없습니다.',
+        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+      )
+      const fallbackView = runtime.lastAllowedView || 'home'
+      setView(fallbackView, { force: true, bypassAccess: true })
+      const fallbackRoute = joinBasePath(VIEW_ROUTES[fallbackView] || '/')
+      window.history.replaceState({ view: fallbackView }, '', fallbackRoute)
     }
     return
   }
-  if (view === 'admin') {
-    setStatus('관리자 로그인이 필요합니다.', 'warning')
-    openAdminModal()
-  }
+  setView('home', { force: true, bypassAccess: true })
 }
 
 function updateNavigationAccess() {
@@ -1563,33 +1771,42 @@ function updateNavigationAccess() {
         button.classList.remove('is-disabled')
         button.removeAttribute('aria-disabled')
       }
-    } else {
-      button.hidden = !accessible
-      if (isButton) {
-        button.disabled = !accessible
-        if (!accessible) {
-          button.setAttribute('aria-disabled', 'true')
-        } else {
-          button.removeAttribute('aria-disabled')
-        }
-      } else {
-        button.classList.toggle('is-disabled', !accessible)
-        if (!accessible) {
-          button.setAttribute('aria-disabled', 'true')
-        } else {
-          button.removeAttribute('aria-disabled')
-        }
+      return
+    }
+
+    if (target === 'community') {
+      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+      button.hidden = !loggedIn
+      if (!loggedIn) {
+        return
       }
     }
+
+    if (target === 'admin') {
+      return
+    }
+
+    if (isButton) {
+      button.disabled = !accessible
+    }
+
+    button.classList.toggle('is-disabled', !accessible)
+
+    if (!accessible) {
+      button.setAttribute('aria-disabled', 'true')
+    } else {
+      button.removeAttribute('aria-disabled')
+    }
+
     if (!accessible && state.view === target) {
       requiresFallback = true
     }
   })
 
   if (requiresFallback) {
-    setView(determineDefaultView(), { force: true, bypassAccess: runtime.allowViewBypass })
+    setView(determineDefaultView(), { force: true })
   } else {
-    setView(state.view, { force: true, bypassAccess: runtime.allowViewBypass })
+    setView(state.view, { force: true })
   }
 }
 
@@ -1839,7 +2056,8 @@ async function handleLogout() {
   hasShownAdminDashboardPrompt = false
   dismissAdminDashboardPrompt()
   clearAdminNavHighlight()
-  setView('home', { force: true })
+  navigateToView('home', { replace: true, silent: true })
+  setView('home', { force: true, bypassAccess: true })
   refreshAccessStates()
   renderChallengeDashboard()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
@@ -1902,15 +2120,17 @@ function setAdminMessage(message = '', tone = 'info') {
   elements.adminLoginMessage.dataset.tone = tone
 }
 
-function openAdminModal() {
+function openAdminModal(options = {}) {
   if (!(elements.adminModal instanceof HTMLElement)) return
   const isAdmin = state.admin.isLoggedIn
+  const customMessage = typeof options.message === 'string' ? options.message : ''
+  const customSubtitle = typeof options.subtitle === 'string' ? options.subtitle : ''
+  const messageTone = typeof options.tone === 'string' ? options.tone : 'muted'
 
   if (isAdmin) {
     setAdminMessage('', 'info')
     setStatus('관리자 모드가 활성화되어 있습니다. 필요한 작업을 선택하세요.', 'info')
   } else {
-    setAdminMessage('등록된 관리자만 접근할 수 있습니다.', 'muted')
     if (elements.adminLoginForm instanceof HTMLFormElement) {
       elements.adminLoginForm.dataset.state = 'idle'
       elements.adminLoginForm.reset()
@@ -1924,6 +2144,15 @@ function openAdminModal() {
   }
 
   updateAdminModalState()
+
+  if (!isAdmin) {
+    const subtitleText = customSubtitle || '등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.'
+    if (elements.adminModalSubtitle instanceof HTMLElement) {
+      elements.adminModalSubtitle.textContent = subtitleText
+    }
+    const messageText = customMessage || '등록된 관리자만 접근할 수 있습니다.'
+    setAdminMessage(messageText, messageTone)
+  }
 
   elements.adminModal.classList.add('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'false')
@@ -2090,7 +2319,13 @@ function updateAdminUI() {
   }
   updateAdminModalState()
   if (elements.adminDashboard instanceof HTMLElement) {
-    elements.adminDashboard.hidden = !isAdmin
+    elements.adminDashboard.dataset.state = isAdmin ? 'active' : 'locked'
+  }
+  if (elements.adminGuard instanceof HTMLElement) {
+    elements.adminGuard.hidden = isAdmin
+  }
+  if (elements.adminContent instanceof HTMLElement) {
+    elements.adminContent.hidden = !isAdmin
   }
   if (elements.adminCategoryBadge instanceof HTMLElement) {
     elements.adminCategoryBadge.hidden = !isAdmin
@@ -2106,9 +2341,8 @@ function updateAdminUI() {
     elements.adminNavButton.hidden = !isAdmin
     if (elements.adminNavButton instanceof HTMLButtonElement) {
       elements.adminNavButton.disabled = !isAdmin
-    } else {
-      elements.adminNavButton.classList.toggle('is-disabled', !isAdmin)
     }
+    elements.adminNavButton.classList.toggle('is-disabled', !isAdmin)
     if (isAdmin) {
       elements.adminNavButton.removeAttribute('aria-disabled')
     } else {
@@ -6067,7 +6301,7 @@ function attachEventListeners() {
     elements.adminLoginButton.addEventListener('click', (event) => {
       event.preventDefault()
       if (state.admin.isLoggedIn) {
-        setView('admin')
+        navigateToView('admin')
         if (elements.adminDashboard instanceof HTMLElement) {
           elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }
@@ -6075,7 +6309,11 @@ function attachEventListeners() {
           elements.adminNavButton.focus()
         }
       } else {
-        openAdminModal()
+        openAdminModal({
+          message: '관리자 전용 페이지입니다.',
+          subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+          tone: 'warning',
+        })
       }
     })
   }
@@ -6088,10 +6326,17 @@ function attachEventListeners() {
     })
   })
 
+  if (elements.footerAdminLink instanceof HTMLAnchorElement) {
+    elements.footerAdminLink.addEventListener('click', (event) => {
+      event.preventDefault()
+      navigateToView('admin')
+    })
+  }
+
   if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
     elements.adminModalDashboardButton.addEventListener('click', () => {
       closeAdminModal()
-      setView('admin')
+      navigateToView('admin')
       if (elements.adminDashboard instanceof HTMLElement) {
         elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
@@ -6116,6 +6361,39 @@ function attachEventListeners() {
       button.addEventListener('click', closeAdminModal)
     }
   })
+
+  document.querySelectorAll('[data-action="open-login-modal"]').forEach((button) => {
+    if (button instanceof HTMLElement) {
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        openLoginModal()
+      })
+    }
+  })
+
+  document.querySelectorAll('[data-action="open-admin-modal"]').forEach((button) => {
+    if (button instanceof HTMLElement) {
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        openAdminModal({
+          message: '관리자 전용 페이지입니다.',
+          subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+          tone: 'warning',
+        })
+      })
+    }
+  })
+
+  document.querySelectorAll('[data-action="close-access-modal"]').forEach((button) => {
+    if (button instanceof HTMLElement) {
+      button.addEventListener('click', closeAccessModal)
+    }
+  })
+
+  const accessBackdrop = elements.accessModal?.querySelector('.plan-modal__backdrop')
+  if (accessBackdrop instanceof HTMLElement) {
+    accessBackdrop.addEventListener('click', closeAccessModal)
+  }
 
   const adminBackdrop = elements.adminModal?.querySelector('.admin-modal__backdrop')
   if (adminBackdrop instanceof HTMLElement) {
@@ -6361,49 +6639,89 @@ async function init() {
   }
 
   config = runtime.config || config || {}
-  const allowedViews = new Set(['home', 'community', 'admin'])
-  const normalizeView = (value) => {
-    if (typeof value !== 'string') return ''
-    const trimmed = value.trim().toLowerCase()
-    return allowedViews.has(trimmed) ? trimmed : ''
+  runtime.config = config
+  runtime.apiBase = normalizeApiBase(config.apiBase)
+  runtime.basePath = normalizeBasePath(config.basePath)
+
+  const resolvedCommunityUrl =
+    typeof config.communityUrl === 'string' && config.communityUrl.trim()
+      ? config.communityUrl.trim()
+      : joinBasePath(VIEW_ROUTES.community)
+
+  if (elements.communityLink instanceof HTMLAnchorElement) {
+    elements.communityLink.href = resolvedCommunityUrl
+  }
+
+  if (elements.footerAdminLink instanceof HTMLAnchorElement) {
+    elements.footerAdminLink.href = joinBasePath(VIEW_ROUTES.admin)
   }
 
   let requestedView = ''
+  let canonicalSearch = ''
+  let canonicalHash = ''
   try {
     const url = new URL(window.location.href)
-    requestedView = normalizeView(url.searchParams.get('view'))
-    if (!requestedView && url.hash) {
-      requestedView = normalizeView(url.hash.replace('#', ''))
+    canonicalSearch = url.search
+    canonicalHash = url.hash
+    const queryView = normalizeView(url.searchParams.get('view'))
+    if (queryView) {
+      requestedView = queryView
+      url.searchParams.delete('view')
+      canonicalSearch = url.search
+    } else if (url.hash) {
+      const hashView = normalizeView(url.hash.replace('#', ''))
+      if (hashView) {
+        requestedView = hashView
+        url.hash = ''
+        canonicalHash = url.hash
+      }
     }
   } catch (error) {
     requestedView = ''
   }
 
   const configInitial = normalizeView(config.initialView)
-  const initialView = requestedView || configInitial || 'home'
+  let initialView = requestedView || configInitial || 'home'
 
-  runtime.config = config
   runtime.initialView = initialView
-  const allowBypass = initialView !== 'home' && initialView !== 'admin'
-  runtime.allowViewBypass = allowBypass
-  state.view = initialView
+  runtime.lastAllowedView = 'home'
 
-  if (elements.communityLink instanceof HTMLAnchorElement) {
-    const configuredUrl = typeof config.communityUrl === 'string' ? config.communityUrl.trim() : ''
-    if (configuredUrl) {
-      elements.communityLink.href = configuredUrl
+  const initialRoute = joinBasePath(VIEW_ROUTES[initialView] || '/')
+  window.history.replaceState({ view: initialView }, '', `${initialRoute}${canonicalSearch}${canonicalHash}`)
+
+  if (initialView === 'admin') {
+    setView('admin', { force: true, bypassAccess: true })
+    runtime.lastAllowedView = state.admin.isLoggedIn ? 'admin' : 'home'
+    if (!state.admin.isLoggedIn) {
+      openAdminModal({
+        message: '관리자 전용 페이지입니다.',
+        subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+        tone: 'warning',
+      })
     }
-  }
-
-  if (runtime.allowViewBypass) {
-    setView(initialView, { force: true, bypassAccess: true })
+  } else if (initialView === 'community') {
+    if (hasCommunityAccess()) {
+      setView('community', { force: true, bypassAccess: true })
+      runtime.lastAllowedView = 'community'
+    } else {
+      runtime.lastAllowedView = 'home'
+      setView('home', { force: true, bypassAccess: true })
+      openAccessModal(
+        '접근 권한이 없습니다.',
+        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+      )
+      window.history.replaceState({ view: 'home' }, '', joinBasePath(VIEW_ROUTES.home))
+    }
   } else {
-    setView(initialView, { force: true })
+    setView('home', { force: true, bypassAccess: true })
+    runtime.lastAllowedView = 'home'
+    window.history.replaceState({ view: 'home' }, '', joinBasePath(VIEW_ROUTES.home))
   }
 
   updateOperationAvailability()
   updateResultActionAvailability()
   attachEventListeners()
+  window.addEventListener('popstate', handlePopState)
   updateAdminUI()
   initCookieBanner()
   resetLoginFlow()

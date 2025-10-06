@@ -123,6 +123,8 @@ const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
 const SERVER_FUNCTION_PATH = '/.netlify/functions/server'
 const API_BASE_PATH = SERVER_FUNCTION_PATH
+const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
+const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
 
 type RuntimeProcess = {
   env?: Record<string, string | undefined>
@@ -886,7 +888,7 @@ app.get('/api/auth/session', async (c) => {
 app.get('/api/config', (c) => {
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
-  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
 
   return c.json({
     googleClientId,
@@ -1915,12 +1917,13 @@ app.get('/', (c) => {
   const currentYear = new Date().getFullYear()
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
-  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
   const appConfig = JSON.stringify(
     {
       googleClientId,
       googleRedirectUri,
       communityUrl,
+      basePath: PUBLIC_BASE_PATH,
       apiBase: API_BASE_PATH,
     },
     null,
@@ -1950,15 +1953,22 @@ app.get('/', (c) => {
           <button class="btn btn--primary btn--sm app-header__upgrade" type="button" data-role="upgrade-button">
             업그레이드
           </button>
-          <a
-            class="btn btn--ghost btn--sm"
-            href={communityUrl}
-            target="_blank"
-            rel="noopener"
-            data-role="community-link"
-          >
-            미치나 커뮤니티
-          </a>
+          <nav class="app-header__nav" aria-label="대시보드 탐색">
+            <a
+              class="app-header__nav-item"
+              href="./dashboard/community"
+              data-role="community-link"
+              data-view-target="community"
+            >
+              미치나 챌린지 대시보드
+            </a>
+            <button class="app-header__nav-item" type="button" data-role="admin-nav" data-view-target="admin" hidden>
+              관리자 대시보드
+            </button>
+          </nav>
+          <button class="btn btn--ghost btn--sm" type="button" data-role="admin-login">
+            관리자 전용
+          </button>
           <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
             로그인
           </button>
@@ -2520,6 +2530,170 @@ app.get('/', (c) => {
         </div>
       </section>
 
+      <section class="admin-view" data-view="admin" aria-label="관리자 대시보드" hidden>
+        <article class="admin-dashboard" data-role="admin-dashboard" data-state="locked">
+          <header class="admin-dashboard__header">
+            <div class="admin-dashboard__meta">
+              <span class="admin-dashboard__badge" data-role="admin-category">운영진 전용</span>
+              <h2 class="admin-dashboard__title">Elliesbang 운영 대시보드</h2>
+              <p class="admin-dashboard__description">
+                미치나 플랜 참가자 명단을 관리하고 진행 현황을 점검할 수 있는 관리자 전용 공간입니다.
+              </p>
+            </div>
+            <div class="admin-dashboard__actions">
+              <button class="btn btn--ghost btn--sm" type="button" data-role="admin-refresh">현황 새로고침</button>
+              <button class="btn btn--ghost btn--sm" type="button" data-role="admin-run-completion">완주 체크 실행</button>
+              <button class="btn btn--ghost btn--sm" type="button" data-role="admin-download-completion">완주자 CSV</button>
+              <button class="btn btn--outline btn--sm" type="button" data-role="admin-logout">관리자 로그아웃</button>
+            </div>
+          </header>
+          <div class="admin-dashboard__guard" data-role="admin-guard">
+            <p>관리자 전용 페이지입니다. 보안 강화를 위해 로그인 후 이용해 주세요.</p>
+            <button class="btn btn--primary" type="button" data-action="open-admin-modal">관리자 로그인 열기</button>
+          </div>
+          <div class="admin-dashboard__content" data-role="admin-content">
+            <section class="admin-dashboard__section">
+              <h3 class="admin-dashboard__section-title">미치나 챌린지 참가자 등록</h3>
+              <form class="admin-import" data-role="admin-import-form" data-state="idle">
+                <div class="admin-import__grid">
+                  <label class="admin-import__label">
+                    CSV 업로드
+                    <input class="admin-import__input" type="file" accept=".csv" data-role="admin-import-file" />
+                  </label>
+                  <label class="admin-import__label">
+                    이메일/이름 수동 입력 (줄바꿈으로 구분)
+                    <textarea
+                      class="admin-import__textarea"
+                      rows={4}
+                      placeholder="name@example.com,홍길동"
+                      data-role="admin-import-manual"
+                    ></textarea>
+                  </label>
+                  <label class="admin-import__label">
+                    챌린지 종료일
+                    <input class="admin-import__input" type="date" data-role="admin-import-enddate" />
+                  </label>
+                </div>
+                <div class="admin-import__actions">
+                  <button class="btn btn--primary" type="submit">명단 등록</button>
+                </div>
+              </form>
+            </section>
+            <section class="admin-dashboard__section">
+              <h3 class="admin-dashboard__section-title">참가자 진행 현황</h3>
+              <div class="challenge-table-wrapper">
+                <table class="challenge-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">참가자</th>
+                      <th scope="col">진행률</th>
+                      <th scope="col">미제출</th>
+                      <th scope="col">참여 기간</th>
+                      <th scope="col">상태</th>
+                    </tr>
+                  </thead>
+                  <tbody data-role="admin-participants-body">
+                    <tr>
+                      <td colSpan={5}>관리자 로그인 후 참가자 정보를 확인할 수 있습니다.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </article>
+      </section>
+
+      <section class="challenge-view" data-view="community" data-role="challenge-section" aria-label="미치나 챌린지 대시보드" hidden>
+        <article class="challenge-card challenge-card--locked" data-role="challenge-locked">
+          <header class="challenge-card__header">
+            <h2>미치나 챌린지 대시보드</h2>
+            <p>관리자가 등록한 미치나 챌린저 또는 운영진만 접근할 수 있습니다.</p>
+          </header>
+          <p class="challenge-card__description">등록되지 않은 계정으로 접근하면 안내 모달이 표시됩니다.</p>
+          <div class="challenge-card__actions">
+            <button class="btn btn--primary" type="button" data-action="open-login-modal">로그인</button>
+          </div>
+        </article>
+        <article class="challenge-card challenge-card--participant" data-role="challenge-dashboard" hidden>
+          <header class="challenge-card__header">
+            <div>
+              <h2>미치나 챌린지 대시보드</h2>
+              <p data-role="challenge-summary">참가자 등록 후 일일 제출 현황이 표시됩니다.</p>
+            </div>
+          </header>
+          <section class="challenge-card__section">
+            <h3 class="challenge-card__section-title">진행 현황</h3>
+            <div class="challenge-progress" data-role="challenge-progress"></div>
+          </section>
+          <section class="challenge-card__section">
+            <h3 class="challenge-card__section-title">일일 제출 현황</h3>
+            <ul class="challenge-days" data-role="challenge-days"></ul>
+          </section>
+          <section class="challenge-card__section">
+            <h3 class="challenge-card__section-title">제출하기</h3>
+            <form class="challenge-submit" data-role="challenge-submit-form" data-state="locked">
+              <div class="challenge-submit__grid">
+                <label class="challenge-submit__label" for="challengeDay">진행 일차</label>
+                <select id="challengeDay" data-role="challenge-day">
+                  <option value="">일차 선택</option>
+                  {[...Array(15)].map((_, index) => {
+                    const day = index + 1
+                    return (
+                      <option value={day} key={day}>
+                        {`Day ${day}`}
+                      </option>
+                    )
+                  })}
+                </select>
+                <label class="challenge-submit__label" for="challengeUrl">결과 URL</label>
+                <input
+                  id="challengeUrl"
+                  class="challenge-submit__input"
+                  type="url"
+                  placeholder="https://example.com/work"
+                  data-role="challenge-url"
+                />
+                <label class="challenge-submit__label" for="challengeFile">이미지 업로드</label>
+                <input
+                  id="challengeFile"
+                  class="challenge-submit__input"
+                  type="file"
+                  accept="image/*"
+                  data-role="challenge-file"
+                />
+              </div>
+              <p class="challenge-submit__hint" data-role="challenge-submit-hint">참가자로 등록되면 제출 기능이 활성화됩니다.</p>
+              <div class="challenge-submit__actions">
+                <button class="btn btn--primary" type="submit">제출 저장</button>
+              </div>
+            </form>
+          </section>
+          <section class="challenge-card__section challenge-card__section--certificate" data-role="challenge-certificate" hidden>
+            <h3 class="challenge-card__section-title">수료증</h3>
+            <div class="certificate-preview" data-role="certificate-preview"></div>
+            <button class="btn btn--outline" type="button" data-role="certificate-download">수료증 다운로드</button>
+          </section>
+        </article>
+      </section>
+
+      <div class="plan-modal plan-modal--access" data-role="access-modal" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-access-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="access-modal-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">접근 제한</span>
+            <h2 class="plan-modal__title" id="access-modal-title" data-role="access-modal-title">접근 권한이 없습니다.</h2>
+            <button class="plan-modal__close" type="button" data-action="close-access-modal" aria-label="접근 제한 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="access-modal-message"></p>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="close-access-modal">확인</button>
+          </div>
+        </div>
+      </div>
+
       <footer class="site-footer" aria-label="사이트 하단">
         <div class="site-footer__inner">
           <div class="site-footer__brand">
@@ -2529,11 +2703,11 @@ app.get('/', (c) => {
             </span>
           </div>
           <nav class="site-footer__links" aria-label="법적 고지">
-            <a href="/#pricing">요금제 안내</a>
-            <a href="/privacy">개인정보 처리방침</a>
-            <a href="/terms">이용약관</a>
-            <a href="/cookies">쿠키 정책</a>
-            <a href="/?admin=1" target="_blank" rel="noopener">관리자 전용</a>
+            <a href="./#pricing">요금제 안내</a>
+            <a href="./privacy">개인정보 처리방침</a>
+            <a href="./terms">이용약관</a>
+            <a href="./cookies">쿠키 정책</a>
+            <a href="./admin/dashboard" data-role="footer-admin-link">관리자 전용</a>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>
