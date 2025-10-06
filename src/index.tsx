@@ -1957,6 +1957,9 @@ app.get('/', (c) => {
               <strong data-role="credit-count">0</strong> 크레딧
             </span>
           </div>
+          <button class="btn btn--primary btn--sm app-header__upgrade" type="button" data-role="upgrade-button">
+            업그레이드
+          </button>
           <a
             class="btn btn--ghost btn--sm"
             href={communityUrl}
@@ -2030,6 +2033,135 @@ app.get('/', (c) => {
             로그인하면 30개의 무료 크레딧이 자동으로 충전됩니다.
           </div>
         </div>
+      </section>
+
+      <section
+        class="pricing"
+        data-view="home"
+        id="pricing"
+        data-role="pricing-section"
+        aria-labelledby="pricing-heading"
+      >
+        <header class="pricing__header">
+          <p class="pricing__eyebrow">요금제 안내</p>
+          <h2 class="pricing__title" id="pricing-heading">업무 흐름에 맞춰 선택하는 크레딧 플랜</h2>
+          <p class="pricing__subtitle">
+            FREE, 구독, 충전 크레딧을 하나의 잔액으로 통합 표기하고, 충전 크레딧부터 차감되도록 설계했습니다.
+          </p>
+        </header>
+        <div class="pricing__policy">
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">FREE 크레딧</span>
+            <span class="pricing-policy__copy">매월 1일 30 크레딧 자동 지급 · 이월 불가</span>
+          </div>
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">구독 크레딧</span>
+            <span class="pricing-policy__copy">월/연간 플랜 모두 기간 종료 시 소멸 · 잔여량은 통합 잔액으로 표시</span>
+          </div>
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">충전 크레딧</span>
+            <span class="pricing-policy__copy">별도 구매 가능 · 유효 기간 여유 있게 유지 · 구독 크레딧보다 먼저 차감</span>
+          </div>
+        </div>
+        <div class="pricing__cards">
+          <article class="pricing-card pricing-card--free">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">FREE</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩0</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">매월 30 크레딧 자동 지급 · 잔액 통합 표시</p>
+            <ul class="pricing-card__features">
+              <li>기본 편집 도구와 표준 해상도 제공</li>
+              <li>로그인만으로 즉시 시작</li>
+              <li>충전 크레딧 우선 차감 정책 공유</li>
+            </ul>
+            <button class="btn btn--ghost pricing-card__cta" type="button" data-role="pricing-free-login">
+              무료로 시작
+            </button>
+          </article>
+
+          <article class="pricing-card">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">BASIC</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩9,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 150 크레딧 · 고해상도 다운로드 포함</p>
+            <ul class="pricing-card__features">
+              <li>FREE 기능 + 고해상도 다운로드</li>
+              <li>충전 크레딧부터 차감해 과금 리스크 축소</li>
+              <li>플랜 만료 시 자동으로 FREE 전환</li>
+            </ul>
+            <button
+              class="btn btn--outline pricing-card__cta"
+              type="button"
+              data-role="pricing-upgrade"
+              data-plan="basic"
+            >
+              BASIC 업그레이드
+            </button>
+          </article>
+
+          <article class="pricing-card pricing-card--highlight">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">PRO</span>
+              <span class="pricing-card__tag">추천</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩19,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 1,000 크레딧 · SVG 변환 우선 지원</p>
+            <ul class="pricing-card__features">
+              <li>BASIC 기능 + PNG → SVG 벡터 변환 무제한</li>
+              <li>팀 브랜드 에셋 작업을 위한 우선 큐</li>
+              <li>충전/구독 크레딧 통합 잔액 표시</li>
+            </ul>
+            <button
+              class="btn btn--primary pricing-card__cta"
+              type="button"
+              data-role="pricing-upgrade"
+              data-plan="pro"
+            >
+              PRO 업그레이드
+            </button>
+          </article>
+
+          <article class="pricing-card pricing-card--premium">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">PREMIUM</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩39,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 10,000 크레딧 · 키워드 분석 포함</p>
+            <ul class="pricing-card__features">
+              <li>PRO 기능 + 키워드 분석 자동화</li>
+              <li>운영 효율을 위한 우선 지원 &amp; 보고서</li>
+              <li>충전 크레딧 선차감 · 잔여량 통합 표시</li>
+            </ul>
+            <button
+              class="btn btn--primary pricing-card__cta"
+              type="button"
+              data-role="pricing-upgrade"
+              data-plan="premium"
+            >
+              PREMIUM 업그레이드
+            </button>
+          </article>
+        </div>
+        <aside class="pricing__note" aria-label="미치나 플랜 안내">
+          <strong>미치나 플랜</strong>
+          <p>
+            챌린지 신청 시 월 10,000 크레딧과 PREMIUM 기능을 제공하며, 기간이 끝나면 자동으로 FREE 플랜으로 전환됩니다.
+          </p>
+        </aside>
       </section>
 
 
@@ -2106,6 +2238,87 @@ app.get('/', (c) => {
               이메일 주소를 입력하면 인증 코드를 보내드립니다.
             </p>
           </form>
+        </div>
+      </div>
+
+      <div class="plan-modal" data-role="plan-modal-basic" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-basic-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">BASIC 이상 필요</span>
+            <h2 class="plan-modal__title" id="plan-modal-basic-title">고해상도 다운로드를 위해 업그레이드하세요</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="BASIC 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="plan-modal-hint">
+            고해상도 다운로드는 BASIC 이상 플랜에서 제공됩니다.
+          </p>
+          <ul class="plan-modal__list">
+            <li>월 150 크레딧 제공 · 잔여량은 통합 잔액으로 관리됩니다.</li>
+            <li>충전 크레딧부터 차감되어 예산을 안전하게 운영할 수 있습니다.</li>
+            <li>플랜 만료 시 자동으로 FREE 플랜으로 전환됩니다.</li>
+          </ul>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">
+              BASIC 요금제 살펴보기
+            </button>
+            <button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-modal" data-role="plan-modal-pro" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-pro-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">PRO 이상 필요</span>
+            <h2 class="plan-modal__title" id="plan-modal-pro-title">SVG 변환 기능을 바로 활용하세요</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="PRO 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="plan-modal-hint">
+            PNG → SVG 벡터 변환은 PRO 이상 플랜에서 사용할 수 있습니다.
+          </p>
+          <ul class="plan-modal__list">
+            <li>월 1,000 크레딧으로 대량의 디자인 변환을 지원합니다.</li>
+            <li>충전 크레딧이 먼저 사용되어 구독 크레딧을 안전하게 보존합니다.</li>
+            <li>SVG 변환, 고해상도 다운로드, ZIP 묶음 저장 모두 활성화됩니다.</li>
+          </ul>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">
+              PRO 요금제 확인하기
+            </button>
+            <button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-modal" data-role="plan-modal-premium" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-premium-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">PREMIUM 이상 필요</span>
+            <h2 class="plan-modal__title" id="plan-modal-premium-title">키워드 분석까지 한 번에 마무리하세요</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="PREMIUM 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="plan-modal-hint">
+            키워드 분석 기능은 PREMIUM 이상 플랜에서 제공됩니다.
+          </p>
+          <ul class="plan-modal__list">
+            <li>월 10,000 크레딧과 전 기능 무제한 사용</li>
+            <li>운영 효율을 위한 우선 지원과 작업 보고서 제공</li>
+            <li>충전/구독 크레딧을 합산한 통합 잔액으로 표시됩니다.</li>
+          </ul>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">
+              PREMIUM 요금제 알아보기
+            </button>
+            <button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+          </div>
         </div>
       </div>
 
@@ -2326,6 +2539,7 @@ app.get('/', (c) => {
             </span>
           </div>
           <nav class="site-footer__links" aria-label="법적 고지">
+            <a href="/#pricing">요금제 안내</a>
             <a href="/privacy">개인정보 처리방침</a>
             <a href="/terms">이용약관</a>
             <a href="/cookies">쿠키 정책</a>

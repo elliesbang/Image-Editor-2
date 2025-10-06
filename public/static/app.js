@@ -1,8 +1,25 @@
 const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
 const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
-const FREEMIUM_INITIAL_CREDITS = 30
-const MICHINA_INITIAL_CREDITS = 10000
+const FREE_MONTHLY_CREDITS = 30
+const CREDIT_PRIORITY = ['topUp', 'subscription', 'free']
+const PLAN_CREDIT_LIMITS = {
+  public: { free: 0, subscription: 0, topUp: 0 },
+  free: { free: FREE_MONTHLY_CREDITS, subscription: 0, topUp: 0 },
+  basic: { free: FREE_MONTHLY_CREDITS, subscription: 150, topUp: 0 },
+  pro: { free: FREE_MONTHLY_CREDITS, subscription: 1000, topUp: 0 },
+  premium: { free: FREE_MONTHLY_CREDITS, subscription: 10000, topUp: 0 },
+  michina: { free: FREE_MONTHLY_CREDITS, subscription: 10000, topUp: 0 },
+}
+const PLAN_TIERS = {
+  public: 0,
+  free: 0,
+  basic: 1,
+  pro: 2,
+  premium: 3,
+  michina: 3,
+  admin: 4,
+}
 const CREDIT_COSTS = {
   operation: 1,
   resize: 1,
@@ -97,7 +114,9 @@ const state = {
     name: '',
     email: '',
     plan: 'public',
-    credits: 0,
+    creditBalance: { free: 0, subscription: 0, topUp: 0 },
+    planExpiresAt: '',
+    lastFreeRefresh: '',
     totalUsed: 0,
   },
   admin: {
@@ -153,22 +172,214 @@ let googleSdkPromise = null
 let hasAnnouncedAdminNav = false
 let adminNavHighlightTimer = null
 let hasShownAdminDashboardPrompt = false
+let activePlanModal = null
+
+function createCreditBalance(overrides = {}) {
+  return {
+    free: Math.max(0, Number.isFinite(Number(overrides.free)) ? Number(overrides.free) : 0),
+    subscription: Math.max(0, Number.isFinite(Number(overrides.subscription)) ? Number(overrides.subscription) : 0),
+    topUp: Math.max(0, Number.isFinite(Number(overrides.topUp)) ? Number(overrides.topUp) : 0),
+  }
+}
+
+function getTotalCredits(balance = state.user.creditBalance) {
+  if (!balance) return 0
+  const { free = 0, subscription = 0, topUp = 0 } = balance
+  return Math.max(0, Math.round(Number(free + subscription + topUp)))
+}
+
+function cloneCreditBalance(balance) {
+  return createCreditBalance(balance || {})
+}
+
+function deductCredits(balance, cost) {
+  if (cost <= 0) return cloneCreditBalance(balance)
+  const next = cloneCreditBalance(balance)
+  let remaining = cost
+  for (const bucket of CREDIT_PRIORITY) {
+    if (remaining <= 0) break
+    const available = next[bucket]
+    if (!available) continue
+    if (available >= remaining) {
+      next[bucket] = Math.max(0, available - remaining)
+      remaining = 0
+    } else {
+      next[bucket] = 0
+      remaining -= available
+    }
+  }
+  return next
+}
+
+function monthKey(date = new Date()) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth()).padStart(2, '0')}`
+}
+
+function resolvePlanKey(plan) {
+  if (!plan) return 'free'
+  const normalized = String(plan).toLowerCase()
+  if (normalized === 'freemium') return 'free'
+  if (normalized === 'public' || normalized === 'guest') return 'public'
+  return normalized
+}
+
+function getPlanCreditDefaults(plan) {
+  const key = resolvePlanKey(plan)
+  if (PLAN_CREDIT_LIMITS[key]) {
+    return PLAN_CREDIT_LIMITS[key]
+  }
+  return PLAN_CREDIT_LIMITS.free
+}
+
+function resetCreditBalanceForPlan(plan) {
+  const defaults = getPlanCreditDefaults(plan)
+  state.user.creditBalance = createCreditBalance(defaults)
+  state.user.lastFreeRefresh = monthKey()
+}
+
+function refreshMonthlyFreeCredits() {
+  const currentKey = monthKey()
+  if (!state.user.lastFreeRefresh || state.user.lastFreeRefresh !== currentKey) {
+    const defaults = getPlanCreditDefaults(state.user.plan)
+    state.user.creditBalance.free = defaults.free
+    state.user.lastFreeRefresh = currentKey
+  }
+}
+
+function setTopUpCredits(amount) {
+  const normalized = Math.max(0, Math.round(Number(amount) || 0))
+  state.user.creditBalance.topUp = normalized
+}
+
+function getPlanTier(plan) {
+  const key = resolvePlanKey(plan)
+  return PLAN_TIERS[key] ?? 0
+}
+
+function getRequiredPlanTier(action) {
+  switch (action) {
+    case 'download':
+    case 'downloadAll':
+      return 1
+    case 'svg':
+      return 2
+    case 'analysis':
+      return 3
+    default:
+      return 0
+  }
+}
 
 function hasUnlimitedAccess() {
   return state.admin.isLoggedIn
 }
 
+function scrollToPricingSection() {
+  const section =
+    (elements.pricingSection instanceof HTMLElement && elements.pricingSection) ||
+    document.getElementById('pricing') ||
+    null
+  if (section) {
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+function getPlanModalElement(planKey) {
+  switch (planKey) {
+    case 'basic':
+      return elements.planModalBasic
+    case 'pro':
+      return elements.planModalPro
+    case 'premium':
+      return elements.planModalPremium
+    default:
+      return null
+  }
+}
+
+const PLAN_UPSELL_MESSAGES = {
+  basic: {
+    default: '고해상도 다운로드와 배치 저장은 BASIC 이상 플랜에서 제공됩니다.',
+    download: '고해상도 다운로드를 실행하려면 BASIC 이상 플랜으로 업그레이드하세요.',
+    downloadAll: '여러 결과를 한 번에 저장하려면 BASIC 이상 플랜이 필요합니다.',
+  },
+  pro: {
+    default: 'SVG 변환과 고급 편집 도구는 PRO 이상 플랜에서 제공됩니다.',
+    svg: 'PNG → SVG 변환은 PRO 이상 플랜에서 사용할 수 있습니다.',
+  },
+  premium: {
+    default: '키워드 분석과 자동화 도구는 PREMIUM 이상 플랜에서 제공됩니다.',
+    analysis: '키워드 분석 기능은 PREMIUM 이상 플랜에서 제공됩니다.',
+  },
+}
+
+function resolveUpsellMessage(planKey, action) {
+  const bundle = PLAN_UPSELL_MESSAGES[planKey]
+  if (!bundle) return ''
+  if (action && typeof bundle[action] === 'string') {
+    return bundle[action]
+  }
+  return bundle.default
+}
+
+function closePlanUpsell() {
+  if (activePlanModal instanceof HTMLElement) {
+    activePlanModal.classList.remove('is-active')
+    activePlanModal.setAttribute('aria-hidden', 'true')
+  }
+  activePlanModal = null
+  if (
+    !(elements.loginModal instanceof HTMLElement && elements.loginModal.classList.contains('is-active')) &&
+    !(elements.adminModal instanceof HTMLElement && elements.adminModal.classList.contains('is-active'))
+  ) {
+    document.body.classList.remove('is-modal-open')
+  }
+}
+
+function openPlanUpsell(planKey, action) {
+  const modal = getPlanModalElement(planKey)
+  if (!(modal instanceof HTMLElement)) {
+    scrollToPricingSection()
+    return
+  }
+  closePlanUpsell()
+  const hint = modal.querySelector('[data-role="plan-modal-hint"]')
+  const message = resolveUpsellMessage(planKey, action)
+  if (hint instanceof HTMLElement) {
+    hint.textContent = message
+  }
+  modal.classList.add('is-active')
+  modal.setAttribute('aria-hidden', 'false')
+  document.body.classList.add('is-modal-open')
+  const primaryButton = modal.querySelector('[data-action="plan-modal-view-pricing"]')
+  if (primaryButton instanceof HTMLElement) {
+    window.requestAnimationFrame(() => primaryButton.focus())
+  }
+  activePlanModal = modal
+}
+
 function formatCreditsValue(value) {
   if (hasUnlimitedAccess()) return '∞'
-  const numeric = typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
-  return numeric.toLocaleString('ko-KR')
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : getTotalCredits()
+  return Math.max(0, Math.round(numeric)).toLocaleString('ko-KR')
 }
 
 function getPlanLabel() {
   if (state.admin.isLoggedIn) return '관리자 모드'
-  if (state.user.plan === 'michina') return '미치나 플랜'
-  if (state.user.plan === 'freemium') return 'Freemium'
-  return '게스트'
+  switch (resolvePlanKey(state.user.plan)) {
+    case 'michina':
+      return '미치나 플랜'
+    case 'premium':
+      return 'PREMIUM'
+    case 'pro':
+      return 'PRO'
+    case 'basic':
+      return 'BASIC'
+    case 'free':
+      return 'FREE'
+    default:
+      return '게스트'
+  }
 }
 
 function getAppConfig() {
@@ -476,6 +687,13 @@ const elements = {
   creditLabel: document.querySelector('[data-role="credit-label"]'),
   creditCount: document.querySelector('[data-role="credit-count"]'),
   headerAuthButton: document.querySelector('[data-role="header-auth"]'),
+  upgradeButton: document.querySelector('[data-role="upgrade-button"]'),
+  pricingSection: document.querySelector('[data-role="pricing-section"]'),
+  planModalBasic: document.querySelector('[data-role="plan-modal-basic"]'),
+  planModalPro: document.querySelector('[data-role="plan-modal-pro"]'),
+  planModalPremium: document.querySelector('[data-role="plan-modal-premium"]'),
+  planModalCloseButtons: document.querySelectorAll('[data-action="close-plan-modal"]'),
+  planModalViewButtons: document.querySelectorAll('[data-action="plan-modal-view-pricing"]'),
   stageIndicator: document.querySelector('[data-role="stage-indicator"]'),
   stageItems: document.querySelectorAll('[data-role="stage-indicator"] .stage__item'),
   stageMessage: document.querySelector('[data-role="stage-message"]'),
@@ -975,11 +1193,13 @@ function resolveActiveTarget(preferred) {
 }
 
 function updateHeaderState() {
+  refreshMonthlyFreeCredits()
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
-  const creditsNumeric = Math.max(0, state.user.credits)
+  const totalCredits = getTotalCredits()
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
-  const formattedCredits = formatCreditsValue(state.user.credits)
+  const planKey = resolvePlanKey(state.user.plan)
+  const isMichina = planKey === 'michina' && !isAdmin
+  const formattedCredits = formatCreditsValue(totalCredits)
 
   if (elements.creditDisplay instanceof HTMLElement) {
     if (!loggedIn) {
@@ -987,7 +1207,7 @@ function updateHeaderState() {
     } else if (isAdmin) {
       elements.creditDisplay.dataset.state = 'unlimited'
     } else {
-      elements.creditDisplay.dataset.state = creditStateFromBalance(creditsNumeric)
+      elements.creditDisplay.dataset.state = creditStateFromBalance(totalCredits)
     }
   }
 
@@ -997,13 +1217,14 @@ function updateHeaderState() {
 
   if (elements.creditLabel instanceof HTMLElement) {
     if (!loggedIn) {
-      elements.creditLabel.textContent = '로그인하고 무료 30 크레딧 받기'
+      elements.creditLabel.textContent = `로그인하고 무료 ${FREE_MONTHLY_CREDITS} 크레딧 받기`
     } else if (isAdmin) {
       elements.creditLabel.textContent = '관리자 모드 · 무제한 이용'
     } else if (isMichina) {
       elements.creditLabel.textContent = '미치나 플랜 · 잔여 크레딧'
     } else {
-      elements.creditLabel.textContent = 'Freemium · 잔여 크레딧'
+      const badge = getPlanLabel()
+      elements.creditLabel.textContent = `${badge} 플랜 · 잔여 크레딧`
     }
   }
 
@@ -1040,9 +1261,11 @@ function updateOperationsGate() {
 
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
-  const credits = Math.max(0, state.user.credits)
-  const formattedCredits = formatCreditsValue(state.user.credits)
+  const planKey = resolvePlanKey(state.user.plan)
+  const isMichina = planKey === 'michina' && !isAdmin
+  const credits = getTotalCredits()
+  const formattedCredits = formatCreditsValue(credits)
+  const badge = getPlanLabel()
 
   let stateName = 'unlocked'
   let title = '작업 실행 크레딧 안내'
@@ -1051,7 +1274,7 @@ function updateOperationsGate() {
   if (!loggedIn) {
     stateName = 'locked'
     title = '로그인 후 도구를 실행해 주세요.'
-    copy = `실행 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 드립니다.`
+    copy = `실행 시 크레딧이 차감됩니다. 로그인하면 매월 1일 자동으로 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 지급됩니다.`
   } else if (isAdmin) {
     stateName = 'success'
     title = '관리자 모드가 활성화되어 있습니다.'
@@ -1068,6 +1291,8 @@ function updateOperationsGate() {
     stateName = 'warning'
     title = '잔여 크레딧이 적습니다.'
     copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 사용됩니다.`
+  } else {
+    copy = `${badge} 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
   }
 
   setGateContent(gate, { state: stateName, title, copy })
@@ -1087,10 +1312,12 @@ function updateResultsGate() {
 
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
-  const credits = Math.max(0, state.user.credits)
-  const formattedCredits = formatCreditsValue(state.user.credits)
+  const planKey = resolvePlanKey(state.user.plan)
+  const isMichina = planKey === 'michina' && !isAdmin
+  const credits = getTotalCredits()
+  const formattedCredits = formatCreditsValue(credits)
   const hasResults = state.results.length > 0
+  const badge = getPlanLabel()
 
   let stateName = 'unlocked'
   let title = '결과 저장 준비 완료'
@@ -1103,7 +1330,7 @@ function updateResultsGate() {
   } else if (!loggedIn) {
     stateName = 'locked'
     title = '로그인 후 결과를 저장할 수 있어요.'
-    copy = `다운로드/벡터 변환 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 받습니다.`
+    copy = `다운로드/벡터 변환 시 크레딧이 차감됩니다. 로그인하면 매월 ${FREE_MONTHLY_CREDITS} 크레딧이 자동 충전됩니다.`
   } else if (isAdmin) {
     stateName = 'success'
     title = '관리자 모드가 활성화되어 있습니다.'
@@ -1120,6 +1347,16 @@ function updateResultsGate() {
     stateName = 'warning'
     title = '잔여 크레딧이 1개 이하입니다.'
     copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환은 이미지당 ${CREDIT_COSTS.svg} 크레딧이 필요합니다.`
+  } else if (planKey === 'free') {
+    copy = `${badge} 플랜은 표준 해상도 저장만 지원합니다. 고해상도 다운로드는 BASIC 이상 플랜에서 제공됩니다.`
+  } else if (planKey === 'basic') {
+    copy = `BASIC 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 고해상도 다운로드 사용 시 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
+  } else if (planKey === 'pro') {
+    copy = `PRO 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · SVG 변환과 다운로드가 모두 활성화되어 있습니다.`
+  } else if (planKey === 'premium') {
+    copy = `PREMIUM 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 키워드 분석을 포함한 모든 기능을 사용할 수 있습니다.`
+  } else {
+    copy = `${badge} 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 다운로드/벡터 변환 시 크레딧이 차감됩니다.`
   }
 
   setGateContent(gate, { state: stateName, title, copy })
@@ -1144,20 +1381,21 @@ function updateAccessGates() {
 
 function getStageMessage(stageName) {
   const loggedIn = state.user.isLoggedIn
-  const credits = Math.max(0, state.user.credits)
+  const credits = getTotalCredits()
+  const badge = getPlanLabel()
 
   switch (stageName) {
     case 'upload':
       return loggedIn
         ? `업로드한 이미지를 선택하고 다음 단계를 준비하세요. 현재 잔여 크레딧은 ${credits}개입니다.`
-        : `로그인 전에 업로드 목록을 확인할 수 있어요. 계정을 연결하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 즉시 지급됩니다.`
+        : `로그인 전에 업로드 목록을 확인할 수 있어요. 계정을 연결하면 매월 1일 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 지급됩니다.`
     case 'refine':
       return loggedIn
-        ? `도구 실행 시 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개로 편집을 진행해보세요.`
-        : `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
+        ? `${badge} 플랜 잔여 크레딧 ${credits}개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
+        : `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 매월 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
     case 'export':
       return loggedIn
-        ? `다운로드는 항목당 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개입니다.`
+        ? `${badge} 플랜 잔여 크레딧 ${credits}개 · 다운로드는 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다.`
         : '로그인 후 결과를 다운로드하거나 PNG→SVG 변환을 이용할 수 있어요.'
     default:
       return ''
@@ -1447,9 +1685,14 @@ function showAdminDashboardShortcut(options = {}) {
 
 function getActivePlanKey() {
   if (state.admin.isLoggedIn) return 'admin'
-  if (state.user.plan === 'michina') return 'michina'
-  if (state.user.isLoggedIn) return 'freemium'
-  return 'public'
+  const plan = resolvePlanKey(state.user.plan)
+  if (!state.user.isLoggedIn && plan !== 'michina') {
+    return 'public'
+  }
+  if (plan === 'public' && state.user.isLoggedIn) {
+    return 'free'
+  }
+  return plan
 }
 
 function updatePlanExperience() {
@@ -1467,8 +1710,14 @@ function updatePlanExperience() {
       planState = 'completed'
     } else if (currentPlan === 'michina') {
       planState = 'michina'
-    } else if (currentPlan === 'freemium') {
-      planState = 'freemium'
+    } else if (currentPlan === 'premium') {
+      planState = 'premium'
+    } else if (currentPlan === 'pro') {
+      planState = 'pro'
+    } else if (currentPlan === 'basic') {
+      planState = 'basic'
+    } else if (currentPlan === 'free') {
+      planState = 'free'
     }
     elements.challengeSection.dataset.planState = planState
   }
@@ -1491,7 +1740,21 @@ function ensureActionAllowed(action, options = {}) {
     return true
   }
 
-  if (cost > 0 && state.user.credits < cost) {
+  const currentTier = getPlanTier(state.user.plan)
+  const requiredTier = getRequiredPlanTier(action)
+  if (requiredTier > currentTier) {
+    const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
+    if (gateElement instanceof HTMLElement) {
+      gateElement.dataset.state = 'locked'
+    }
+    const targetPlan = requiredTier === 1 ? 'basic' : requiredTier === 2 ? 'pro' : 'premium'
+    openPlanUpsell(targetPlan, action)
+    return false
+  }
+
+  const credits = getTotalCredits()
+
+  if (cost > 0 && credits < cost) {
     setStatus('크레딧이 부족합니다. 충전 후 다시 시도해주세요.', 'danger')
     const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
     if (gateElement instanceof HTMLElement) {
@@ -1501,7 +1764,7 @@ function ensureActionAllowed(action, options = {}) {
     return false
   }
 
-  if (cost > 0 && state.user.credits <= 2) {
+  if (cost > 0 && credits <= 2) {
     const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
     if (gateElement instanceof HTMLElement && gateElement.dataset.state !== 'danger') {
       gateElement.dataset.state = 'warning'
@@ -1515,21 +1778,40 @@ function ensureActionAllowed(action, options = {}) {
 function consumeCredits(action, count = 1) {
   const cost = getCreditCost(action, count)
   if (cost <= 0 || hasUnlimitedAccess()) return
-  state.user.credits = Math.max(0, state.user.credits - cost)
+  state.user.creditBalance = deductCredits(state.user.creditBalance, cost)
   state.user.totalUsed += cost
   refreshAccessStates()
 }
 
-function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, plan = 'freemium' } = {}) {
+function applyLoginProfile({ name, email, credits = FREE_MONTHLY_CREDITS, plan = 'free', subscriptionCredits, topUpCredits, planExpiresAt } = {}) {
   const normalizedName = typeof name === 'string' && name.trim().length > 0 ? name.trim() : '크리에이터'
   state.user.isLoggedIn = true
   state.user.name = normalizedName
   state.user.email = typeof email === 'string' ? email : state.user.email
-  state.user.plan = plan
-  if (plan === 'michina' || plan === 'admin') {
-    state.user.credits = Number.MAX_SAFE_INTEGER
+  const normalizedPlan = resolvePlanKey(plan === 'public' ? 'free' : plan)
+  state.user.plan = normalizedPlan
+  state.user.planExpiresAt = typeof planExpiresAt === 'string' ? planExpiresAt : ''
+
+  if (normalizedPlan === 'admin') {
+    state.user.creditBalance = createCreditBalance({ subscription: Number.MAX_SAFE_INTEGER })
+    state.user.lastFreeRefresh = monthKey()
   } else {
-    state.user.credits = Math.max(state.user.credits, credits)
+    resetCreditBalanceForPlan(normalizedPlan)
+    const balance = state.user.creditBalance
+    if (typeof subscriptionCredits === 'number' && Number.isFinite(subscriptionCredits)) {
+      balance.subscription = Math.max(0, Math.round(subscriptionCredits))
+    }
+    if (typeof topUpCredits === 'number' && Number.isFinite(topUpCredits)) {
+      balance.topUp = Math.max(0, Math.round(topUpCredits))
+    }
+    const baseTotal = getTotalCredits(balance)
+    if (typeof credits === 'number' && Number.isFinite(credits)) {
+      const normalizedCredits = Math.max(0, Math.round(credits))
+      if (normalizedCredits > baseTotal) {
+        balance.topUp += normalizedCredits - baseTotal
+      }
+    }
+    state.user.creditBalance = balance
   }
   state.user.totalUsed = 0
   refreshAccessStates()
@@ -1548,7 +1830,9 @@ async function handleLogout() {
   state.user.name = ''
   state.user.email = ''
   state.user.plan = 'public'
-  state.user.credits = 0
+  state.user.creditBalance = createCreditBalance({})
+  state.user.planExpiresAt = ''
+  state.user.lastFreeRefresh = ''
   state.user.totalUsed = 0
   state.challenge.profile = null
   state.challenge.certificate = null
@@ -1679,7 +1963,9 @@ function revokeAdminSessionState() {
     state.user.name = ''
     state.user.email = ''
     state.user.plan = 'public'
-    state.user.credits = 0
+    state.user.creditBalance = createCreditBalance({})
+    state.user.planExpiresAt = ''
+    state.user.lastFreeRefresh = ''
     state.user.totalUsed = 0
   }
   hasShownAdminDashboardPrompt = false
@@ -2648,18 +2934,34 @@ async function syncChallengeProfile(explicitEmail) {
     }
     const payload = await response.json().catch(() => ({}))
     if (payload && payload.exists && payload.participant) {
-      state.challenge.profile = payload.participant
+      const participant = { ...payload.participant }
+      const expired = isPlanExpired(participant.endDate)
+      participant.expired = expired
+      state.challenge.profile = participant
       if (state.user.plan !== 'admin') {
-        state.user.plan = payload.participant.plan ?? state.user.plan
-        state.user.email = payload.participant.email
-        if (!state.user.name && payload.participant.name) {
-          state.user.name = payload.participant.name
+        const participantPlan = resolvePlanKey(participant.plan)
+        state.user.planExpiresAt = typeof participant.endDate === 'string' ? participant.endDate : state.user.planExpiresAt
+        if (participantPlan === 'michina' && !expired) {
+          state.user.plan = 'michina'
+          resetCreditBalanceForPlan('michina')
+        } else if (expired && state.user.plan === 'michina') {
+          state.user.plan = state.user.isLoggedIn ? 'free' : 'public'
+          state.user.planExpiresAt = ''
+          if (state.user.isLoggedIn) {
+            resetCreditBalanceForPlan('free')
+          } else {
+            state.user.creditBalance = createCreditBalance({})
+          }
+        }
+        state.user.email = participant.email
+        if (!state.user.name && participant.name) {
+          state.user.name = participant.name
         }
       }
       renderChallengeDashboard()
       refreshAccessStates()
-      if (payload.participant.completed) {
-        await ensureChallengeCertificate(payload.participant.email)
+      if (participant.completed) {
+        await ensureChallengeCertificate(participant.email)
       } else {
         state.challenge.certificate = null
       }
@@ -2668,7 +2970,12 @@ async function syncChallengeProfile(explicitEmail) {
     state.challenge.profile = null
     state.challenge.certificate = null
     if (state.user.plan === 'michina' && state.user.plan !== 'admin') {
-      state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
+      state.user.plan = state.user.isLoggedIn ? 'free' : 'public'
+      if (state.user.isLoggedIn) {
+        resetCreditBalanceForPlan('free')
+      } else {
+        state.user.creditBalance = createCreditBalance({})
+      }
       refreshAccessStates()
     }
     renderChallengeDashboard()
@@ -3114,7 +3421,7 @@ async function handleGoogleLogin(event) {
         ? profile.name.trim()
         : email || 'Google 사용자'
 
-    applyLoginProfile({ name: displayName, email: email || undefined, plan: 'freemium' })
+    applyLoginProfile({ name: displayName, email: email || undefined, plan: 'free' })
     runtime.google.retryCount = 0
     clearGoogleCooldown()
     runtime.google.lastErrorHint = ''
@@ -3123,7 +3430,7 @@ async function handleGoogleLogin(event) {
     window.setTimeout(() => setGoogleLoginHelper('', 'muted'), 3200)
     closeLoginModal()
     setStatus(
-      `${displayName} Google 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`,
+      `${displayName} Google 계정으로 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`,
       'success',
     )
 
@@ -3342,9 +3649,9 @@ function handleEmailLogin(event) {
       return
     }
     const nickname = email.includes('@') ? email.split('@')[0] : email
-    applyLoginProfile({ name: nickname, email })
+    applyLoginProfile({ name: nickname, email, plan: 'free' })
     closeLoginModal()
-    setStatus(`${email} 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`, 'success')
+    setStatus(`${email} 계정으로 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`, 'success')
     return
   }
 
@@ -3368,6 +3675,9 @@ function handleGlobalKeydown(event) {
   }
   if (elements.adminModal?.classList.contains('is-active')) {
     closeAdminModal()
+  }
+  if (activePlanModal instanceof HTMLElement) {
+    closePlanUpsell()
   }
 }
 
@@ -5975,6 +6285,49 @@ function attachEventListeners() {
         openLoginModal()
       })
     })
+
+  if (elements.upgradeButton instanceof HTMLElement) {
+    elements.upgradeButton.addEventListener('click', (event) => {
+      event.preventDefault()
+      scrollToPricingSection()
+    })
+  }
+
+  elements.planModalCloseButtons?.forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      closePlanUpsell()
+    })
+  })
+
+  elements.planModalViewButtons?.forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      closePlanUpsell()
+      scrollToPricingSection()
+    })
+  })
+
+  document.querySelectorAll('[data-role="pricing-upgrade"]').forEach((button) => {
+    if (!(button instanceof HTMLElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      const plan = (button.getAttribute('data-plan') || '').toLowerCase()
+      if (plan) {
+        openPlanUpsell(plan)
+      } else {
+        scrollToPricingSection()
+      }
+    })
+  })
+
+  document.querySelectorAll('[data-role="pricing-free-login"]').forEach((button) => {
+    if (!(button instanceof HTMLElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      openLoginModal()
+    })
+  })
 
   document.addEventListener('keydown', handleGlobalKeydown)
 }
