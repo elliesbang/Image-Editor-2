@@ -467,12 +467,30 @@
 <div class="asset-grid asset-grid--results asset-grid--compact" id="resultList" data-empty-text="처리된 이미지가 이곳에 표시됩니다.">
 </div>
 <section class="analysis" data-role="analysis-panel">
-<div class="analysis__header">
-<span class="analysis__title">키워드 분석</span>
-<button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">분석 실행</button>
-</div>
-<p class="analysis__meta" data-role="analysis-meta" aria-live="polite">
-</p>
+        <div class="analysis__header">
+          <span class="analysis__title">키워드 분석</span>
+          <div class="analysis__actions">
+            <button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">분석 실행</button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              data-action="copy-analysis-title"
+              disabled
+            >
+              제목 복사
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              data-action="copy-analysis-keywords"
+              disabled
+            >
+              키워드/제목 복사
+            </button>
+          </div>
+        </div>
+        <p class="analysis__meta" data-role="analysis-meta" aria-live="polite">
+        </p>
 <p class="analysis__hint" data-role="analysis-hint">분석할 결과 이미지를 선택하고 “분석 실행” 버튼을 눌러보세요.</p>
 <p class="analysis__headline" data-role="analysis-title">
 </p>

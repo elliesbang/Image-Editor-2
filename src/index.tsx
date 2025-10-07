@@ -31,7 +31,9 @@ interface KeyValueStore {
 
 type Bindings = {
   OPENAI_API_KEY?: string
+  OPEN_AI_API_KEY?: string
   ADMIN_EMAIL?: string
+  ADMIN_MAIL?: string
   ADMIN_PASSWORD?: string
   ADMIN_PASSWORD_HASH?: string
   SESSION_SECRET?: string
@@ -258,14 +260,32 @@ function getFixedWindowBoundaries(now: number, windowSeconds: number) {
   }
 }
 
+function resolveAdminEmail(env: Bindings): string {
+  const raw = (env.ADMIN_MAIL ?? env.ADMIN_EMAIL ?? '').trim().toLowerCase()
+  return raw
+}
+
+function resolveOpenAIKey(env: Bindings): string | null {
+  const candidates = [env.OPENAI_API_KEY, env.OPEN_AI_API_KEY]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim()
+      if (trimmed.length > 0) {
+        return trimmed
+      }
+    }
+  }
+  return null
+}
+
 function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   const issues: string[] = []
 
-  const emailRaw = env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
+  const emailRaw = resolveAdminEmail(env)
   if (!emailRaw) {
-    issues.push('ADMIN_EMAIL is not configured')
+    issues.push('ADMIN_MAIL or ADMIN_EMAIL is not configured')
   } else if (!isValidEmail(emailRaw)) {
-    issues.push('ADMIN_EMAIL must be a valid email address')
+    issues.push('ADMIN_MAIL/ADMIN_EMAIL must be a valid email address')
   }
 
   const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
@@ -2446,9 +2466,16 @@ const buildKeywordListFromOpenAI = (
 
 app.post('/api/analyze', async (c) => {
   const env = c.env
+  const openAIKey = resolveOpenAIKey(env)
 
-  if (!env.OPENAI_API_KEY) {
-    return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
+  if (!openAIKey) {
+    return c.json(
+      {
+        error: 'OPENAI_API_KEY_NOT_CONFIGURED',
+        detail: 'Set OPENAI_API_KEY or OPEN_AI_API_KEY in the environment.',
+      },
+      500,
+    )
   }
 
   let payload: { image?: string; name?: string } | null = null
@@ -2475,7 +2502,10 @@ app.post('/api/analyze', async (c) => {
 }
 조건:
 - keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
+- 키워드는 이미지와 직접적으로 연관된 단어만 포함하고, 일반적이거나 중복된 표현은 제거합니다.
+- 25개의 키워드는 서로 다른 맥락을 다루도록 조합하며, 핵심 키워드를 활용해 제목에도 반영합니다.
 - 제목은 한국어로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
+- 제목은 60자 이내에서 2~3개의 핵심 키워드를 자연스럽게 결합해 작성합니다.
 - 요약은 이미지의 메시지, 분위기, 활용처를 한 문장으로 설명합니다.
 - 필요 시 색상, 분위기, 활용 매체 등을 키워드에 조합합니다.`
 
@@ -2543,7 +2573,7 @@ app.post('/api/analyze', async (c) => {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${openAIKey}`,
       },
       body: JSON.stringify(requestPayload),
     }

@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 - **이름**: Elliesbang Image Editor
 - **목표**:  Netlify+ Hono 조합으로 동작하는 경량 이미지 편집 스튜디오에 **관리자용 무제한 테스트 흐름**과 **미치나 플랜 3주 챌린지 관리 시스템**을 결합
-- **핵심 특징**: HTML5 Canvas 기반 이미지 파이프라인, Freemium 크레딧 게이트, 관리자 전용 인증/세션 유지, 참가자 진행률·수료증 UI, OpenAI 연동 키워드 분석
+- **핵심 특징**: HTML5 Canvas 기반 이미지 파이프라인, Freemium 크레딧 게이트, 관리자 전용 인증/세션 유지, 참가자 진행률·수료증 UI, OpenAI 연동 키워드 분석(25개 키워드 및 제목·키워드 복사 지원)
 
 ## 현재 구현 기능
 - **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
@@ -85,8 +85,8 @@
 ## 환경 변수 & 시크릿
 | 변수 | 용도 | 필수 여부 | 비고 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | Netlify 환경 변수 등록 권장 |
-| `ADMIN_EMAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
+| `OPENAI_API_KEY` / `OPEN_AI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | 두 변수 중 하나만 설정하면 됩니다. Netlify 환경 변수 등록 권장 |
+| `ADMIN_EMAIL` / `ADMIN_MAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
 | `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수* | `echo -n 'password' | shasum -a 256` (*`ADMIN_PASSWORD` 제공 시 선택) |
 | `ADMIN_PASSWORD` | 관리자 비밀번호(플레인 텍스트) | 필수* | 배포 환경에서 SHA-256 해시 자동 생성(로컬/테스트용 권장) |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
@@ -121,8 +121,8 @@ npm install
 
 # 2. 환경 변수 구성 (예시)
 cat <<'EOF' > .dev.vars
-OPENAI_API_KEY="sk-..."
-ADMIN_EMAIL="admin@example.com"
+OPEN_AI_API_KEY="sk-..."
+ADMIN_MAIL="admin@example.com"
 ADMIN_PASSWORD_HASH="<SHA256_HEX>" # 또는 ADMIN_PASSWORD 사용
 ADMIN_PASSWORD="<PlainPassword>"
 SESSION_SECRET="<랜덤 32자 이상>"
@@ -208,7 +208,7 @@ curl http://localhost:3000/api/health
    npx netlify deploy --prod --dir=dist
    ```
    - 배포 성공 후 README `URL` 섹션과 Netlify 대시보드에 최종 도메인을 기록
-   - Secrets: `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 Netlify 환경 변수에 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+   - Secrets: `ADMIN_MAIL` (또는 `ADMIN_EMAIL`), `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPEN_AI_API_KEY`(또는 `OPENAI_API_KEY`) 등을 Netlify 환경 변수에 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행

@@ -1211,6 +1211,18 @@ main.page {
   gap: 12px;
 }
 
+.analysis__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.analysis__actions .btn {
+  white-space: nowrap;
+}
+
 .analysis__title {
   font-size: 0.95rem;
   font-weight: 600;

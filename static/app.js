@@ -761,6 +761,8 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  analysisCopyTitle: document.querySelector('[data-action="copy-analysis-title"]'),
+  analysisCopyKeywords: document.querySelector('[data-action="copy-analysis-keywords"]'),
   adminNavButton: document.querySelector('[data-role="admin-nav"]'),
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
   adminModal: document.querySelector('[data-role="admin-modal"]'),
@@ -926,6 +928,44 @@ function setStatus(message, tone = 'info', duration = 3200) {
       elements.status?.classList.add('status--hidden')
     }, resolvedDuration)
   }
+}
+
+async function copyTextToClipboard(value) {
+  const text = typeof value === 'string' ? value : ''
+  if (!text) return false
+
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch (error) {
+    // fallback below
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+  document.body.appendChild(textarea)
+  try {
+    textarea.focus({ preventScroll: true })
+  } catch (error) {
+    textarea.focus()
+  }
+  textarea.select()
+
+  let successful = false
+  try {
+    successful = document.execCommand('copy')
+  } catch (error) {
+    successful = false
+  }
+
+  document.body.removeChild(textarea)
+  return successful
 }
 
 function setGoogleButtonState(state = 'idle', labelOverride) {
@@ -5050,6 +5090,29 @@ function getAnalysisKey(target) {
   return `${target.type}:${target.id}`
 }
 
+function getActiveAnalysisData() {
+  const key = getAnalysisKey(state.activeTarget)
+  if (!key) return null
+  const data = state.analysis.get(key)
+  if (!data) {
+    return null
+  }
+  return data
+}
+
+function sanitizeAnalysisKeywords(rawKeywords) {
+  if (!Array.isArray(rawKeywords)) {
+    return []
+  }
+  return rawKeywords
+    .map((keyword) => {
+      if (typeof keyword === 'string') return keyword.trim()
+      if (keyword === null || typeof keyword === 'undefined') return ''
+      return String(keyword).trim()
+    })
+    .filter((keyword) => keyword.length > 0)
+}
+
 function removeAnalysisFor(type, id) {
   state.analysis.delete(`${type}:${id}`)
 }
@@ -5070,6 +5133,10 @@ function displayAnalysisFor(target) {
   state.activeTarget = normalizedTarget
 
   const button = elements.analysisButton instanceof HTMLButtonElement ? elements.analysisButton : null
+  const copyTitleButton =
+    elements.analysisCopyTitle instanceof HTMLButtonElement ? elements.analysisCopyTitle : null
+  const copyKeywordsButton =
+    elements.analysisCopyKeywords instanceof HTMLButtonElement ? elements.analysisCopyKeywords : null
   if (button) {
     button.disabled = state.processing || !normalizedTarget
   }
@@ -5082,6 +5149,12 @@ function displayAnalysisFor(target) {
     elements.analysisHeadline.textContent = ''
     elements.analysisKeywords.innerHTML = ''
     elements.analysisSummary.textContent = ''
+    if (copyTitleButton) {
+      copyTitleButton.disabled = true
+    }
+    if (copyKeywordsButton) {
+      copyKeywordsButton.disabled = true
+    }
   }
 
   if (!normalizedTarget) {
@@ -5110,9 +5183,66 @@ function displayAnalysisFor(target) {
     elements.analysisMeta.textContent = ''
   }
   elements.analysisHint.textContent = ''
-  elements.analysisHeadline.textContent = data.title || ''
-  elements.analysisKeywords.innerHTML = data.keywords.map((keyword) => `<li>${keyword}</li>`).join('')
+  const normalizedTitle = typeof data.title === 'string' ? data.title.trim() : ''
+  elements.analysisHeadline.textContent = normalizedTitle
+  const normalizedKeywords = sanitizeAnalysisKeywords(data.keywords)
+  elements.analysisKeywords.innerHTML = normalizedKeywords.map((keyword) => `<li>${keyword}</li>`).join('')
   elements.analysisSummary.textContent = data.summary
+
+  if (copyTitleButton) {
+    copyTitleButton.disabled = normalizedTitle.length === 0
+  }
+  if (copyKeywordsButton) {
+    copyKeywordsButton.disabled = normalizedKeywords.length === 0
+  }
+}
+
+async function handleCopyAnalysisTitle() {
+  const data = getActiveAnalysisData()
+  const title = typeof data?.title === 'string' ? data.title.trim() : ''
+  if (!title) {
+    setStatus('복사할 분석 제목이 없습니다.', 'danger')
+    return
+  }
+
+  const copied = await copyTextToClipboard(title)
+  if (copied) {
+    setStatus('분석 제목을 복사했습니다.', 'success')
+  } else {
+    setStatus('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해주세요.', 'danger')
+  }
+}
+
+async function handleCopyAnalysisKeywords() {
+  const data = getActiveAnalysisData()
+  const keywords = sanitizeAnalysisKeywords(data?.keywords)
+  const title = typeof data?.title === 'string' ? data.title.trim() : ''
+
+  if (!data || (keywords.length === 0 && !title)) {
+    setStatus('복사할 분석 결과가 없습니다.', 'danger')
+    return
+  }
+
+  const lines = []
+  if (title) {
+    lines.push(`제목: ${title}`)
+  }
+  if (keywords.length > 0) {
+    lines.push(`키워드 (${keywords.length}개):`)
+    lines.push(keywords.join(', '))
+  }
+
+  const payload = lines.join('\n')
+  const copied = await copyTextToClipboard(payload)
+  if (copied) {
+    if (keywords.length > 0) {
+      setStatus(`제목과 키워드 ${keywords.length}개를 복사했습니다.`, 'success')
+    } else {
+      setStatus('분석 제목을 복사했습니다.', 'success')
+    }
+  } else {
+    setStatus('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해주세요.', 'danger')
+  }
 }
 
 function rgbToHsl(r, g, b) {
@@ -6729,6 +6859,14 @@ function attachEventListeners() {
 
   if (elements.analysisButton instanceof HTMLButtonElement) {
     elements.analysisButton.addEventListener('click', analyzeCurrentImage)
+  }
+
+  if (elements.analysisCopyTitle instanceof HTMLButtonElement) {
+    elements.analysisCopyTitle.addEventListener('click', handleCopyAnalysisTitle)
+  }
+
+  if (elements.analysisCopyKeywords instanceof HTMLButtonElement) {
+    elements.analysisCopyKeywords.addEventListener('click', handleCopyAnalysisKeywords)
   }
 
   if (elements.resizeInput instanceof HTMLInputElement) {
