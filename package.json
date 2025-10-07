@@ -1,21 +1,21 @@
 {
-  "name": "easy-image-editer",
+  "name": "elliesbang-image-editor",
+  "version": "1.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:sandbox": "wrangler pages dev dist --local --ip 0.0.0.0 --port 3000",
     "build": "vite build",
-    "preview": "wrangler pages dev dist --local",
-    "deploy": "npm run build && wrangler pages deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "postbuild": "node scripts/deploy-gh-pages.mjs",
+    "preview": "vite preview",
+    "deploy:gh": "node scripts/deploy-gh-pages.mjs"
   },
   "dependencies": {
-    "hono": "^4.9.9"
+    "hono": "^4.5.2",
+    "vite": "^6.3.6"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",
-    "@hono/vite-dev-server": "^0.18.2",
-    "vite": "^6.3.5",
-    "wrangler": "^4.4.0"
+    "@hono/vite-dev-server": "^0.18.2"
   }
 }

@@ -1,6 +1,12 @@
 import { jsxRenderer } from 'hono/jsx-renderer'
 
 export const renderer = jsxRenderer(({ children }) => {
+  const assetBase = import.meta.env.BASE_URL ?? '/'
+  const withBase = (path: string) => {
+    const normalizedBase = assetBase.endsWith('/') ? assetBase : `${assetBase}/`
+    return `${normalizedBase}${path}`
+  }
+
   return (
     <html lang="ko">
       <head>
@@ -9,9 +15,10 @@ export const renderer = jsxRenderer(({ children }) => {
         <meta name="theme-color" content="#8b5cf6" />
         <meta
           name="description"
-          content="모던하고 직관적인 Easy Image Editor에서 드래그 앤 드롭으로 이미지를 업로드하고, 실시간으로 필터와 회전을 조정해 감각적인 이미지를 완성해 보세요."
+          content="모던하고 직관적인 Elliesbang Image Editor에서 드래그 앤 드롭으로 이미지를 업로드하고, 실시간으로 필터와 회전을 조정해 감각적인 이미지를 완성해 보세요."
         />
         <title>멀티 이미지 편집 스튜디오</title>
+        <base href={withBase('')} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
@@ -19,7 +26,7 @@ export const renderer = jsxRenderer(({ children }) => {
           rel="stylesheet"
         />
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.3.0/fonts/remixicon.css" />
-        <link href="/static/style.css" rel="stylesheet" />
+        <link href={withBase('static/style.css')} rel="stylesheet" />
         <script src="https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js" defer data-lib="imagetracer"></script>
         <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer></script>
         <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" defer></script>
@@ -27,7 +34,7 @@ export const renderer = jsxRenderer(({ children }) => {
       </head>
       <body>
         {children}
-        <script type="module" src="/static/app.js"></script>
+        <script type="module" src={withBase('static/app.js')}></script>
       </body>
     </html>
   )
