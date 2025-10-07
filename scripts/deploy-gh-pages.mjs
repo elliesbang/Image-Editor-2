@@ -60,7 +60,27 @@ const copyDistContents = async (distDir, worktreeDir) => {
   )
 }
 
+const shouldSkipDeploy = () => {
+  const skipFlag = process.env.SKIP_GH_PUBLISH
+  if (skipFlag && skipFlag !== '0' && skipFlag.toLowerCase?.() !== 'false') {
+    return true
+  }
+  const truthy = new Set(['1', 'true', 'yes'])
+  if (truthy.has(String(process.env.CI).toLowerCase())) {
+    return true
+  }
+  if (truthy.has(String(process.env.NETLIFY).toLowerCase())) {
+    return true
+  }
+  return false
+}
+
 const main = async () => {
+  if (shouldSkipDeploy()) {
+    console.log('Skipping GitHub Pages deployment (environment-configured skip).')
+    return
+  }
+
   const branch = process.env.GH_PAGES_BRANCH ?? 'gh-pages'
   const remote = process.env.GH_PAGES_REMOTE ?? 'origin'
 
@@ -73,6 +93,19 @@ const main = async () => {
 
   await ensureFile(resolve(distDir, 'index.html'))
   await ensureFile(resolve(distDir, '404.html'))
+
+  let remoteUrl = ''
+  try {
+    remoteUrl = await runCapture('git', ['remote', 'get-url', remote])
+  } catch (error) {
+    console.warn(`Remote "${remote}" not found. Skipping GitHub Pages deployment.`)
+    return
+  }
+
+  if (!remoteUrl) {
+    console.warn(`Remote "${remote}" has no URL. Skipping GitHub Pages deployment.`)
+    return
+  }
 
   const worktreeDir = await mkdtemp(join(tmpdir(), 'gh-pages-'))
 

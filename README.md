@@ -144,8 +144,11 @@ EMAIL_SMTP_PASSWORD="smtp-password"
 # CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 배포 환경에서 제공하는 KV/데이터 스토리지 바인딩으로 교체 가능
 EOF
 
-# 3. 번들 생성
+# 3. 번들 생성 (로컬에서는 빌드 직후 gh-pages 브랜치로 자동 푸시)
 npm run build
+
+# CI나 원격 환경(Netlify 등)에서 GitHub Pages 푸시를 건너뛰고 싶다면 아래처럼 실행하세요.
+SKIP_GH_PUBLISH=1 npm run build
 
 # 4. 포트 정리 및 개발 서버 실행 (PM2 + Vite dev server)
 fuser -k 3000/tcp 2>/dev/null || true

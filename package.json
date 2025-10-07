@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "postbuild": "node scripts/deploy-gh-pages.mjs",
     "preview": "vite preview",
-    "deploy:gh": "npm run build && node scripts/deploy-gh-pages.mjs"
+    "deploy:gh": "node scripts/deploy-gh-pages.mjs"
   },
   "dependencies": {
     "hono": "^4.5.2",
