@@ -1798,10 +1798,16 @@ function navigateToView(targetView, options = {}) {
 
   if (normalized === 'community' && !hasCommunityAccess()) {
     if (!silent) {
-      openAccessModal(
-        '접근 권한이 없습니다.',
-        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
-      )
+      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+      if (!loggedIn) {
+        setStatus('미치나 커뮤니티에 접근하려면 먼저 로그인해주세요.', 'warning')
+        openLoginModal()
+      } else {
+        openAccessModal(
+          '접근 권한이 없습니다.',
+          '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+        )
+      }
       setView(runtime.lastAllowedView || 'home', { force: true, bypassAccess: true })
     }
     if (replace) {
@@ -1849,10 +1855,16 @@ function handlePopState() {
     if (hasCommunityAccess()) {
       setView('community', { force: true, bypassAccess: true })
     } else {
-      openAccessModal(
-        '접근 권한이 없습니다.',
-        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
-      )
+      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+      if (!loggedIn) {
+        setStatus('미치나 커뮤니티에 접근하려면 먼저 로그인해주세요.', 'warning')
+        openLoginModal()
+      } else {
+        openAccessModal(
+          '접근 권한이 없습니다.',
+          '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+        )
+      }
       const fallbackView = runtime.lastAllowedView || 'home'
       setView(fallbackView, { force: true, bypassAccess: true })
       const fallbackRoute = joinBasePath(VIEW_ROUTES[fallbackView] || '/')
@@ -1883,13 +1895,7 @@ function updateNavigationAccess() {
       return
     }
 
-    if (target === 'community') {
-      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
-      button.hidden = !loggedIn
-      if (!loggedIn) {
-        return
-      }
-    }
+    button.hidden = false
 
     if (target === 'admin') {
       return

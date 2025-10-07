@@ -2958,7 +2958,6 @@ app.get('/', (c) => {
         <div class="app-header__left">
           <a class="app-header__logo" href={resolveAppHref()} aria-label="Elliesbang Image Editor 홈">
             <span class="app-header__brand">Elliesbang Image Editor</span>
-            <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
         </div>
         <div class="app-header__right">
