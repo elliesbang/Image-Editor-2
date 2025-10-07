@@ -32,6 +32,7 @@ const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const DEFAULT_API_BASE = '/.netlify/functions/server'
 const COOKIE_CONSENT_VERSION = '2025-10-02'
+const SPA_REDIRECT_STORAGE_KEY = 'elliesbang:spa-redirect'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -479,6 +480,20 @@ function normalizeBasePath(value) {
   }
   const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
   return withLeading.endsWith('/') ? withLeading : `${withLeading}/`
+}
+
+function consumeSpaRedirect() {
+  try {
+    const value = window.sessionStorage.getItem(SPA_REDIRECT_STORAGE_KEY)
+    if (!value) {
+      return ''
+    }
+    window.sessionStorage.removeItem(SPA_REDIRECT_STORAGE_KEY)
+    return value
+  } catch (error) {
+    console.warn('SPA 리디렉션 경로를 불러오지 못했습니다.', error)
+    return ''
+  }
 }
 
 function getBasePath() {
@@ -7062,32 +7077,66 @@ async function init() {
     elements.footerAdminLink.href = joinBasePath(VIEW_ROUTES.admin)
   }
 
+  const spaRedirectPath = typeof window !== 'undefined' ? consumeSpaRedirect() : ''
+  let redirectUrl = null
+
+  if (spaRedirectPath) {
+    try {
+      redirectUrl = new URL(spaRedirectPath, window.location.origin)
+    } catch (error) {
+      console.warn('SPA 리디렉션 경로를 해석하지 못했습니다.', error)
+    }
+  }
+
   let requestedView = ''
   let canonicalSearch = ''
   let canonicalHash = ''
+  let locationSearch = ''
+  let locationHash = ''
+  let locationRequestedView = ''
   try {
     const url = new URL(window.location.href)
-    canonicalSearch = url.search
-    canonicalHash = url.hash
+    locationSearch = url.search
+    locationHash = url.hash
     const queryView = normalizeView(url.searchParams.get('view'))
     if (queryView) {
-      requestedView = queryView
+      locationRequestedView = queryView
       url.searchParams.delete('view')
-      canonicalSearch = url.search
+      locationSearch = url.search
     } else if (url.hash) {
       const hashView = normalizeView(url.hash.replace('#', ''))
       if (hashView) {
-        requestedView = hashView
+        locationRequestedView = hashView
         url.hash = ''
-        canonicalHash = url.hash
+        locationHash = url.hash
       }
     }
   } catch (error) {
     requestedView = ''
   }
 
+  if (redirectUrl) {
+    canonicalSearch = redirectUrl.search
+    canonicalHash = redirectUrl.hash
+    requestedView = normalizeView(resolveViewFromPath(redirectUrl.pathname)) || ''
+  }
+
+  if (!requestedView) {
+    requestedView = locationRequestedView
+  }
+
+  if (!canonicalSearch) {
+    canonicalSearch = locationSearch
+  }
+
+  if (!canonicalHash) {
+    canonicalHash = locationHash
+  }
+
   const configInitial = normalizeView(config.initialView)
-  const pathView = normalizeView(resolveViewFromPath(window.location.pathname)) || 'home'
+  const overrideInitialRoute = redirectUrl ? redirectUrl.pathname : ''
+  const pathForInitialView = overrideInitialRoute || window.location.pathname
+  const pathView = normalizeView(resolveViewFromPath(pathForInitialView)) || 'home'
   let initialView = requestedView || configInitial || pathView || 'home'
   const initialViewWasExplicit =
     Boolean(requestedView) ||
@@ -7102,7 +7151,7 @@ async function init() {
   runtime.initialViewExplicit = initialViewWasExplicit
   runtime.lastAllowedView = 'home'
 
-  const initialRoute = joinBasePath(VIEW_ROUTES[initialView] || '/')
+  const initialRoute = overrideInitialRoute || joinBasePath(VIEW_ROUTES[initialView] || '/')
   window.history.replaceState({ view: initialView }, '', `${initialRoute}${canonicalSearch}${canonicalHash}`)
 
   const shouldPromptAdminLogin = initialView === 'admin' && !state.admin.isLoggedIn && initialViewWasExplicit

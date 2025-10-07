@@ -42,6 +42,29 @@ const rewriteHtmlAssets = async (filePath, basePath) => {
   }
 }
 
+const injectSpaRedirect = async (filePath, basePath) => {
+  try {
+    const html = await readFile(filePath, 'utf8')
+    if (html.includes('data-spa-fallback')) {
+      return
+    }
+
+    const normalizedBase = ensureTrailingSlash(basePath)
+
+    const script = `\n    <script data-spa-fallback>\n      (function() {\n        var base = ${JSON.stringify(normalizedBase)};\n        var key = 'elliesbang:spa-redirect';\n        var normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;\n        var current = window.location.pathname + window.location.search + window.location.hash;\n        if (!current || !current.startsWith(base)) {\n          return;\n        }\n        if (current === base || (normalizedBase && current === normalizedBase)) {\n          return;\n        }\n        try {\n          window.sessionStorage.setItem(key, current);\n        } catch (error) {\n          console.warn('세션 저장소에 SPA 경로를 기록하지 못했습니다.', error);\n        }\n        window.location.replace(base);\n      })();\n    </script>`
+
+    const updated = html.replace('</head>', `${script}\n</head>`)
+
+    if (updated !== html) {
+      await writeFile(filePath, updated, 'utf8')
+    }
+  } catch (error) {
+    if (!isEnoent(error)) {
+      throw error
+    }
+  }
+}
+
 const PUBLIC_BASE_PATH = '/Image-Editor-2/'
 
 const serverBuildPlugin = () => {
@@ -101,6 +124,7 @@ const copyRedirectsPlugin = (basePath, htmlFiles) => {
       }
 
       await rewriteHtmlAssets(notFoundPath, basePath)
+      await injectSpaRedirect(notFoundPath, basePath)
     },
   }
 }
