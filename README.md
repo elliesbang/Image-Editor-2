@@ -2,7 +2,7 @@
 
 ## 프로젝트 개요
 - **이름**: Elliesbang Image Editor
-- **목표**:  Netlify+ Hono 조합으로 동작하는 경량 이미지 편집 스튜디오에 **관리자용 무제한 테스트 흐름**과 **미치나 플랜 3주 챌린지 관리 시스템**을 결합
+- **목표**: GitHub Pages 정적 배포와 Hono API 서버를 결합한 경량 이미지 편집 스튜디오에 **관리자용 무제한 테스트 흐름**과 **미치나 플랜 3주 챌린지 관리 시스템**을 통합
 - **핵심 특징**: HTML5 Canvas 기반 이미지 파이프라인, Freemium 크레딧 게이트, 관리자 전용 인증/세션 유지, 참가자 진행률·수료증 UI, OpenAI 연동 키워드 분석(25개 키워드 및 제목·키워드 복사 지원)
 
 ## 현재 구현 기능
@@ -85,8 +85,8 @@
 ## 환경 변수 & 시크릿
 | 변수 | 용도 | 필수 여부 | 비고 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` / `OPEN_AI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | 두 변수 중 하나만 설정하면 됩니다. Netlify 환경 변수 등록 권장 |
-| `ADMIN_EMAIL` / `ADMIN_MAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
+| `OPENAI_API_KEY` / `OPEN_AI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | 두 변수 중 하나만 설정하면 됩니다. |
+| `ADMIN_EMAIL` / `ADMIN_MAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `ellie@elliesbang.kr` |
 | `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수* | `echo -n 'password' | shasum -a 256` (*`ADMIN_PASSWORD` 제공 시 선택) |
 | `ADMIN_PASSWORD` | 관리자 비밀번호(플레인 텍스트) | 필수* | 배포 환경에서 SHA-256 해시 자동 생성(로컬/테스트용 권장) |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
@@ -111,6 +111,7 @@
 | `EMAIL_OTP_EXPIRY_SECONDS` | OTP 만료 시간(초) | 선택 | 60~1800 사이, 기본 300 |
 | `CHALLENGE_KV` | 외부 KV/데이터 스토리지 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | 외부 KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
+| `PUBLIC_API_BASE` | 프론트엔드에서 사용할 기본 API 엔드포인트 베이스 URL | 선택 | 기본값 `https://elliesbang.kr/api`, 로컬 개발 시 `/` 또는 `http://localhost:3000/api` 등으로 재정의 |
 
 > 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다. Google OAuth 값(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)도 동일하게 관리하세요.
 
@@ -122,9 +123,9 @@ npm install
 # 2. 환경 변수 구성 (예시)
 cat <<'EOF' > .dev.vars
 OPEN_AI_API_KEY="sk-..."
-ADMIN_MAIL="admin@example.com"
-ADMIN_PASSWORD_HASH="<SHA256_HEX>" # 또는 ADMIN_PASSWORD 사용
-ADMIN_PASSWORD="<PlainPassword>"
+ADMIN_MAIL="ellie@elliesbang.kr"
+# 필요 시 ADMIN_PASSWORD_HASH 를 직접 지정할 수 있습니다.
+ADMIN_PASSWORD="Ssh121015!!"
 SESSION_SECRET="<랜덤 32자 이상>"
 ADMIN_SESSION_VERSION="1"
 ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
@@ -140,17 +141,20 @@ EMAIL_FROM_NAME="Elliesbang Image Editor"
 EMAIL_SMTP_HOST="smtp.example.com"
 EMAIL_SMTP_USER="smtp-user"
 EMAIL_SMTP_PASSWORD="smtp-password"
+# GitHub Pages 배포 시 API 엔드포인트를 절대 경로로 지정합니다.
+PUBLIC_API_BASE="https://elliesbang.kr/api"
+# 로컬 테스트 시에는 `/` 또는 `http://localhost:3000/api` 로 조정하세요.
 # RESEND_API_KEY / SENDGRID_API_KEY 중 하나 이상을 설정하면 API 기반 발송을 우선 사용합니다.
 # CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 배포 환경에서 제공하는 KV/데이터 스토리지 바인딩으로 교체 가능
 EOF
 
 # 3. 번들 생성 (로컬에서는 빌드 직후 gh-pages 브랜치로 자동 푸시)
-#    - Netlify 등 루트 도메인 배포 환경: `npm run build`
-#    - GitHub Pages 등 서브 디렉터리 배포: `PUBLIC_BASE_PATH=/Image-Editor-2 npm run build`
+#    - GitHub Pages 기본: `npm run build`
+#    - 서브 디렉터리 배포 시: `PUBLIC_BASE_PATH=/Image-Editor-2 npm run build`
 #      (Windows PowerShell: `$env:PUBLIC_BASE_PATH="/Image-Editor-2"; npm run build`)
 npm run build
 
-# CI나 원격 환경(Netlify 등)에서 GitHub Pages 푸시를 건너뛰고 싶다면 아래처럼 실행하세요.
+# CI나 원격 환경에서 GitHub Pages 푸시를 건너뛰고 싶다면 아래처럼 실행하세요.
 SKIP_GH_PUBLISH=1 npm run build
 
 # 4. 포트 정리 및 개발 서버 실행 (PM2 + Vite dev server)
@@ -182,10 +186,10 @@ curl http://localhost:3000/api/health
 - Lighthouse 자동화/접근성 테스트 스위트
 
 ## 향후 권장 작업
-1. **KV/영속 스토리지 연동**: Netlify Functions, Fauna, Supabase 등과 연결해 `CHALLENGE_KV`/`CHALLENGE_KV_BACKUP` 환경 변수를 실제 저장소로 매핑
-2. **OpenAI API 키 보호**: Netlify 환경 변수 또는 시크릿 매니저에 등록하고 로컬 `.dev.vars`는 개발 전용으로 유지
+1. **KV/영속 스토리지 연동**: Cloudflare Workers KV, Fauna, Supabase 등 외부 저장소와 연결해 `CHALLENGE_KV`/`CHALLENGE_KV_BACKUP` 환경 변수를 실제 저장소로 매핑
+2. **OpenAI API 키 보호**: 배포 환경 시크릿 매니저에 등록하고 로컬 `.dev.vars`는 개발 전용으로 유지
 3. **UI 개선**: 모바일에서 챌린지 카드 및 수료증 슬라이더 도입, 관리자 표 정렬/필터 추가
-4. **빌드 파이프라인**: GitHub Actions + Netlify CLI 배포 자동화 구성, main 브랜치 → 프로덕션 자동 배포
+4. **빌드 파이프라인**: GitHub Actions + `gh-pages` 워크플로우로 정적 자산 자동 배포 (main 브랜치 → `gh-pages` 브랜치)
 5. **로컬 OAuth 리디렉션 추가**: Google Cloud Console에 `http://localhost:3000/auth/google/callback`을 리디렉션 URI로 등록해 개발 테스트 편의 확보
 
 ## 배포 절차
@@ -201,30 +205,24 @@ curl http://localhost:3000/api/health
    ```
    > 원격 저장소는 사용자 지정 GitHub 리포지토리를 우선 사용합니다.
 
-2. **Netlify 배포**
+2. **GitHub Pages 배포**
    ```bash
-   # Netlify CLI 로그인 (최초 1회)
-   npx netlify login
-
-   # 사이트 초기화 (최초 1회, 기존 사이트가 있다면 건너뛰기)
-   npx netlify init --manual
-
    npm run build
-    # 미리보기 배포: npx netlify deploy --dir=dist
-   npx netlify deploy --prod --dir=dist
+   npm run deploy:gh
    ```
-   - 배포 성공 후 README `URL` 섹션과 Netlify 대시보드에 최종 도메인을 기록
-   - Secrets: `ADMIN_MAIL` (또는 `ADMIN_EMAIL`), `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPEN_AI_API_KEY`(또는 `OPENAI_API_KEY`) 등을 Netlify 환경 변수에 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+   - 기본적으로 `origin` 원격의 `gh-pages` 브랜치에 정적 자산이 강제 푸시됩니다.
+   - 커스텀 도메인을 연결하려면 GitHub Pages 설정에서 CNAME을 구성하고 `PUBLIC_BASE_PATH`/`PUBLIC_API_BASE`를 일관되게 맞춰주세요.
+   - GitHub Actions 워크플로우를 사용한다면 `PUBLIC_API_BASE`, `SESSION_SECRET`, `ADMIN_PASSWORD` 등의 값을 GitHub Secrets로 관리하세요.
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
 - **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
 - **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
-- **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Netlify 환경 변수로만 관리하고 프론트엔드에 노출하지 마세요.
+- **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 GitHub Secrets 또는 별도 시크릿 매니저로만 관리하고 프론트엔드에 노출하지 마세요.
 
 ## URL & 배포 상태
-- **Production**: https://<your-site>.netlify.app (Netlify 배포 후 업데이트)
-- **Latest Preview**: Netlify CLI 미리보기 배포 URL 또는 브랜치 배포 URL을 배포 후 기록하세요.
+- **Production**: https://elliesbang.github.io/Image-Editor-2/
+- **Latest Preview**: `gh-pages` 브랜치 임시 커밋 또는 커스텀 미리보기 브랜치 URL을 기록하세요.
 - **GitHub**: https://github.com/elliesbang/Easy-Image-Editer
 
 ## 라이선스 & 고지

@@ -30,7 +30,7 @@ const CREDIT_COSTS = {
 }
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const DEFAULT_API_BASE = '/.netlify/functions/server'
+const DEFAULT_API_BASE = 'https://elliesbang.kr/api'
 const COOKIE_CONSENT_VERSION = '2025-10-02'
 const SPA_REDIRECT_STORAGE_KEY = 'elliesbang:spa-redirect'
 const GOOGLE_SIGNIN_TEXT = {
@@ -174,6 +174,7 @@ const runtime = {
     retryCount: 0,
     cooldownTimer: null,
     cooldownUntil: 0,
+    passwordVisible: false,
   },
 }
 
@@ -822,6 +823,8 @@ const elements = {
   adminLoginForm: document.querySelector('[data-role="admin-login-form"]'),
   adminEmailInput: document.querySelector('[data-role="admin-email"]'),
   adminPasswordInput: document.querySelector('[data-role="admin-password"]'),
+  adminPasswordToggle: document.querySelector('[data-role="admin-password-toggle"]'),
+  adminPasswordToggleIcon: document.querySelector('[data-role="admin-password-toggle-icon"]'),
   adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
   adminModalSubtitle: document.querySelector('[data-role="admin-modal-subtitle"]'),
   adminModalActions: document.querySelector('[data-role="admin-modal-actions"]'),
@@ -2206,7 +2209,12 @@ function clearAdminCooldown(restoreForm = true) {
   if (elements.adminLoginForm instanceof HTMLFormElement && elements.adminLoginForm.dataset.state === 'cooldown') {
     elements.adminLoginForm.dataset.state = 'idle'
   }
-  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm?.querySelector('button[type="submit"]')]
+  const controls = [
+    elements.adminEmailInput,
+    elements.adminPasswordInput,
+    elements.adminPasswordToggle,
+    elements.adminLoginForm?.querySelector('button[type="submit"]'),
+  ]
   controls.forEach((control) => {
     if (control instanceof HTMLElement) {
       control.removeAttribute('disabled')
@@ -2221,7 +2229,12 @@ function startAdminCooldown(durationMs = 15000) {
   const end = Date.now() + normalized
   runtime.admin.cooldownUntil = end
   elements.adminLoginForm.dataset.state = 'cooldown'
-  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm.querySelector('button[type="submit"]')]
+  const controls = [
+    elements.adminEmailInput,
+    elements.adminPasswordInput,
+    elements.adminPasswordToggle,
+    elements.adminLoginForm.querySelector('button[type="submit"]'),
+  ]
   controls.forEach((control) => {
     if (control instanceof HTMLElement) {
       control.setAttribute('disabled', 'true')
@@ -2248,6 +2261,30 @@ function setAdminMessage(message = '', tone = 'info') {
   elements.adminLoginMessage.dataset.tone = tone
 }
 
+function setAdminPasswordVisibility(visible = false) {
+  runtime.admin.passwordVisible = Boolean(visible)
+  if (elements.adminPasswordInput instanceof HTMLInputElement) {
+    elements.adminPasswordInput.type = visible ? 'text' : 'password'
+  }
+  if (elements.adminPasswordToggle instanceof HTMLButtonElement) {
+    elements.adminPasswordToggle.setAttribute('aria-pressed', visible ? 'true' : 'false')
+    elements.adminPasswordToggle.setAttribute('aria-label', visible ? '비밀번호 숨기기' : '비밀번호 표시')
+    elements.adminPasswordToggle.dataset.state = visible ? 'visible' : 'hidden'
+  }
+  if (elements.adminPasswordToggleIcon instanceof HTMLElement) {
+    elements.adminPasswordToggleIcon.classList.remove('ri-eye-line', 'ri-eye-off-line')
+    elements.adminPasswordToggleIcon.classList.add(visible ? 'ri-eye-off-line' : 'ri-eye-line')
+  }
+}
+
+function handleAdminPasswordToggle(event) {
+  event.preventDefault()
+  setAdminPasswordVisibility(!runtime.admin.passwordVisible)
+  if (elements.adminPasswordInput instanceof HTMLInputElement) {
+    elements.adminPasswordInput.focus()
+  }
+}
+
 function openAdminModal(options = {}) {
   if (!(elements.adminModal instanceof HTMLElement)) return
   const isAdmin = state.admin.isLoggedIn
@@ -2266,6 +2303,7 @@ function openAdminModal(options = {}) {
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
       elements.adminPasswordInput.value = ''
     }
+    setAdminPasswordVisibility(false)
     if (elements.adminEmailInput instanceof HTMLInputElement) {
       elements.adminEmailInput.value = state.admin.email || ''
     }
@@ -2308,6 +2346,7 @@ function closeAdminModal() {
   elements.adminModal.classList.remove('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'true')
   document.body.classList.remove('is-modal-open')
+  setAdminPasswordVisibility(false)
 }
 
 function revokeAdminSessionState() {
@@ -2773,6 +2812,9 @@ async function handleAdminLogin(event) {
   if (submitButton instanceof HTMLButtonElement) {
     submitButton.disabled = true
   }
+  if (elements.adminPasswordToggle instanceof HTMLButtonElement) {
+    elements.adminPasswordToggle.setAttribute('disabled', 'true')
+  }
 
   try {
     const response = await apiFetch('/api/auth/admin/login', {
@@ -2790,6 +2832,7 @@ async function handleAdminLogin(event) {
         if (elements.adminPasswordInput instanceof HTMLInputElement) {
           elements.adminPasswordInput.setAttribute('aria-invalid', 'true')
           elements.adminPasswordInput.value = ''
+          setAdminPasswordVisibility(false)
           elements.adminPasswordInput.focus()
         }
         runtime.admin.retryCount += 1
@@ -2839,6 +2882,7 @@ async function handleAdminLogin(event) {
       elements.adminPasswordInput.value = ''
       elements.adminPasswordInput.removeAttribute('aria-invalid')
     }
+    setAdminPasswordVisibility(false)
     if (elements.adminEmailInput instanceof HTMLInputElement) {
       elements.adminEmailInput.removeAttribute('aria-invalid')
     }
@@ -2857,7 +2901,7 @@ async function handleAdminLogin(event) {
       if (submit instanceof HTMLButtonElement) {
         submit.disabled = false
       }
-      const controls = [elements.adminEmailInput, elements.adminPasswordInput]
+      const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminPasswordToggle]
       controls.forEach((control) => {
         if (control instanceof HTMLElement) {
           control.removeAttribute('disabled')
@@ -6873,6 +6917,10 @@ function attachEventListeners() {
     adminBackdrop.addEventListener('click', closeAdminModal)
   }
 
+  if (elements.adminPasswordToggle instanceof HTMLButtonElement) {
+    elements.adminPasswordToggle.addEventListener('click', handleAdminPasswordToggle)
+  }
+
   const logoutButton = document.querySelector('[data-action="logout"]')
   if (logoutButton instanceof HTMLButtonElement) {
     logoutButton.addEventListener('click', handleLogout)
@@ -7102,6 +7150,8 @@ function attachEventListeners() {
 async function init() {
   let config = getAppConfig()
   const needsRemoteConfig = !config || Object.keys(config).length === 0 || !config.apiBase
+
+  setAdminPasswordVisibility(false)
 
   if (needsRemoteConfig) {
     try {

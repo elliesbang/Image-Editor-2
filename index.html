@@ -28,7 +28,7 @@
   &quot;googleRedirectUri&quot;: &quot;https://elliesbang.github.io/Image-Editor-2/auth/google/callback&quot;,
   &quot;communityUrl&quot;: &quot;./dashboard/community&quot;,
   &quot;basePath&quot;: &quot;/Image-Editor-2/&quot;,
-  &quot;apiBase&quot;: &quot;https://elliesbang-image-editor.netlify.app/.netlify/functions/server&quot;
+  &quot;apiBase&quot;: &quot;https://elliesbang.kr/api&quot;
 }</script>
 <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
 <div class="app-header__left">
@@ -245,7 +245,7 @@
           data-state="idle"
           data-intent="login"
           method="post"
-          action="https://elliesbang-image-editor.netlify.app/.netlify/functions/server/api/auth/email/request"
+          action="https://elliesbang.kr/api/auth/email/request"
         >
 <label class="login-modal__label" for="loginEmail">이메일 인증</label>
 <div class="login-modal__field-group">
@@ -349,12 +349,17 @@
             data-role="admin-login-form"
             data-state="idle"
             method="post"
-            action="https://elliesbang-image-editor.netlify.app/.netlify/functions/server/api/auth/admin/login"
+            action="https://elliesbang.kr/api/auth/admin/login"
           >
 <label class="admin-modal__label" for="adminEmail">관리자 이메일</label>
-<input id="adminEmail" name="adminEmail" type="email" required="" autocomplete="email" class="admin-modal__input" data-role="admin-email" placeholder="admin@example.com"/>
+<input id="adminEmail" name="adminEmail" type="email" required="" autocomplete="email" class="admin-modal__input" data-role="admin-email" placeholder="ellie@elliesbang.kr"/>
 <label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>
-<input id="adminPassword" name="adminPassword" type="password" required="" autocomplete="current-password" class="admin-modal__input" data-role="admin-password" placeholder="비밀번호"/>
+<div class="admin-modal__password-field">
+<input id="adminPassword" name="adminPassword" type="password" required="" autocomplete="current-password" class="admin-modal__input admin-modal__password-input" data-role="admin-password" placeholder="비밀번호"/>
+<button class="admin-modal__toggle" type="button" data-role="admin-password-toggle" aria-label="비밀번호 표시" aria-pressed="false">
+<i class="ri-eye-line" data-role="admin-password-toggle-icon" aria-hidden="true"></i>
+</button>
+</div>
 <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite">
 </p>
 <button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>

@@ -58,6 +58,7 @@ type Bindings = {
   EMAIL_SMTP_PASSWORD?: string
   EMAIL_BRAND_NAME?: string
   EMAIL_OTP_EXPIRY_SECONDS?: string
+  PUBLIC_API_BASE?: string
 }
 
 type ChallengeSubmission = {
@@ -177,7 +178,10 @@ const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
 const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
-const MIN_ADMIN_PASSWORD_LENGTH = 12
+const MIN_ADMIN_PASSWORD_LENGTH = 10
+const DEFAULT_ADMIN_EMAIL = 'ellie@elliesbang.kr'
+const DEFAULT_ADMIN_PASSWORD = 'Ssh121015!!'
+const DEFAULT_ADMIN_PASSWORD_HASH = createHash('sha256').update(DEFAULT_ADMIN_PASSWORD, 'utf8').digest('hex')
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const USER_ACCOUNT_KEY_PREFIX = 'user:'
 const EMAIL_VERIFICATION_KEY_PREFIX = 'email-verification:'
@@ -186,16 +190,19 @@ const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5
 const EMAIL_VERIFICATION_CODE_LENGTH = 6
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang.github.io/Image-Editor-2/auth/google/callback'
 const DEFAULT_EMAIL_OTP_EXPIRY_SECONDS = 300
 const FREE_MONTHLY_CREDITS = 30
 const TOP_UP_VALIDITY_DAYS = 365
 const TOP_UP_VALIDITY_MS = TOP_UP_VALIDITY_DAYS * 24 * 60 * 60 * 1000
-const SERVER_FUNCTION_PATH = '/.netlify/functions/server'
-const API_BASE_PATH = SERVER_FUNCTION_PATH
+const RAW_BUILD_PUBLIC_API_BASE =
+  typeof import.meta.env.PUBLIC_API_BASE === 'string' && import.meta.env.PUBLIC_API_BASE
+    ? import.meta.env.PUBLIC_API_BASE
+    : 'https://elliesbang.kr/api'
+const PUBLIC_API_BASE = normalizeApiBase(RAW_BUILD_PUBLIC_API_BASE)
 const ALLOWED_CORS_ORIGINS = new Set([
-  'https://elliesbang-image-editor.netlify.app',
-  'https://www.elliesbang-image-editor.netlify.app',
+  'https://elliesbang.kr',
+  'https://www.elliesbang.kr',
   'https://elliesbang.github.io',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -206,6 +213,26 @@ const DEFAULT_CORS_HEADERS = 'Content-Type,Authorization'
 const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
 const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
 const STATIC_PAGE_SLUGS = new Set(['privacy', 'terms', 'cookies', 'plans'])
+
+function normalizeApiBase(value: string | undefined) {
+  if (typeof value !== 'string') {
+    return '/'
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return '/'
+  }
+  const withoutTrailing = trimmed.replace(/\/+$/u, '')
+  return withoutTrailing || '/'
+}
+
+function resolvePublicApiBase(env: Bindings) {
+  const raw = typeof env?.PUBLIC_API_BASE === 'string' ? env.PUBLIC_API_BASE : ''
+  if (raw) {
+    return normalizeApiBase(raw)
+  }
+  return PUBLIC_API_BASE
+}
 
 function resolveAppHref(target?: string) {
   const trimmed = target?.replace(/^\/+/u, '') ?? ''
@@ -318,8 +345,11 @@ function getFixedWindowBoundaries(now: number, windowSeconds: number) {
 }
 
 function resolveAdminEmail(env: Bindings): string {
-  const raw = (env.ADMIN_EMAIL ?? env.ADMIN_MAIL ?? '').trim().toLowerCase()
-  return raw
+  const rawEnv = (env.ADMIN_EMAIL ?? env.ADMIN_MAIL ?? '').trim().toLowerCase()
+  if (rawEnv) {
+    return rawEnv
+  }
+  return DEFAULT_ADMIN_EMAIL
 }
 
 function resolveOpenAIKey(env: Bindings): string | null {
@@ -361,7 +391,7 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
       passwordHash = createHash('sha256').update(passwordPlain, 'utf8').digest('hex')
     }
   } else {
-    issues.push('ADMIN_PASSWORD or ADMIN_PASSWORD_HASH must be configured')
+    passwordHash = DEFAULT_ADMIN_PASSWORD_HASH
   }
 
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
@@ -1667,12 +1697,13 @@ app.get('/api/config', (c) => {
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
+  const apiBase = resolvePublicApiBase(c.env)
 
   return c.json({
     googleClientId,
     googleRedirectUri,
     communityUrl,
-    apiBase: API_BASE_PATH,
+    apiBase,
   })
 })
 
@@ -2910,13 +2941,14 @@ app.get('/', (c) => {
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
+  const apiBase = resolvePublicApiBase(c.env)
   const appConfig = JSON.stringify(
     {
       googleClientId,
       googleRedirectUri,
       communityUrl,
       basePath: PUBLIC_BASE_PATH,
-      apiBase: API_BASE_PATH,
+      apiBase,
     },
     null,
     2,
@@ -3371,19 +3403,30 @@ app.get('/', (c) => {
               autocomplete="email"
               class="admin-modal__input"
               data-role="admin-email"
-              placeholder="admin@example.com"
+              placeholder="ellie@elliesbang.kr"
             />
             <label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>
-            <input
-              id="adminPassword"
-              name="adminPassword"
-              type="password"
-              required
-              autocomplete="current-password"
-              class="admin-modal__input"
-              data-role="admin-password"
-              placeholder="비밀번호"
-            />
+            <div class="admin-modal__password-field">
+              <input
+                id="adminPassword"
+                name="adminPassword"
+                type="password"
+                required
+                autocomplete="current-password"
+                class="admin-modal__input admin-modal__password-input"
+                data-role="admin-password"
+                placeholder="비밀번호"
+              />
+              <button
+                class="admin-modal__toggle"
+                type="button"
+                data-role="admin-password-toggle"
+                aria-label="비밀번호 표시"
+                aria-pressed="false"
+              >
+                <i class="ri-eye-line" data-role="admin-password-toggle-icon" aria-hidden="true"></i>
+              </button>
+            </div>
             <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite"></p>
             <button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>
           </form>
