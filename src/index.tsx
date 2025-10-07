@@ -190,8 +190,19 @@ const DEFAULT_EMAIL_OTP_EXPIRY_SECONDS = 300
 const FREE_MONTHLY_CREDITS = 30
 const SERVER_FUNCTION_PATH = '/.netlify/functions/server'
 const API_BASE_PATH = SERVER_FUNCTION_PATH
+const ALLOWED_CORS_ORIGINS = new Set([
+  'https://elliesbang-image-editor.netlify.app',
+  'https://www.elliesbang-image-editor.netlify.app',
+  'https://elliesbang.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+])
+const DEFAULT_CORS_HEADERS = 'Content-Type,Authorization'
 const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
 const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
+const LEGAL_PAGE_SLUGS = new Set(['privacy', 'terms', 'cookies'])
 
 function resolveAppHref(target?: string) {
   const trimmed = target?.replace(/^\/+/u, '') ?? ''
@@ -200,7 +211,40 @@ function resolveAppHref(target?: string) {
     return PUBLIC_BASE_PATH === '/' ? './' : PUBLIC_BASE_PATH
   }
 
-  return PUBLIC_BASE_PATH === '/' ? `./${trimmed}` : `${PUBLIC_BASE_PATH}${trimmed}`
+  if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
+    return trimmed
+  }
+
+  const normalizedSlug = trimmed.replace(/\.html$/u, '')
+  const requiresHtmlExtension = LEGAL_PAGE_SLUGS.has(normalizedSlug)
+  const normalizedTarget = requiresHtmlExtension ? `${normalizedSlug}.html` : trimmed
+  const withoutLeadingSlash = normalizedTarget.startsWith('/')
+    ? normalizedTarget.slice(1)
+    : normalizedTarget
+
+  return PUBLIC_BASE_PATH === '/' ? `./${withoutLeadingSlash}` : `${PUBLIC_BASE_PATH}${withoutLeadingSlash}`
+}
+
+function resolveCorsOrigin(origin: string | null | undefined) {
+  if (!origin) return ''
+  const trimmed = origin.trim()
+  if (!trimmed) return ''
+  if (ALLOWED_CORS_ORIGINS.has(trimmed)) {
+    return trimmed
+  }
+  return ''
+}
+
+function applyCorsHeaders(c: Context<{ Bindings: Bindings }>, origin: string) {
+  if (!origin) return
+  c.res.headers.set('Access-Control-Allow-Origin', origin)
+  c.res.headers.set('Access-Control-Allow-Credentials', 'true')
+  const currentVary = c.res.headers.get('Vary')
+  if (!currentVary) {
+    c.res.headers.set('Vary', 'Origin')
+  } else if (!currentVary.split(',').map((value) => value.trim()).includes('Origin')) {
+    c.res.headers.set('Vary', `${currentVary}, Origin`)
+  }
 }
 
 type RuntimeProcess = {
@@ -1511,6 +1555,37 @@ function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
 }
 
 const app = new Hono<{ Bindings: Bindings }>({ strict: false })
+
+app.use('*', async (c, next) => {
+  const requestOrigin = c.req.header('Origin')
+  const allowedOrigin = resolveCorsOrigin(requestOrigin)
+
+  if (c.req.method === 'OPTIONS') {
+    if (allowedOrigin) {
+      applyCorsHeaders(c, allowedOrigin)
+    } else {
+      const existingVary = c.res.headers.get('Vary')
+      if (!existingVary) {
+        c.res.headers.set('Vary', 'Origin')
+      } else if (!existingVary.split(',').map((value) => value.trim()).includes('Origin')) {
+        c.res.headers.set('Vary', `${existingVary}, Origin`)
+      }
+    }
+
+    const requestedHeaders = c.req.header('Access-Control-Request-Headers')?.trim()
+    c.res.headers.set('Access-Control-Allow-Headers', requestedHeaders && requestedHeaders.length > 0 ? requestedHeaders : DEFAULT_CORS_HEADERS)
+    c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+    c.res.headers.set('Access-Control-Max-Age', '86400')
+
+    return c.body(null, 204)
+  }
+
+  await next()
+
+  if (allowedOrigin) {
+    applyCorsHeaders(c, allowedOrigin)
+  }
+})
 
 app.use('*', async (c, next) => {
   await next()
@@ -3575,9 +3650,9 @@ app.get('/', (c) => {
           </div>
           <nav class="site-footer__links" aria-label="법적 고지">
             <a href="./#pricing">요금제 안내</a>
-            <a href="./privacy">개인정보 처리방침</a>
-            <a href="./terms">이용약관</a>
-            <a href="./cookies">쿠키 정책</a>
+            <a href={resolveAppHref('privacy')}>개인정보 처리방침</a>
+            <a href={resolveAppHref('terms')}>이용약관</a>
+            <a href={resolveAppHref('cookies')}>쿠키 정책</a>
             <a href="./admin/dashboard" data-role="footer-admin-link">관리자 전용</a>
           </nav>
         </div>

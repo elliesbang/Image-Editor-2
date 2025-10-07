@@ -31,6 +31,7 @@ const CREDIT_COSTS = {
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const DEFAULT_API_BASE = '/.netlify/functions/server'
+const COOKIE_CONSENT_VERSION = '2025-10-02'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -146,6 +147,7 @@ const state = {
 const runtime = {
   config: null,
   initialView: 'home',
+  initialViewExplicit: false,
   apiBase: '',
   basePath: '/',
   currentView: 'home',
@@ -4199,6 +4201,10 @@ function showCookieBanner() {
   if (!elements.cookieBanner) return
   elements.cookieBanner.classList.add('is-visible')
   elements.cookieBanner.setAttribute('aria-hidden', 'false')
+  if (elements.cookieConfirm instanceof HTMLInputElement) {
+    elements.cookieConfirm.checked = false
+  }
+  updateCookieAcceptState()
 }
 
 function hideCookieBanner() {
@@ -4211,7 +4217,14 @@ function readCookieConsent() {
   try {
     const value = window.localStorage.getItem('cookieConsent')
     if (!value) return null
-    return JSON.parse(value)
+    const parsed = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+    if (parsed.version !== COOKIE_CONSENT_VERSION) {
+      return null
+    }
+    return parsed
   } catch (error) {
     console.warn('쿠키 동의 정보를 불러오지 못했습니다.', error)
     return null
@@ -4220,7 +4233,8 @@ function readCookieConsent() {
 
 function writeCookieConsent(consent) {
   try {
-    window.localStorage.setItem('cookieConsent', JSON.stringify(consent))
+    const payload = { ...consent, version: COOKIE_CONSENT_VERSION }
+    window.localStorage.setItem('cookieConsent', JSON.stringify(payload))
   } catch (error) {
     console.warn('쿠키 동의 정보를 저장하지 못했습니다.', error)
   }
@@ -7073,18 +7087,30 @@ async function init() {
   }
 
   const configInitial = normalizeView(config.initialView)
-  let initialView = requestedView || configInitial || 'home'
+  const pathView = normalizeView(resolveViewFromPath(window.location.pathname)) || 'home'
+  let initialView = requestedView || configInitial || pathView || 'home'
+  const initialViewWasExplicit =
+    Boolean(requestedView) ||
+    Boolean(configInitial) ||
+    (pathView && pathView !== 'home')
+
+  if (initialView === 'admin' && !initialViewWasExplicit && !state.admin.isLoggedIn) {
+    initialView = 'home'
+  }
 
   runtime.initialView = initialView
+  runtime.initialViewExplicit = initialViewWasExplicit
   runtime.lastAllowedView = 'home'
 
   const initialRoute = joinBasePath(VIEW_ROUTES[initialView] || '/')
   window.history.replaceState({ view: initialView }, '', `${initialRoute}${canonicalSearch}${canonicalHash}`)
 
+  const shouldPromptAdminLogin = initialView === 'admin' && !state.admin.isLoggedIn && initialViewWasExplicit
+
   if (initialView === 'admin') {
     setView('admin', { force: true, bypassAccess: true })
     runtime.lastAllowedView = state.admin.isLoggedIn ? 'admin' : 'home'
-    if (!state.admin.isLoggedIn) {
+    if (shouldPromptAdminLogin) {
       openAdminModal({
         message: '관리자 전용 페이지입니다.',
         subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
@@ -7128,7 +7154,7 @@ async function init() {
   refreshAccessStates()
 
   syncAdminSession().finally(() => {
-    if (runtime.initialView === 'admin' && !state.admin.isLoggedIn) {
+    if (runtime.initialView === 'admin' && runtime.initialViewExplicit && !state.admin.isLoggedIn) {
       window.setTimeout(() => {
         if (!state.admin.isLoggedIn) {
           openAdminModal()
