@@ -615,9 +615,19 @@ function resolveViewFromPath(pathname) {
 }
 
 function buildApiUrl(path) {
-  const base = getApiBase()
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const base = getApiBase() || ''
+  const normalizedPath = path && path.startsWith('/') ? path : `/${path || ''}`
   const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base
+
+  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api')) {
+    const suffix = normalizedPath.slice(4)
+    return `${normalizedBase}${suffix}` || '/api'
+  }
+
+  if (!normalizedBase) {
+    return normalizedPath || '/'
+  }
+
   return `${normalizedBase}${normalizedPath}`
 }
 
