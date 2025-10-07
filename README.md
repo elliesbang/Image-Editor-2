@@ -87,8 +87,7 @@
 | --- | --- | --- | --- |
 | `OPENAI_API_KEY` / `OPEN_AI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | 두 변수 중 하나만 설정하면 됩니다. |
 | `ADMIN_EMAIL` / `ADMIN_MAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `ellie@elliesbang.kr` |
-| `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수* | `echo -n 'password' | shasum -a 256` (*`ADMIN_PASSWORD` 제공 시 선택) |
-| `ADMIN_PASSWORD` | 관리자 비밀번호(플레인 텍스트) | 필수* | 배포 환경에서 SHA-256 해시 자동 생성(로컬/테스트용 권장) |
+| `ADMIN_PASSWORD` | 관리자 비밀번호(플레인 텍스트) | 선택 (기본값 사용 가능) | 미설정 시 기본값 `Ssh121015!!` 적용 |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
 | `ADMIN_SESSION_VERSION` | 관리자 세션 버전 문자열 | 선택 (기본 `1`) | 변경 시 기존 쿠키 무효화 |
 | `ADMIN_RATE_LIMIT_MAX_ATTEMPTS` | 관리자 로그인 허용 시도 횟수 | 선택 (기본 `5`) | 1~20 범위 |
@@ -113,7 +112,7 @@
 | `CHALLENGE_KV_BACKUP` | 외부 KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 | `PUBLIC_API_BASE` | 프론트엔드에서 사용할 기본 API 엔드포인트 베이스 URL | 선택 | 기본값 `https://elliesbang.kr/api`, 로컬 개발 시 `/` 또는 `http://localhost:3000/api` 등으로 재정의 |
 
-> 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다. Google OAuth 값(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)도 동일하게 관리하세요.
+> 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다. Google OAuth 값(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)도 동일하게 관리하세요. `ADMIN_PASSWORD_HASH` 는 더 이상 지원되지 않으므로 반드시 `ADMIN_PASSWORD` 로 비밀번호를 지정하세요.
 
 ## 개발 환경 & 실행 방법
 ```bash
@@ -124,7 +123,6 @@ npm install
 cat <<'EOF' > .dev.vars
 OPEN_AI_API_KEY="sk-..."
 ADMIN_MAIL="ellie@elliesbang.kr"
-# 필요 시 ADMIN_PASSWORD_HASH 를 직접 지정할 수 있습니다.
 ADMIN_PASSWORD="Ssh121015!!"
 SESSION_SECRET="<랜덤 32자 이상>"
 ADMIN_SESSION_VERSION="1"

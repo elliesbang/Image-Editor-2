@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
-import { createHash } from 'node:crypto'
 import { createConnection } from 'node:net'
 import { connect as createTlsConnection } from 'node:tls'
 import { renderer } from './renderer'
@@ -98,7 +97,7 @@ type AdminSessionPayload = {
 
 type AdminConfig = {
   email: string
-  passwordHash: string
+  password: string
   sessionSecret: string
   sessionVersion: string
 }
@@ -181,7 +180,6 @@ const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const MIN_ADMIN_PASSWORD_LENGTH = 10
 const DEFAULT_ADMIN_EMAIL = 'ellie@elliesbang.kr'
 const DEFAULT_ADMIN_PASSWORD = 'Ssh121015!!'
-const DEFAULT_ADMIN_PASSWORD_HASH = createHash('sha256').update(DEFAULT_ADMIN_PASSWORD, 'utf8').digest('hex')
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const USER_ACCOUNT_KEY_PREFIX = 'user:'
 const EMAIL_VERIFICATION_KEY_PREFIX = 'email-verification:'
@@ -375,23 +373,21 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
     issues.push('ADMIN_EMAIL/ADMIN_MAIL must be a valid email address')
   }
 
-  const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
+  const legacyPasswordHash = env.ADMIN_PASSWORD_HASH?.trim()
+  if (legacyPasswordHash) {
+    issues.push('ADMIN_PASSWORD_HASH is no longer supported; configure ADMIN_PASSWORD instead')
+  }
+
   const passwordPlain = env.ADMIN_PASSWORD?.trim() ?? ''
-  let passwordHash = ''
-  if (passwordHashRaw) {
-    if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-      issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
-    } else {
-      passwordHash = passwordHashRaw
-    }
-  } else if (passwordPlain) {
+  let password = ''
+  if (passwordPlain) {
     if (passwordPlain.length < MIN_ADMIN_PASSWORD_LENGTH) {
       issues.push(`ADMIN_PASSWORD must be at least ${MIN_ADMIN_PASSWORD_LENGTH} characters`)
     } else {
-      passwordHash = createHash('sha256').update(passwordPlain, 'utf8').digest('hex')
+      password = passwordPlain
     }
   } else {
-    passwordHash = DEFAULT_ADMIN_PASSWORD_HASH
+    password = DEFAULT_ADMIN_PASSWORD
   }
 
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
@@ -415,7 +411,7 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   return {
     config: {
       email: emailRaw,
-      passwordHash,
+      password,
       sessionSecret: sessionSecretRaw,
       sessionVersion: sessionVersionRaw,
     },
@@ -1975,8 +1971,7 @@ app.post('/api/auth/admin/login', async (c) => {
     return response
   }
 
-  const computedHash = await sha256(password)
-  if (computedHash.toLowerCase() !== adminConfig.passwordHash) {
+  if (password !== adminConfig.password) {
     await new Promise((resolve) => setTimeout(resolve, 350))
     const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
     const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
