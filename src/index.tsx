@@ -193,6 +193,16 @@ const API_BASE_PATH = SERVER_FUNCTION_PATH
 const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
 const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
 
+function resolveAppHref(target?: string) {
+  const trimmed = target?.replace(/^\/+/u, '') ?? ''
+
+  if (!trimmed) {
+    return PUBLIC_BASE_PATH === '/' ? './' : PUBLIC_BASE_PATH
+  }
+
+  return PUBLIC_BASE_PATH === '/' ? `./${trimmed}` : `${PUBLIC_BASE_PATH}${trimmed}`
+}
+
 type RuntimeProcess = {
   env?: Record<string, string | undefined>
 }
@@ -2798,7 +2808,7 @@ app.get('/', (c) => {
       </script>
       <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
         <div class="app-header__left">
-          <a class="app-header__logo" href="/" aria-label="Elliesbang Image Editor 홈">
+          <a class="app-header__logo" href={resolveAppHref()} aria-label="Elliesbang Image Editor 홈">
             <span class="app-header__brand">Elliesbang Image Editor</span>
             <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
@@ -3602,7 +3612,9 @@ app.get('/', (c) => {
             </label>
           </div>
           <div class="cookie-banner__actions">
-            <a class="cookie-banner__link" href="/cookies" target="_blank" rel="noopener">쿠키 정책 자세히 보기</a>
+            <a class="cookie-banner__link" href={resolveAppHref('cookies')} target="_blank" rel="noopener">
+              쿠키 정책 자세히 보기
+            </a>
             <button class="cookie-banner__button" type="button" data-action="accept-cookies" disabled>동의하고 계속하기</button>
           </div>
         </div>
@@ -3687,7 +3699,7 @@ app.get('/privacy', (c) => {
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
         <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
-        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+        <a class="legal-page__back" href={resolveAppHref()}>← 에디터로 돌아가기</a>
       </footer>
     </main>
   )
@@ -3765,7 +3777,7 @@ app.get('/terms', (c) => {
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
         <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
-        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+        <a class="legal-page__back" href={resolveAppHref()}>← 에디터로 돌아가기</a>
       </footer>
     </main>
   )
@@ -3840,7 +3852,7 @@ app.get('/cookies', (c) => {
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
         <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
-        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+        <a class="legal-page__back" href={resolveAppHref()}>← 에디터로 돌아가기</a>
       </footer>
     </main>
   )

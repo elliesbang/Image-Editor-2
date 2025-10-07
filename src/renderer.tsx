@@ -18,6 +18,7 @@ export const renderer = jsxRenderer(({ children }) => {
           content="모던하고 직관적인 Elliesbang Image Editor에서 드래그 앤 드롭으로 이미지를 업로드하고, 실시간으로 필터와 회전을 조정해 감각적인 이미지를 완성해 보세요."
         />
         <title>멀티 이미지 편집 스튜디오</title>
+        <base href={withBase('')} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
