@@ -227,7 +227,14 @@
 <div class="login-modal__divider" role="presentation">
 <span>또는</span>
 </div>
-<form class="login-modal__form" data-role="login-email-form" data-state="idle" data-intent="login">
+        <form
+          class="login-modal__form"
+          data-role="login-email-form"
+          data-state="idle"
+          data-intent="login"
+          method="post"
+          action="https://elliesbang-image-editor.netlify.app/.netlify/functions/server/api/auth/email/request"
+        >
 <label class="login-modal__label" for="loginEmail">이메일 인증</label>
 <div class="login-modal__field-group">
 <input id="loginEmail" name="email" type="email" placeholder="example@email.com" required="" autocomplete="email" class="login-modal__input" data-role="login-email-input"/>
@@ -325,7 +332,13 @@
 </button>
 </header>
 <p class="admin-modal__subtitle" data-role="admin-modal-subtitle">등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.</p>
-<form class="admin-modal__form" data-role="admin-login-form" data-state="idle">
+          <form
+            class="admin-modal__form"
+            data-role="admin-login-form"
+            data-state="idle"
+            method="post"
+            action="https://elliesbang-image-editor.netlify.app/.netlify/functions/server/api/auth/admin/login"
+          >
 <label class="admin-modal__label" for="adminEmail">관리자 이메일</label>
 <input id="adminEmail" name="adminEmail" type="email" required="" autocomplete="email" class="admin-modal__input" data-role="admin-email" placeholder="admin@example.com"/>
 <label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>

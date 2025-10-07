@@ -7064,6 +7064,20 @@ async function init() {
   runtime.apiBase = normalizeApiBase(config.apiBase)
   runtime.basePath = normalizeBasePath(config.basePath)
 
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.method = 'post'
+    elements.loginEmailForm.action = buildApiUrl('/api/auth/email/request')
+  }
+
+  if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
+    elements.loginEmailSubmit.disabled = false
+  }
+
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.method = 'post'
+    elements.adminLoginForm.action = buildApiUrl('/api/auth/admin/login')
+  }
+
   const resolvedCommunityUrl =
     typeof config.communityUrl === 'string' && config.communityUrl.trim()
       ? config.communityUrl.trim()
