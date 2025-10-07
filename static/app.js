@@ -33,6 +33,7 @@ const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const DEFAULT_API_BASE = 'https://elliesbang.kr/api'
 const COOKIE_CONSENT_VERSION = '2025-10-02'
 const SPA_REDIRECT_STORAGE_KEY = 'elliesbang:spa-redirect'
+const DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0'])
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -458,11 +459,46 @@ function normalizeApiBase(value = DEFAULT_API_BASE) {
   if (typeof value !== 'string') {
     return DEFAULT_API_BASE
   }
-  const trimmed = value.trim()
+
+  let trimmed = value.trim()
   if (!trimmed) {
     return DEFAULT_API_BASE
   }
-  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
+
+  const isBrowserDev = typeof window !== 'undefined' && DEV_HOSTNAMES.has(window.location.hostname)
+
+  if (trimmed === '/') {
+    return isBrowserDev ? '/' : DEFAULT_API_BASE
+  }
+
+  if (/^http:\/\//iu.test(trimmed) && !isBrowserDev) {
+    trimmed = `https://${trimmed.slice(7)}`
+  }
+
+  if (!/^https?:\/\//iu.test(trimmed)) {
+    return DEFAULT_API_BASE
+  }
+
+  let apiUrl
+  try {
+    apiUrl = new URL(trimmed)
+  } catch (error) {
+    console.warn('잘못된 API 베이스 URL이 감지되어 기본값으로 되돌립니다.', error)
+    return DEFAULT_API_BASE
+  }
+
+  if (!isBrowserDev && DEV_HOSTNAMES.has(apiUrl.hostname)) {
+    return DEFAULT_API_BASE
+  }
+
+  if (!isBrowserDev && apiUrl.protocol === 'http:') {
+    apiUrl.protocol = 'https:'
+  }
+
+  const normalizedPath = apiUrl.pathname.replace(/\/+$/u, '')
+  const normalized = `${apiUrl.origin}${normalizedPath || ''}`
+
+  return normalized || DEFAULT_API_BASE
 }
 
 function getApiBase() {
@@ -632,7 +668,23 @@ function buildApiUrl(path) {
 }
 
 function apiFetch(path, options) {
-  return fetch(buildApiUrl(path), options)
+  const init = { ...(options || {}) }
+
+  if (!init.mode) {
+    init.mode = 'cors'
+  }
+
+  if (!('credentials' in init)) {
+    init.credentials = 'include'
+  }
+
+  const headers = new Headers(options?.headers || {})
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json')
+  }
+  init.headers = headers
+
+  return fetch(buildApiUrl(path), init)
 }
 
 function waitForGoogleSdk(timeout = 8000) {

@@ -189,6 +189,7 @@ const EMAIL_VERIFICATION_CODE_LENGTH = 6
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang.github.io/Image-Editor-2/auth/google/callback'
+const DEFAULT_PUBLIC_API_BASE = 'https://elliesbang.kr/api'
 const DEFAULT_EMAIL_OTP_EXPIRY_SECONDS = 300
 const FREE_MONTHLY_CREDITS = 30
 const TOP_UP_VALIDITY_DAYS = 365
@@ -196,7 +197,7 @@ const TOP_UP_VALIDITY_MS = TOP_UP_VALIDITY_DAYS * 24 * 60 * 60 * 1000
 const RAW_BUILD_PUBLIC_API_BASE =
   typeof import.meta.env.PUBLIC_API_BASE === 'string' && import.meta.env.PUBLIC_API_BASE
     ? import.meta.env.PUBLIC_API_BASE
-    : 'https://elliesbang.kr/api'
+    : DEFAULT_PUBLIC_API_BASE
 const PUBLIC_API_BASE = normalizeApiBase(RAW_BUILD_PUBLIC_API_BASE)
 const ALLOWED_CORS_ORIGINS = new Set([
   'https://elliesbang.kr',
@@ -212,16 +213,60 @@ const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
 const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
 const STATIC_PAGE_SLUGS = new Set(['privacy', 'terms', 'cookies', 'plans'])
 
+type RuntimeProcess = {
+  env?: Record<string, string | undefined>
+}
+
+const runtimeProcess =
+  typeof globalThis !== 'undefined' && 'process' in globalThis
+    ? (globalThis as { process?: RuntimeProcess }).process
+    : undefined
+
+const DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0'])
+const runtimeNodeEnv = (runtimeProcess?.env?.NODE_ENV ?? 'production').toLowerCase()
+const isProductionRuntime = runtimeNodeEnv === 'production'
+
 function normalizeApiBase(value: string | undefined) {
   if (typeof value !== 'string') {
-    return '/'
+    return DEFAULT_PUBLIC_API_BASE
   }
-  const trimmed = value.trim()
+
+  let trimmed = value.trim()
   if (!trimmed) {
-    return '/'
+    return DEFAULT_PUBLIC_API_BASE
   }
-  const withoutTrailing = trimmed.replace(/\/+$/u, '')
-  return withoutTrailing || '/'
+
+  if (trimmed === '/') {
+    return isProductionRuntime ? DEFAULT_PUBLIC_API_BASE : '/'
+  }
+
+  if (/^http:\/\//iu.test(trimmed) && isProductionRuntime) {
+    trimmed = `https://${trimmed.slice(7)}`
+  }
+
+  if (!/^https?:\/\//iu.test(trimmed)) {
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  let apiUrl: URL
+  try {
+    apiUrl = new URL(trimmed)
+  } catch (error) {
+    console.warn('[config] Invalid PUBLIC_API_BASE, falling back to default', error)
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  if (isProductionRuntime && DEV_HOSTNAMES.has(apiUrl.hostname)) {
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  if (isProductionRuntime && apiUrl.protocol === 'http:') {
+    apiUrl.protocol = 'https:'
+  }
+
+  const normalizedPath = apiUrl.pathname.replace(/\/+$/u, '')
+  const normalized = `${apiUrl.origin}${normalizedPath || ''}`
+  return normalized || DEFAULT_PUBLIC_API_BASE
 }
 
 function resolvePublicApiBase(env: Bindings) {
@@ -274,15 +319,6 @@ function applyCorsHeaders(c: Context<{ Bindings: Bindings }>, origin: string) {
     c.res.headers.set('Vary', `${currentVary}, Origin`)
   }
 }
-
-type RuntimeProcess = {
-  env?: Record<string, string | undefined>
-}
-
-const runtimeProcess =
-  typeof globalThis !== 'undefined' && 'process' in globalThis
-    ? (globalThis as { process?: RuntimeProcess }).process
-    : undefined
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
@@ -1666,7 +1702,7 @@ app.use('*', async (c, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net",
     "img-src 'self' data: blob: https://lh3.googleusercontent.com",
     "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net",
-    "connect-src 'self' https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com https://www.googleapis.com",
+    "connect-src 'self' https://elliesbang.kr https://www.elliesbang.kr https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com https://www.googleapis.com",
     "frame-src 'self' https://accounts.google.com",
     "frame-ancestors 'none'",
     "form-action 'self'",
