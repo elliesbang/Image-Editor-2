@@ -5,12 +5,17 @@
 - **목표**: GitHub Pages 정적 배포와 Hono API 서버를 결합한 경량 이미지 편집 스튜디오에 **관리자용 무제한 테스트 흐름**과 **미치나 플랜 3주 챌린지 관리 시스템**을 통합
 - **핵심 특징**: HTML5 Canvas 기반 이미지 파이프라인, Freemium 크레딧 게이트, 관리자 전용 인증/세션 유지, 참가자 진행률·수료증 UI, OpenAI 연동 키워드 분석(25개 키워드 및 제목·키워드 복사 지원)
 
+## 저장 브랜치 안내
+- **주요 작업 브랜치**: `codex/analyze-and-fix-404-error-hfwps6`
+  - 기존 `work` 브랜치는 동일한 커밋 히스토리를 유지한 채 위 브랜치 이름으로 변경했습니다.
+  - `codex/analyze-and-fix-404-error`, `codex/migrate-from-cloudflare-pages-to-netlify-u24721` 브랜치는 참고용으로 보관되어 있으며, 최신 변경 사항은 모두 `codex/analyze-and-fix-404-error-hfwps6`에 반영됩니다.
+
 ## 현재 구현 기능
 - **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
 - **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
 - **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, 실제 메일 발송(SMTP/Resend/SendGrid) 기반 OTP 전달, Google 로그인은 비활성화되어 이메일 인증만 지원
 - **관리자 인증 & 보안 강화**
-  - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
+  - 평문 비밀번호 비교 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
   - 고정 윈도우 + 추가 쿨다운 기반 레이트 리밋(`ADMIN_RATE_LIMIT_*`) 및 `Retry-After`/`X-RateLimit-*` 헤더 제공
   - 관리자 로그인/세션 복원 시 자동 페이지 전환 없이 상태 배너에서 ‘대시보드 이동’·‘새 탭에서 열기’ CTA를 즉시 제공하고, 내비게이션 버튼 하이라이트와 안내 패널(현재 페이지 이동/새 탭 열기)을 동시에 노출해 대시보드 위치를 즉시 안내(상태 배너 문안: “관리자 로그인 완료! 대시보드를 현재 페이지에서 열거나 새 탭으로 띄울 수 있습니다.”)
@@ -26,7 +31,7 @@
 
 ## 관리자 & 챌린지 운영 흐름
 0. **이메일 로그인**: 로그인/회원가입 모달에서 이메일 주소 입력 → 실제 이메일로 6자리 인증 코드 전송 → 코드 입력 후 로그인/가입(쿨다운, 중복 가입 방지 포함)
-1. **관리자 로그인**: `/api/auth/admin/login`으로 이메일·비밀번호 제출 → SHA-256 해시 비교 후 JWT 서명, HttpOnly 세션 쿠키 발급(8시간). 로그인 성공 후에는 자동 이동 없이 상태 배너/안내 패널의 CTA(현재 창 이동 또는 새 탭 열기)를 통해 대시보드 진입 방식을 선택
+1. **관리자 로그인**: `/api/auth/admin/login`으로 이메일·비밀번호 제출 → 환경 변수 `ADMIN_PASSWORD`(기본값 `Ssh121015!!`)와 일치 여부를 즉시 확인한 뒤 JWT 서명, HttpOnly 세션 쿠키 발급(8시간). 로그인 성공 후에는 자동 이동 없이 상태 배너/안내 패널의 CTA(현재 창 이동 또는 새 탭 열기)를 통해 대시보드 진입 방식을 선택
 2. **명단 등록**: CSV 업로드(이메일, 이름, 종료일) 또는 textarea 입력 → KV/in-memory에 참가자 레코드 저장, 미치나 플랜 권한 부여
 3. **대시보드 모니터링**: 진행률/미제출 현황 표, 완료 상태 필터, 새로고침·완주 판별 버튼 제공
 4. **완주 판별**: `/api/admin/challenge/run-completion-check` 호출 시 제출 횟수 15회 이상 참가자를 `completed=true`로 업데이트
@@ -42,7 +47,7 @@
 4. **수료증**: 15회 제출 완료 시 자동 완주 처리, `/api/challenge/certificate` fetch 후 html2canvas로 PNG 저장(배경 #fef568)
 
 ## 보안 강화 요소
-- 관리자 자격 증명은 SHA-256(소문자 hex)으로 비교, 인증 실패 시 지연 응답으로 타이밍 공격 완화
+- 관리자 자격 증명은 설정한 평문 비밀번호(`ADMIN_PASSWORD`)와 직접 비교하며, 인증 실패 시 지연 응답으로 타이밍 공격을 완화
 - JWT 페이로드 → `{ sub, role, exp, iss, aud, ver, iat }`, HttpOnly + Secure + SameSite=Lax 쿠키, 세션 버전 변경 시 즉시 무효화
 - 관리자 로그인 레이트 리밋: 고정 윈도우 + 쿨다운 + IP 기반 키(`ratelimit:admin-login:*`), 429 시 `Retry-After` 헤더 포함
 - CSP `default-src 'self'`, script/style CDN 화이트리스트, 이미지 data/blob 허용, frame-ancestors 'none'
