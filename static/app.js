@@ -1,8 +1,25 @@
 const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
 const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
-const FREEMIUM_INITIAL_CREDITS = 30
-const MICHINA_INITIAL_CREDITS = 10000
+const FREE_MONTHLY_CREDITS = 30
+const CREDIT_PRIORITY = ['subscription', 'topUp', 'free']
+const PLAN_CREDIT_LIMITS = {
+  public: { free: 0, subscription: 0, topUp: 0 },
+  free: { free: FREE_MONTHLY_CREDITS, subscription: 0, topUp: 0 },
+  basic: { free: FREE_MONTHLY_CREDITS, subscription: 150, topUp: 0 },
+  pro: { free: FREE_MONTHLY_CREDITS, subscription: 1000, topUp: 0 },
+  premium: { free: FREE_MONTHLY_CREDITS, subscription: 10000, topUp: 0 },
+  michina: { free: FREE_MONTHLY_CREDITS, subscription: 10000, topUp: 0 },
+}
+const PLAN_TIERS = {
+  public: 0,
+  free: 0,
+  basic: 1,
+  pro: 2,
+  premium: 3,
+  michina: 3,
+  admin: 4,
+}
 const CREDIT_COSTS = {
   operation: 1,
   resize: 1,
@@ -13,6 +30,9 @@ const CREDIT_COSTS = {
 }
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
+const DEFAULT_API_BASE = '/.netlify/functions/server'
+const COOKIE_CONSENT_VERSION = '2025-10-02'
+const SPA_REDIRECT_STORAGE_KEY = 'elliesbang:spa-redirect'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -96,7 +116,10 @@ const state = {
     name: '',
     email: '',
     plan: 'public',
-    credits: 0,
+    creditBalance: { free: 0, subscription: 0, topUp: 0 },
+    planExpiresAt: '',
+    topUpExpiresAt: '',
+    lastFreeRefresh: '',
     totalUsed: 0,
   },
   admin: {
@@ -112,10 +135,12 @@ const state = {
   },
   auth: {
     step: 'idle',
+    intent: 'login',
     pendingEmail: '',
-    code: '',
     expiresAt: 0,
+    issuedAt: 0,
     attempts: 0,
+    cooldownUntil: 0,
   },
   stage: 'upload',
   view: 'home',
@@ -124,7 +149,12 @@ const state = {
 const runtime = {
   config: null,
   initialView: 'home',
-  allowViewBypass: false,
+  initialViewExplicit: false,
+  initialViewFromRedirect: false,
+  apiBase: '',
+  basePath: '/',
+  currentView: 'home',
+  lastAllowedView: 'home',
   google: {
     codeClient: null,
     deferred: null,
@@ -151,22 +181,252 @@ let googleSdkPromise = null
 let hasAnnouncedAdminNav = false
 let adminNavHighlightTimer = null
 let hasShownAdminDashboardPrompt = false
+let activePlanModal = null
+
+function createCreditBalance(overrides = {}) {
+  return {
+    free: Math.max(0, Number.isFinite(Number(overrides.free)) ? Number(overrides.free) : 0),
+    subscription: Math.max(0, Number.isFinite(Number(overrides.subscription)) ? Number(overrides.subscription) : 0),
+    topUp: Math.max(0, Number.isFinite(Number(overrides.topUp)) ? Number(overrides.topUp) : 0),
+  }
+}
+
+function getTotalCredits(balance = state.user.creditBalance) {
+  if (!balance) return 0
+  const { free = 0, subscription = 0, topUp = 0 } = balance
+  return Math.max(0, Math.round(Number(free + subscription + topUp)))
+}
+
+function cloneCreditBalance(balance) {
+  return createCreditBalance(balance || {})
+}
+
+function deductCredits(balance, cost) {
+  if (cost <= 0) return cloneCreditBalance(balance)
+  const next = cloneCreditBalance(balance)
+  let remaining = cost
+  for (const bucket of CREDIT_PRIORITY) {
+    if (remaining <= 0) break
+    const available = next[bucket]
+    if (!available) continue
+    if (available >= remaining) {
+      next[bucket] = Math.max(0, available - remaining)
+      remaining = 0
+    } else {
+      next[bucket] = 0
+      remaining -= available
+    }
+  }
+  return next
+}
+
+function monthKey(date = new Date()) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth()).padStart(2, '0')}`
+}
+
+function resolvePlanKey(plan) {
+  if (!plan) return 'free'
+  const normalized = String(plan).toLowerCase()
+  if (normalized === 'freemium') return 'free'
+  if (normalized === 'public' || normalized === 'guest') return 'public'
+  return normalized
+}
+
+function getPlanCreditDefaults(plan) {
+  const key = resolvePlanKey(plan)
+  if (PLAN_CREDIT_LIMITS[key]) {
+    return PLAN_CREDIT_LIMITS[key]
+  }
+  return PLAN_CREDIT_LIMITS.free
+}
+
+function resetCreditBalanceForPlan(plan) {
+  const defaults = getPlanCreditDefaults(plan)
+  state.user.creditBalance = createCreditBalance(defaults)
+  state.user.lastFreeRefresh = monthKey()
+  state.user.topUpExpiresAt = ''
+}
+
+function refreshMonthlyFreeCredits() {
+  const currentKey = monthKey()
+  if (!state.user.lastFreeRefresh || state.user.lastFreeRefresh !== currentKey) {
+    const defaults = getPlanCreditDefaults(state.user.plan)
+    state.user.creditBalance.free = defaults.free
+    state.user.lastFreeRefresh = currentKey
+  }
+}
+
+function setTopUpCredits(amount) {
+  const normalized = Math.max(0, Math.round(Number(amount) || 0))
+  state.user.creditBalance.topUp = normalized
+}
+
+function getPlanTier(plan) {
+  const key = resolvePlanKey(plan)
+  return PLAN_TIERS[key] ?? 0
+}
+
+function getRequiredPlanTier(action) {
+  switch (action) {
+    case 'download':
+      return 0
+    case 'downloadAll':
+      return 1
+    case 'svg':
+      return 2
+    case 'analysis':
+      return 3
+    default:
+      return 0
+  }
+}
 
 function hasUnlimitedAccess() {
   return state.admin.isLoggedIn
 }
 
+function scrollToPricingSection() {
+  const section =
+    (elements.pricingSection instanceof HTMLElement && elements.pricingSection) ||
+    document.getElementById('pricing') ||
+    null
+  if (section) {
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+function getPlanModalElement(planKey) {
+  switch (planKey) {
+    case 'basic':
+      return elements.planModalBasic
+    case 'pro':
+      return elements.planModalPro
+    case 'premium':
+      return elements.planModalPremium
+    default:
+      return null
+  }
+}
+
+const PLAN_UPSELL_MESSAGES = {
+  basic: {
+    default: '고해상도와 일괄 저장 기능은 BASIC 이상 플랜에서 제공됩니다.',
+    download: '고해상도 저장을 이용하려면 BASIC 이상 플랜으로 업그레이드하세요.',
+    downloadAll: '여러 결과를 한 번에 저장하려면 BASIC 이상 플랜이 필요합니다.',
+  },
+  pro: {
+    default: 'SVG 변환과 고급 편집 도구는 PRO 이상 플랜에서 제공됩니다.',
+    svg: 'PNG → SVG 변환은 PRO 이상 플랜에서 사용할 수 있습니다.',
+  },
+  premium: {
+    default: '키워드 분석과 자동화 도구는 PREMIUM 이상 플랜에서 제공됩니다.',
+    analysis: '키워드 분석 기능은 PREMIUM 이상 플랜에서 제공됩니다.',
+  },
+}
+
+function resolveUpsellMessage(planKey, action) {
+  const bundle = PLAN_UPSELL_MESSAGES[planKey]
+  if (!bundle) return ''
+  if (action && typeof bundle[action] === 'string') {
+    return bundle[action]
+  }
+  return bundle.default
+}
+
+function closePlanUpsell() {
+  if (activePlanModal instanceof HTMLElement) {
+    activePlanModal.classList.remove('is-active')
+    activePlanModal.setAttribute('aria-hidden', 'true')
+  }
+  activePlanModal = null
+  if (
+    !(elements.loginModal instanceof HTMLElement && elements.loginModal.classList.contains('is-active')) &&
+    !(elements.adminModal instanceof HTMLElement && elements.adminModal.classList.contains('is-active'))
+  ) {
+    document.body.classList.remove('is-modal-open')
+  }
+}
+
+function openPlanUpsell(planKey, action) {
+  const modal = getPlanModalElement(planKey)
+  if (!(modal instanceof HTMLElement)) {
+    scrollToPricingSection()
+    return
+  }
+  closePlanUpsell()
+  const hint = modal.querySelector('[data-role="plan-modal-hint"]')
+  const message = resolveUpsellMessage(planKey, action)
+  if (hint instanceof HTMLElement) {
+    hint.textContent = message
+  }
+  modal.classList.add('is-active')
+  modal.setAttribute('aria-hidden', 'false')
+  document.body.classList.add('is-modal-open')
+  const primaryButton = modal.querySelector('[data-action="plan-modal-view-pricing"]')
+  if (primaryButton instanceof HTMLElement) {
+    window.requestAnimationFrame(() => primaryButton.focus())
+  }
+  activePlanModal = modal
+}
+
+function openAccessModal(title, message) {
+  const modal = elements.accessModal
+  if (!(modal instanceof HTMLElement)) {
+    return
+  }
+  if (elements.accessModalTitle instanceof HTMLElement && typeof title === 'string') {
+    elements.accessModalTitle.textContent = title
+  }
+  if (elements.accessModalMessage instanceof HTMLElement && typeof message === 'string') {
+    elements.accessModalMessage.textContent = message
+  }
+  modal.classList.add('is-active')
+  modal.setAttribute('aria-hidden', 'false')
+  document.body.classList.add('is-modal-open')
+  const focusTarget = modal.querySelector('[data-action="close-access-modal"]')
+  if (focusTarget instanceof HTMLElement) {
+    window.requestAnimationFrame(() => focusTarget.focus())
+  }
+}
+
+function closeAccessModal() {
+  const modal = elements.accessModal
+  if (!(modal instanceof HTMLElement)) {
+    return
+  }
+  modal.classList.remove('is-active')
+  modal.setAttribute('aria-hidden', 'true')
+  if (
+    !(elements.loginModal instanceof HTMLElement && elements.loginModal.classList.contains('is-active')) &&
+    !(elements.adminModal instanceof HTMLElement && elements.adminModal.classList.contains('is-active')) &&
+    !(activePlanModal instanceof HTMLElement && activePlanModal.classList.contains('is-active'))
+  ) {
+    document.body.classList.remove('is-modal-open')
+  }
+}
+
 function formatCreditsValue(value) {
   if (hasUnlimitedAccess()) return '∞'
-  const numeric = typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
-  return numeric.toLocaleString('ko-KR')
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : getTotalCredits()
+  return Math.max(0, Math.round(numeric)).toLocaleString('ko-KR')
 }
 
 function getPlanLabel() {
   if (state.admin.isLoggedIn) return '관리자 모드'
-  if (state.user.plan === 'michina') return '미치나 플랜'
-  if (state.user.plan === 'freemium') return 'Freemium'
-  return '게스트'
+  switch (resolvePlanKey(state.user.plan)) {
+    case 'michina':
+      return '미치나 플랜'
+    case 'premium':
+      return 'PREMIUM'
+    case 'pro':
+      return 'PRO'
+    case 'basic':
+      return 'BASIC'
+    case 'free':
+      return 'FREE'
+    default:
+      return '게스트'
+  }
 }
 
 function getAppConfig() {
@@ -176,15 +436,183 @@ function getAppConfig() {
   const script = document.querySelector('script[data-role="app-config"]')
   if (!script) {
     runtime.config = {}
+    runtime.apiBase = normalizeApiBase()
+    runtime.basePath = normalizeBasePath('/')
     return runtime.config
   }
   try {
     runtime.config = JSON.parse(script.textContent || '{}') || {}
+    runtime.apiBase = normalizeApiBase(runtime.config.apiBase)
+    runtime.basePath = normalizeBasePath(runtime.config.basePath)
   } catch (error) {
     console.error('앱 설정을 불러오지 못했습니다.', error)
     runtime.config = {}
+    runtime.apiBase = normalizeApiBase()
+    runtime.basePath = normalizeBasePath('/')
   }
   return runtime.config
+}
+
+function normalizeApiBase(value = DEFAULT_API_BASE) {
+  if (typeof value !== 'string') {
+    return DEFAULT_API_BASE
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return DEFAULT_API_BASE
+  }
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
+}
+
+function getApiBase() {
+  if (runtime.apiBase) {
+    return runtime.apiBase
+  }
+  const config = getAppConfig()
+  runtime.apiBase = normalizeApiBase(config.apiBase)
+  return runtime.apiBase
+}
+
+function normalizeBasePath(value) {
+  const ensureFormat = (input) => {
+    if (typeof input !== 'string') {
+      return '/'
+    }
+    const trimmed = input.trim()
+    if (!trimmed) {
+      return '/'
+    }
+    const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+    return withLeading.endsWith('/') ? withLeading : `${withLeading}/`
+  }
+
+  let resolved = ensureFormat(value)
+
+  if (typeof window !== 'undefined' && window.location) {
+    const currentPath = window.location.pathname || '/'
+    const normalizedPath = currentPath.endsWith('/') ? currentPath : `${currentPath}/`
+    const baseCandidate = resolved.endsWith('/') ? resolved : `${resolved}/`
+
+    if (baseCandidate !== '/' && !normalizedPath.startsWith(baseCandidate)) {
+      resolved = '/'
+    }
+  }
+
+  return resolved
+}
+
+function consumeSpaRedirect() {
+  try {
+    const value = window.sessionStorage.getItem(SPA_REDIRECT_STORAGE_KEY)
+    if (!value) {
+      return ''
+    }
+    window.sessionStorage.removeItem(SPA_REDIRECT_STORAGE_KEY)
+    return value
+  } catch (error) {
+    console.warn('SPA 리디렉션 경로를 불러오지 못했습니다.', error)
+    return ''
+  }
+}
+
+function getBasePath() {
+  if (runtime.basePath) {
+    return runtime.basePath
+  }
+  const config = getAppConfig()
+  const base = normalizeBasePath(config.basePath)
+  runtime.basePath = base
+  return base
+}
+
+function joinBasePath(path) {
+  const base = getBasePath()
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  if (!normalizedBase || normalizedBase === '/') {
+    return normalizedPath
+  }
+  return `${normalizedBase}${normalizedPath}`
+}
+
+function resolvePlansLinkHref() {
+  const base = getBasePath()
+  if (!base || base === '/') {
+    return '/plans'
+  }
+  return joinBasePath('plans.html')
+}
+
+function stripBasePath(pathname) {
+  const base = getBasePath()
+  if (!pathname || typeof pathname !== 'string') {
+    return '/'
+  }
+  const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`
+  if (!base || base === '/' || base === '') {
+    return normalizedPath || '/'
+  }
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`
+  const trimmedBase = normalizedBase.endsWith('/') ? normalizedBase.slice(0, -1) : normalizedBase
+  if (normalizedPath === trimmedBase) {
+    return '/'
+  }
+  if (normalizedPath.startsWith(normalizedBase)) {
+    const remainder = normalizedPath.slice(normalizedBase.length - 1)
+    return remainder || '/'
+  }
+  if (normalizedPath.startsWith(trimmedBase)) {
+    const remainder = normalizedPath.slice(trimmedBase.length)
+    return remainder.startsWith('/') ? remainder : `/${remainder}`
+  }
+  return normalizedPath || '/'
+}
+
+function normalizeRoutePath(path) {
+  if (!path) return '/'
+  if (path !== '/' && path.endsWith('/')) {
+    return path.slice(0, -1)
+  }
+  return path
+}
+
+const VIEW_ROUTES = {
+  home: '/',
+  admin: '/admin/dashboard',
+  community: '/dashboard/community',
+}
+
+const ROUTE_TO_VIEW = new Map(
+  Object.entries(VIEW_ROUTES).map(([view, route]) => [normalizeRoutePath(route), view]),
+)
+
+const ALLOWED_VIEWS = new Set(Object.keys(VIEW_ROUTES))
+
+function normalizeView(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+  const trimmed = value.trim().toLowerCase()
+  return ALLOWED_VIEWS.has(trimmed) ? trimmed : ''
+}
+
+function resolveViewFromPath(pathname) {
+  const stripped = normalizeRoutePath(stripBasePath(pathname))
+  if (ROUTE_TO_VIEW.has(stripped)) {
+    return ROUTE_TO_VIEW.get(stripped)
+  }
+  return 'home'
+}
+
+function buildApiUrl(path) {
+  const base = getApiBase()
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base
+  return `${normalizedBase}${normalizedPath}`
+}
+
+function apiFetch(path, options) {
+  return fetch(buildApiUrl(path), options)
 }
 
 function waitForGoogleSdk(timeout = 8000) {
@@ -377,6 +805,8 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  analysisCopyTitle: document.querySelector('[data-action="copy-analysis-title"]'),
+  analysisCopyKeywords: document.querySelector('[data-action="copy-analysis-keywords"]'),
   adminNavButton: document.querySelector('[data-role="admin-nav"]'),
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
   adminModal: document.querySelector('[data-role="admin-modal"]'),
@@ -390,6 +820,8 @@ const elements = {
   adminModalLogoutButton: document.querySelector('[data-role="admin-modal-logout"]'),
   adminCategoryBadge: document.querySelector('[data-role="admin-category"]'),
   adminDashboard: document.querySelector('[data-role="admin-dashboard"]'),
+  adminGuard: document.querySelector('[data-role="admin-guard"]'),
+  adminContent: document.querySelector('[data-role="admin-content"]'),
   adminImportForm: document.querySelector('[data-role="admin-import-form"]'),
   adminImportFile: document.querySelector('[data-role="admin-import-file"]'),
   adminImportManual: document.querySelector('[data-role="admin-import-manual"]'),
@@ -420,11 +852,13 @@ const elements = {
   navButtons: Array.from(document.querySelectorAll('[data-view-target]')),
   viewSections: Array.from(document.querySelectorAll('[data-view]')),
   loginModal: document.querySelector('[data-role="login-modal"]'),
+  loginIntentButtons: document.querySelectorAll('[data-role="login-intent"]'),
   googleLoginButton: document.querySelector('[data-role="google-login-button"]'),
   googleLoginText: document.querySelector('[data-role="google-login-text"]'),
   googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
   googleLoginHelper: document.querySelector('[data-role="google-login-helper"]'),
   communityLink: document.querySelector('[data-role="community-link"]'),
+  footerAdminLink: document.querySelector('[data-role="footer-admin-link"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
   loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
   loginEmailCodeInput: document.querySelector('[data-role="login-email-code"]'),
@@ -435,11 +869,19 @@ const elements = {
   cookieAnalytics: document.querySelector('[data-role="cookie-analytics"]'),
   cookieMarketing: document.querySelector('[data-role="cookie-marketing"]'),
   cookieConfirm: document.querySelector('[data-role="cookie-confirm"]'),
+  footerPlansLink: document.querySelector('[data-role="footer-plans-link"]'),
   cookieAcceptButton: document.querySelector('[data-action="accept-cookies"]'),
   creditDisplay: document.querySelector('[data-role="credit-display"]'),
   creditLabel: document.querySelector('[data-role="credit-label"]'),
   creditCount: document.querySelector('[data-role="credit-count"]'),
   headerAuthButton: document.querySelector('[data-role="header-auth"]'),
+  upgradeButton: document.querySelector('[data-role="upgrade-button"]'),
+  pricingSection: document.querySelector('[data-role="pricing-section"]'),
+  planModalBasic: document.querySelector('[data-role="plan-modal-basic"]'),
+  planModalPro: document.querySelector('[data-role="plan-modal-pro"]'),
+  planModalPremium: document.querySelector('[data-role="plan-modal-premium"]'),
+  planModalCloseButtons: document.querySelectorAll('[data-action="close-plan-modal"]'),
+  planModalViewButtons: document.querySelectorAll('[data-action="plan-modal-view-pricing"]'),
   stageIndicator: document.querySelector('[data-role="stage-indicator"]'),
   stageItems: document.querySelectorAll('[data-role="stage-indicator"] .stage__item'),
   stageMessage: document.querySelector('[data-role="stage-message"]'),
@@ -447,6 +889,9 @@ const elements = {
   operationsGate: document.querySelector('[data-role="operations-gate"]'),
   resultsGate: document.querySelector('[data-role="results-gate"]'),
   resultsCreditCount: document.querySelector('[data-role="results-credit-count"]'),
+  accessModal: document.querySelector('[data-role="access-modal"]'),
+  accessModalTitle: document.querySelector('[data-role="access-modal-title"]'),
+  accessModalMessage: document.querySelector('[data-role="access-modal-message"]'),
 }
 
 let statusTimer = null
@@ -466,6 +911,14 @@ function formatBytes(bytes) {
 
 function baseName(filename) {
   return filename.replace(/\.[^/.]+$/, '')
+}
+
+function deriveDisplayName(email) {
+  if (!email) return '크리에이터'
+  const local = email.split('@')[0] || ''
+  const cleaned = local.replace(/[._-]+/g, ' ').trim()
+  if (!cleaned) return '크리에이터'
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
 }
 
 function setStatus(message, tone = 'info', duration = 3200) {
@@ -520,6 +973,44 @@ function setStatus(message, tone = 'info', duration = 3200) {
       elements.status?.classList.add('status--hidden')
     }, resolvedDuration)
   }
+}
+
+async function copyTextToClipboard(value) {
+  const text = typeof value === 'string' ? value : ''
+  if (!text) return false
+
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch (error) {
+    // fallback below
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+  document.body.appendChild(textarea)
+  try {
+    textarea.focus({ preventScroll: true })
+  } catch (error) {
+    textarea.focus()
+  }
+  textarea.select()
+
+  let successful = false
+  try {
+    successful = document.execCommand('copy')
+  } catch (error) {
+    successful = false
+  }
+
+  document.body.removeChild(textarea)
+  return successful
 }
 
 function setGoogleButtonState(state = 'idle', labelOverride) {
@@ -939,11 +1430,13 @@ function resolveActiveTarget(preferred) {
 }
 
 function updateHeaderState() {
+  refreshMonthlyFreeCredits()
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
-  const creditsNumeric = Math.max(0, state.user.credits)
+  const totalCredits = getTotalCredits()
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
-  const formattedCredits = formatCreditsValue(state.user.credits)
+  const planKey = resolvePlanKey(state.user.plan)
+  const isMichina = planKey === 'michina' && !isAdmin
+  const formattedCredits = formatCreditsValue(totalCredits)
 
   if (elements.creditDisplay instanceof HTMLElement) {
     if (!loggedIn) {
@@ -951,7 +1444,7 @@ function updateHeaderState() {
     } else if (isAdmin) {
       elements.creditDisplay.dataset.state = 'unlimited'
     } else {
-      elements.creditDisplay.dataset.state = creditStateFromBalance(creditsNumeric)
+      elements.creditDisplay.dataset.state = creditStateFromBalance(totalCredits)
     }
   }
 
@@ -961,13 +1454,14 @@ function updateHeaderState() {
 
   if (elements.creditLabel instanceof HTMLElement) {
     if (!loggedIn) {
-      elements.creditLabel.textContent = '로그인하고 무료 30 크레딧 받기'
+      elements.creditLabel.textContent = `로그인하고 무료 ${FREE_MONTHLY_CREDITS} 크레딧 받기`
     } else if (isAdmin) {
       elements.creditLabel.textContent = '관리자 모드 · 무제한 이용'
     } else if (isMichina) {
       elements.creditLabel.textContent = '미치나 플랜 · 잔여 크레딧'
     } else {
-      elements.creditLabel.textContent = 'Freemium · 잔여 크레딧'
+      const badge = getPlanLabel()
+      elements.creditLabel.textContent = `${badge} 플랜 · 잔여 크레딧`
     }
   }
 
@@ -1004,9 +1498,11 @@ function updateOperationsGate() {
 
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
-  const credits = Math.max(0, state.user.credits)
-  const formattedCredits = formatCreditsValue(state.user.credits)
+  const planKey = resolvePlanKey(state.user.plan)
+  const isMichina = planKey === 'michina' && !isAdmin
+  const credits = getTotalCredits()
+  const formattedCredits = formatCreditsValue(credits)
+  const badge = getPlanLabel()
 
   let stateName = 'unlocked'
   let title = '작업 실행 크레딧 안내'
@@ -1015,7 +1511,7 @@ function updateOperationsGate() {
   if (!loggedIn) {
     stateName = 'locked'
     title = '로그인 후 도구를 실행해 주세요.'
-    copy = `실행 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 드립니다.`
+    copy = `실행 시 크레딧이 차감됩니다. 로그인하면 매월 1일 자동으로 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 지급됩니다.`
   } else if (isAdmin) {
     stateName = 'success'
     title = '관리자 모드가 활성화되어 있습니다.'
@@ -1032,6 +1528,8 @@ function updateOperationsGate() {
     stateName = 'warning'
     title = '잔여 크레딧이 적습니다.'
     copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 사용됩니다.`
+  } else {
+    copy = `${badge} 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
   }
 
   setGateContent(gate, { state: stateName, title, copy })
@@ -1051,10 +1549,12 @@ function updateResultsGate() {
 
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
-  const credits = Math.max(0, state.user.credits)
-  const formattedCredits = formatCreditsValue(state.user.credits)
+  const planKey = resolvePlanKey(state.user.plan)
+  const isMichina = planKey === 'michina' && !isAdmin
+  const credits = getTotalCredits()
+  const formattedCredits = formatCreditsValue(credits)
   const hasResults = state.results.length > 0
+  const badge = getPlanLabel()
 
   let stateName = 'unlocked'
   let title = '결과 저장 준비 완료'
@@ -1067,7 +1567,7 @@ function updateResultsGate() {
   } else if (!loggedIn) {
     stateName = 'locked'
     title = '로그인 후 결과를 저장할 수 있어요.'
-    copy = `다운로드/벡터 변환 시 크레딧이 차감됩니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧을 받습니다.`
+    copy = `다운로드/벡터 변환 시 크레딧이 차감됩니다. 로그인하면 매월 ${FREE_MONTHLY_CREDITS} 크레딧이 자동 충전됩니다.`
   } else if (isAdmin) {
     stateName = 'success'
     title = '관리자 모드가 활성화되어 있습니다.'
@@ -1084,6 +1584,16 @@ function updateResultsGate() {
     stateName = 'warning'
     title = '잔여 크레딧이 1개 이하입니다.'
     copy = `남은 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환은 이미지당 ${CREDIT_COSTS.svg} 크레딧이 필요합니다.`
+  } else if (planKey === 'free') {
+    copy = `${badge} 플랜은 표준 해상도 저장을 바로 이용할 수 있습니다. 고해상도와 일괄 저장은 BASIC 이상 플랜에서 제공됩니다.`
+  } else if (planKey === 'basic') {
+    copy = `BASIC 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 고해상도 다운로드 사용 시 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
+  } else if (planKey === 'pro') {
+    copy = `PRO 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · SVG 변환과 다운로드가 모두 활성화되어 있습니다.`
+  } else if (planKey === 'premium') {
+    copy = `PREMIUM 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 키워드 분석을 포함한 모든 기능을 사용할 수 있습니다.`
+  } else {
+    copy = `${badge} 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 다운로드/벡터 변환 시 크레딧이 차감됩니다.`
   }
 
   setGateContent(gate, { state: stateName, title, copy })
@@ -1108,20 +1618,21 @@ function updateAccessGates() {
 
 function getStageMessage(stageName) {
   const loggedIn = state.user.isLoggedIn
-  const credits = Math.max(0, state.user.credits)
+  const credits = getTotalCredits()
+  const badge = getPlanLabel()
 
   switch (stageName) {
     case 'upload':
       return loggedIn
         ? `업로드한 이미지를 선택하고 다음 단계를 준비하세요. 현재 잔여 크레딧은 ${credits}개입니다.`
-        : `로그인 전에 업로드 목록을 확인할 수 있어요. 계정을 연결하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 즉시 지급됩니다.`
+        : `로그인 전에 업로드 목록을 확인할 수 있어요. 계정을 연결하면 매월 1일 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 지급됩니다.`
     case 'refine':
       return loggedIn
-        ? `도구 실행 시 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개로 편집을 진행해보세요.`
-        : `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
+        ? `${badge} 플랜 잔여 크레딧 ${credits}개 · 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
+        : `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 매월 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
     case 'export':
       return loggedIn
-        ? `다운로드는 항목당 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개입니다.`
+        ? `${badge} 플랜 잔여 크레딧 ${credits}개 · 다운로드는 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다.`
         : '로그인 후 결과를 다운로드하거나 PNG→SVG 변환을 이용할 수 있어요.'
     default:
       return ''
@@ -1173,16 +1684,30 @@ function refreshAccessStates() {
   updateNavigationAccess()
 }
 
+function hasCommunityAccess() {
+  if (state.admin.isLoggedIn) {
+    return true
+  }
+  if (!state.user.isLoggedIn) {
+    return false
+  }
+  const profile = state.challenge.profile
+  if (profile && !profile.expired) {
+    return true
+  }
+  return resolvePlanKey(state.user.plan) === 'michina'
+}
+
 function canAccessView(rawView) {
   const view = typeof rawView === 'string' ? rawView.trim() : ''
   if (!view || view === 'home') {
     return true
   }
   if (view === 'community') {
-    return state.user.isLoggedIn && state.user.plan === 'michina'
+    return hasCommunityAccess()
   }
   if (view === 'admin') {
-    return state.admin.isLoggedIn
+    return true
   }
   return false
 }
@@ -1232,6 +1757,10 @@ function setView(rawView, options = {}) {
     return targetView
   }
   state.view = targetView
+  runtime.currentView = targetView
+  if (accessible && requested === targetView) {
+    runtime.lastAllowedView = targetView
+  }
   if (targetView === 'admin') {
     clearAdminNavHighlight()
     dismissAdminDashboardPrompt()
@@ -1245,31 +1774,81 @@ function setView(rawView, options = {}) {
 }
 
 function handleNavigationClick(targetView) {
-  const view = typeof targetView === 'string' ? targetView.trim() : ''
-  if (!view || view === 'home') {
-    setView('home')
+  const view = typeof targetView === 'string' ? targetView.trim() : 'home'
+  navigateToView(view)
+}
+
+function navigateToView(targetView, options = {}) {
+  const normalized = normalizeView(targetView) || 'home'
+  const replace = Boolean(options.replace)
+  const silent = Boolean(options.silent)
+  const route = joinBasePath(VIEW_ROUTES[normalized] || '/')
+
+  if (normalized === 'community' && !hasCommunityAccess()) {
+    if (!silent) {
+      openAccessModal(
+        '접근 권한이 없습니다.',
+        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+      )
+      setView(runtime.lastAllowedView || 'home', { force: true, bypassAccess: true })
+    }
+    if (replace) {
+      const fallbackView = runtime.lastAllowedView || 'home'
+      const fallbackRoute = joinBasePath(VIEW_ROUTES[fallbackView] || '/')
+      window.history.replaceState({ view: fallbackView }, '', fallbackRoute)
+    }
     return
   }
-  if (canAccessView(view)) {
-    if (view === 'admin') {
-      clearAdminNavHighlight()
+
+  if (!silent) {
+    setView(normalized, { force: true, bypassAccess: true })
+    if (normalized === 'admin' && !state.admin.isLoggedIn) {
+      openAdminModal({
+        message: '관리자 전용 페이지입니다.',
+        subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+        tone: 'warning',
+      })
     }
-    setView(view)
+  }
+
+  if (replace) {
+    window.history.replaceState({ view: normalized }, '', route)
+  } else {
+    if (window.history.state?.view !== normalized || window.location.pathname !== route) {
+      window.history.pushState({ view: normalized }, '', route)
+    }
+  }
+}
+
+function handlePopState() {
+  const view = normalizeView(resolveViewFromPath(window.location.pathname)) || 'home'
+  if (view === 'admin') {
+    setView('admin', { force: true, bypassAccess: true })
+    if (!state.admin.isLoggedIn) {
+      openAdminModal({
+        message: '관리자 전용 페이지입니다.',
+        subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+        tone: 'warning',
+      })
+    }
     return
   }
   if (view === 'community') {
-    if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-      setStatus('미치나 커뮤니티는 로그인 후 이용할 수 있습니다.', 'warning')
-      openLoginModal()
+    if (hasCommunityAccess()) {
+      setView('community', { force: true, bypassAccess: true })
     } else {
-      setStatus('미치나 플랜 참가자로 등록된 계정만 접근할 수 있습니다.', 'warning')
+      openAccessModal(
+        '접근 권한이 없습니다.',
+        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+      )
+      const fallbackView = runtime.lastAllowedView || 'home'
+      setView(fallbackView, { force: true, bypassAccess: true })
+      const fallbackRoute = joinBasePath(VIEW_ROUTES[fallbackView] || '/')
+      window.history.replaceState({ view: fallbackView }, '', fallbackRoute)
     }
     return
   }
-  if (view === 'admin') {
-    setStatus('관리자 로그인이 필요합니다.', 'warning')
-    openAdminModal()
-  }
+  setView('home', { force: true, bypassAccess: true })
 }
 
 function updateNavigationAccess() {
@@ -1289,33 +1868,42 @@ function updateNavigationAccess() {
         button.classList.remove('is-disabled')
         button.removeAttribute('aria-disabled')
       }
-    } else {
-      button.hidden = !accessible
-      if (isButton) {
-        button.disabled = !accessible
-        if (!accessible) {
-          button.setAttribute('aria-disabled', 'true')
-        } else {
-          button.removeAttribute('aria-disabled')
-        }
-      } else {
-        button.classList.toggle('is-disabled', !accessible)
-        if (!accessible) {
-          button.setAttribute('aria-disabled', 'true')
-        } else {
-          button.removeAttribute('aria-disabled')
-        }
+      return
+    }
+
+    if (target === 'community') {
+      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+      button.hidden = !loggedIn
+      if (!loggedIn) {
+        return
       }
     }
+
+    if (target === 'admin') {
+      return
+    }
+
+    if (isButton) {
+      button.disabled = !accessible
+    }
+
+    button.classList.toggle('is-disabled', !accessible)
+
+    if (!accessible) {
+      button.setAttribute('aria-disabled', 'true')
+    } else {
+      button.removeAttribute('aria-disabled')
+    }
+
     if (!accessible && state.view === target) {
       requiresFallback = true
     }
   })
 
   if (requiresFallback) {
-    setView(determineDefaultView(), { force: true, bypassAccess: runtime.allowViewBypass })
+    setView(determineDefaultView(), { force: true })
   } else {
-    setView(state.view, { force: true, bypassAccess: runtime.allowViewBypass })
+    setView(state.view, { force: true })
   }
 }
 
@@ -1411,9 +1999,14 @@ function showAdminDashboardShortcut(options = {}) {
 
 function getActivePlanKey() {
   if (state.admin.isLoggedIn) return 'admin'
-  if (state.user.plan === 'michina') return 'michina'
-  if (state.user.isLoggedIn) return 'freemium'
-  return 'public'
+  const plan = resolvePlanKey(state.user.plan)
+  if (!state.user.isLoggedIn && plan !== 'michina') {
+    return 'public'
+  }
+  if (plan === 'public' && state.user.isLoggedIn) {
+    return 'free'
+  }
+  return plan
 }
 
 function updatePlanExperience() {
@@ -1431,8 +2024,14 @@ function updatePlanExperience() {
       planState = 'completed'
     } else if (currentPlan === 'michina') {
       planState = 'michina'
-    } else if (currentPlan === 'freemium') {
-      planState = 'freemium'
+    } else if (currentPlan === 'premium') {
+      planState = 'premium'
+    } else if (currentPlan === 'pro') {
+      planState = 'pro'
+    } else if (currentPlan === 'basic') {
+      planState = 'basic'
+    } else if (currentPlan === 'free') {
+      planState = 'free'
     }
     elements.challengeSection.dataset.planState = planState
   }
@@ -1455,7 +2054,21 @@ function ensureActionAllowed(action, options = {}) {
     return true
   }
 
-  if (cost > 0 && state.user.credits < cost) {
+  const currentTier = getPlanTier(state.user.plan)
+  const requiredTier = getRequiredPlanTier(action)
+  if (requiredTier > currentTier) {
+    const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
+    if (gateElement instanceof HTMLElement) {
+      gateElement.dataset.state = 'locked'
+    }
+    const targetPlan = requiredTier === 1 ? 'basic' : requiredTier === 2 ? 'pro' : 'premium'
+    openPlanUpsell(targetPlan, action)
+    return false
+  }
+
+  const credits = getTotalCredits()
+
+  if (cost > 0 && credits < cost) {
     setStatus('크레딧이 부족합니다. 충전 후 다시 시도해주세요.', 'danger')
     const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
     if (gateElement instanceof HTMLElement) {
@@ -1465,7 +2078,7 @@ function ensureActionAllowed(action, options = {}) {
     return false
   }
 
-  if (cost > 0 && state.user.credits <= 2) {
+  if (cost > 0 && credits <= 2) {
     const gateElement = gateKey === 'results' ? elements.resultsGate : elements.operationsGate
     if (gateElement instanceof HTMLElement && gateElement.dataset.state !== 'danger') {
       gateElement.dataset.state = 'warning'
@@ -1479,21 +2092,62 @@ function ensureActionAllowed(action, options = {}) {
 function consumeCredits(action, count = 1) {
   const cost = getCreditCost(action, count)
   if (cost <= 0 || hasUnlimitedAccess()) return
-  state.user.credits = Math.max(0, state.user.credits - cost)
+  state.user.creditBalance = deductCredits(state.user.creditBalance, cost)
   state.user.totalUsed += cost
   refreshAccessStates()
 }
 
-function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, plan = 'freemium' } = {}) {
+function applyLoginProfile({
+  name,
+  email,
+  credits = FREE_MONTHLY_CREDITS,
+  plan = 'free',
+  subscriptionCredits,
+  topUpCredits,
+  planExpiresAt,
+  topUpExpiresAt,
+} = {}) {
   const normalizedName = typeof name === 'string' && name.trim().length > 0 ? name.trim() : '크리에이터'
   state.user.isLoggedIn = true
   state.user.name = normalizedName
   state.user.email = typeof email === 'string' ? email : state.user.email
-  state.user.plan = plan
-  if (plan === 'michina' || plan === 'admin') {
-    state.user.credits = Number.MAX_SAFE_INTEGER
+  const normalizedPlan = resolvePlanKey(plan === 'public' ? 'free' : plan)
+  state.user.plan = normalizedPlan
+  state.user.planExpiresAt = typeof planExpiresAt === 'string' ? planExpiresAt : ''
+  state.user.topUpExpiresAt = typeof topUpExpiresAt === 'string' ? topUpExpiresAt : ''
+
+  if (normalizedPlan === 'admin') {
+    state.user.creditBalance = createCreditBalance({ subscription: Number.MAX_SAFE_INTEGER })
+    state.user.lastFreeRefresh = monthKey()
+    state.user.topUpExpiresAt = ''
   } else {
-    state.user.credits = Math.max(state.user.credits, credits)
+    resetCreditBalanceForPlan(normalizedPlan)
+    const balance = state.user.creditBalance
+    if (typeof subscriptionCredits === 'number' && Number.isFinite(subscriptionCredits)) {
+      balance.subscription = Math.max(0, Math.round(subscriptionCredits))
+    }
+    if (typeof topUpCredits === 'number' && Number.isFinite(topUpCredits)) {
+      balance.topUp = Math.max(0, Math.round(topUpCredits))
+    }
+    const expiryTime = state.user.topUpExpiresAt ? Date.parse(state.user.topUpExpiresAt) : NaN
+    if (Number.isFinite(expiryTime)) {
+      if (expiryTime <= Date.now()) {
+        balance.topUp = 0
+        state.user.topUpExpiresAt = ''
+      } else {
+        state.user.topUpExpiresAt = new Date(expiryTime).toISOString()
+      }
+    } else {
+      state.user.topUpExpiresAt = ''
+    }
+    const baseTotal = getTotalCredits(balance)
+    if (typeof credits === 'number' && Number.isFinite(credits)) {
+      const normalizedCredits = Math.max(0, Math.round(credits))
+      if (normalizedCredits > baseTotal) {
+        balance.topUp += normalizedCredits - baseTotal
+      }
+    }
+    state.user.creditBalance = balance
   }
   state.user.totalUsed = 0
   refreshAccessStates()
@@ -1501,7 +2155,7 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
 
 async function handleLogout() {
   try {
-    await fetch('/api/auth/admin/logout', { method: 'POST' })
+    await apiFetch('/api/auth/admin/logout', { method: 'POST' })
   } catch (error) {
     // ignore network errors
   }
@@ -1512,14 +2166,17 @@ async function handleLogout() {
   state.user.name = ''
   state.user.email = ''
   state.user.plan = 'public'
-  state.user.credits = 0
+  state.user.creditBalance = createCreditBalance({})
+  state.user.planExpiresAt = ''
+  state.user.lastFreeRefresh = ''
   state.user.totalUsed = 0
   state.challenge.profile = null
   state.challenge.certificate = null
   hasShownAdminDashboardPrompt = false
   dismissAdminDashboardPrompt()
   clearAdminNavHighlight()
-  setView('home', { force: true })
+  navigateToView('home', { replace: true, silent: true })
+  setView('home', { force: true, bypassAccess: true })
   refreshAccessStates()
   renderChallengeDashboard()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
@@ -1582,15 +2239,17 @@ function setAdminMessage(message = '', tone = 'info') {
   elements.adminLoginMessage.dataset.tone = tone
 }
 
-function openAdminModal() {
+function openAdminModal(options = {}) {
   if (!(elements.adminModal instanceof HTMLElement)) return
   const isAdmin = state.admin.isLoggedIn
+  const customMessage = typeof options.message === 'string' ? options.message : ''
+  const customSubtitle = typeof options.subtitle === 'string' ? options.subtitle : ''
+  const messageTone = typeof options.tone === 'string' ? options.tone : 'muted'
 
   if (isAdmin) {
     setAdminMessage('', 'info')
     setStatus('관리자 모드가 활성화되어 있습니다. 필요한 작업을 선택하세요.', 'info')
   } else {
-    setAdminMessage('등록된 관리자만 접근할 수 있습니다.', 'muted')
     if (elements.adminLoginForm instanceof HTMLFormElement) {
       elements.adminLoginForm.dataset.state = 'idle'
       elements.adminLoginForm.reset()
@@ -1604,6 +2263,15 @@ function openAdminModal() {
   }
 
   updateAdminModalState()
+
+  if (!isAdmin) {
+    const subtitleText = customSubtitle || '등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.'
+    if (elements.adminModalSubtitle instanceof HTMLElement) {
+      elements.adminModalSubtitle.textContent = subtitleText
+    }
+    const messageText = customMessage || '등록된 관리자만 접근할 수 있습니다.'
+    setAdminMessage(messageText, messageTone)
+  }
 
   elements.adminModal.classList.add('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'false')
@@ -1643,7 +2311,9 @@ function revokeAdminSessionState() {
     state.user.name = ''
     state.user.email = ''
     state.user.plan = 'public'
-    state.user.credits = 0
+    state.user.creditBalance = createCreditBalance({})
+    state.user.planExpiresAt = ''
+    state.user.lastFreeRefresh = ''
     state.user.totalUsed = 0
   }
   hasShownAdminDashboardPrompt = false
@@ -1657,7 +2327,7 @@ function revokeAdminSessionState() {
 
 async function syncAdminSession() {
   try {
-    const response = await fetch('/api/auth/session', {
+    const response = await apiFetch('/api/auth/session', {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
       credentials: 'include',
@@ -1768,7 +2438,13 @@ function updateAdminUI() {
   }
   updateAdminModalState()
   if (elements.adminDashboard instanceof HTMLElement) {
-    elements.adminDashboard.hidden = !isAdmin
+    elements.adminDashboard.dataset.state = isAdmin ? 'active' : 'locked'
+  }
+  if (elements.adminGuard instanceof HTMLElement) {
+    elements.adminGuard.hidden = isAdmin
+  }
+  if (elements.adminContent instanceof HTMLElement) {
+    elements.adminContent.hidden = !isAdmin
   }
   if (elements.adminCategoryBadge instanceof HTMLElement) {
     elements.adminCategoryBadge.hidden = !isAdmin
@@ -1784,9 +2460,8 @@ function updateAdminUI() {
     elements.adminNavButton.hidden = !isAdmin
     if (elements.adminNavButton instanceof HTMLButtonElement) {
       elements.adminNavButton.disabled = !isAdmin
-    } else {
-      elements.adminNavButton.classList.toggle('is-disabled', !isAdmin)
     }
+    elements.adminNavButton.classList.toggle('is-disabled', !isAdmin)
     if (isAdmin) {
       elements.adminNavButton.removeAttribute('aria-disabled')
     } else {
@@ -2014,7 +2689,7 @@ async function fetchAdminParticipants() {
     return []
   }
   try {
-    const response = await fetch('/api/admin/challenge/participants', {
+    const response = await apiFetch('/api/admin/challenge/participants', {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
       credentials: 'include',
@@ -2091,7 +2766,7 @@ async function handleAdminLogin(event) {
   }
 
   try {
-    const response = await fetch('/api/auth/admin/login', {
+    const response = await apiFetch('/api/auth/admin/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -2219,7 +2894,7 @@ async function handleAdminImport(event) {
       }
     }
 
-    const response = await fetch('/api/admin/challenge/import', {
+    const response = await apiFetch('/api/admin/challenge/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -2281,7 +2956,7 @@ async function handleAdminRunCompletion() {
     return
   }
   try {
-    const response = await fetch('/api/admin/challenge/run-completion-check', {
+    const response = await apiFetch('/api/admin/challenge/run-completion-check', {
       method: 'POST',
       credentials: 'include',
     })
@@ -2311,7 +2986,7 @@ async function handleAdminDownloadCompletion() {
     return
   }
   try {
-    const response = await fetch('/api/admin/challenge/completions?format=csv', {
+    const response = await apiFetch('/api/admin/challenge/completions?format=csv', {
       credentials: 'include',
     })
     if (response.status === 401) {
@@ -2547,7 +3222,7 @@ async function ensureChallengeCertificate(email) {
     return null
   }
   try {
-    const response = await fetch(`/api/challenge/certificate?email=${encodeURIComponent(email)}`, {
+    const response = await apiFetch(`/api/challenge/certificate?email=${encodeURIComponent(email)}`, {
       cache: 'no-store',
     })
     if (!response.ok) {
@@ -2604,7 +3279,7 @@ async function syncChallengeProfile(explicitEmail) {
   }
   state.challenge.loading = true
   try {
-    const response = await fetch(`/api/challenge/profile?email=${encodeURIComponent(email)}`, {
+    const response = await apiFetch(`/api/challenge/profile?email=${encodeURIComponent(email)}`, {
       cache: 'no-store',
     })
     if (!response.ok) {
@@ -2612,18 +3287,34 @@ async function syncChallengeProfile(explicitEmail) {
     }
     const payload = await response.json().catch(() => ({}))
     if (payload && payload.exists && payload.participant) {
-      state.challenge.profile = payload.participant
+      const participant = { ...payload.participant }
+      const expired = isPlanExpired(participant.endDate)
+      participant.expired = expired
+      state.challenge.profile = participant
       if (state.user.plan !== 'admin') {
-        state.user.plan = payload.participant.plan ?? state.user.plan
-        state.user.email = payload.participant.email
-        if (!state.user.name && payload.participant.name) {
-          state.user.name = payload.participant.name
+        const participantPlan = resolvePlanKey(participant.plan)
+        state.user.planExpiresAt = typeof participant.endDate === 'string' ? participant.endDate : state.user.planExpiresAt
+        if (participantPlan === 'michina' && !expired) {
+          state.user.plan = 'michina'
+          resetCreditBalanceForPlan('michina')
+        } else if (expired && state.user.plan === 'michina') {
+          state.user.plan = state.user.isLoggedIn ? 'free' : 'public'
+          state.user.planExpiresAt = ''
+          if (state.user.isLoggedIn) {
+            resetCreditBalanceForPlan('free')
+          } else {
+            state.user.creditBalance = createCreditBalance({})
+          }
+        }
+        state.user.email = participant.email
+        if (!state.user.name && participant.name) {
+          state.user.name = participant.name
         }
       }
       renderChallengeDashboard()
       refreshAccessStates()
-      if (payload.participant.completed) {
-        await ensureChallengeCertificate(payload.participant.email)
+      if (participant.completed) {
+        await ensureChallengeCertificate(participant.email)
       } else {
         state.challenge.certificate = null
       }
@@ -2632,7 +3323,12 @@ async function syncChallengeProfile(explicitEmail) {
     state.challenge.profile = null
     state.challenge.certificate = null
     if (state.user.plan === 'michina' && state.user.plan !== 'admin') {
-      state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
+      state.user.plan = state.user.isLoggedIn ? 'free' : 'public'
+      if (state.user.isLoggedIn) {
+        resetCreditBalanceForPlan('free')
+      } else {
+        state.user.creditBalance = createCreditBalance({})
+      }
       refreshAccessStates()
     }
     renderChallengeDashboard()
@@ -2702,7 +3398,7 @@ async function handleChallengeSubmit(event) {
   setStatus(`Day ${day} 제출을 저장하는 중입니다…`, 'info')
 
   try {
-    const response = await fetch('/api/challenge/submit', {
+    const response = await apiFetch('/api/challenge/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2795,6 +3491,40 @@ function setLoginHelper(message) {
   }
 }
 
+function getDefaultLoginHelper(intent = state.auth.intent) {
+  return intent === 'register'
+    ? '이메일 주소를 입력하면 가입 인증 코드를 보내드립니다.'
+    : '이메일 주소를 입력하면 로그인 인증 코드를 보내드립니다.'
+}
+
+function refreshLoginIntentUI() {
+  const disabled = state.auth.step === 'code' || state.auth.step === 'loading'
+  elements.loginIntentButtons?.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    const targetIntent = button.dataset.intent === 'register' ? 'register' : 'login'
+    const isActive = targetIntent === state.auth.intent
+    button.classList.toggle('is-active', isActive)
+    button.setAttribute('aria-pressed', isActive ? 'true' : 'false')
+    button.disabled = disabled
+    button.setAttribute('aria-disabled', disabled ? 'true' : 'false')
+  })
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.dataset.intent = state.auth.intent
+  }
+}
+
+function setAuthIntent(intent, options = {}) {
+  const normalized = intent === 'register' ? 'register' : 'login'
+  state.auth.intent = normalized
+  if (!options.skipHelper) {
+    setLoginHelper(getDefaultLoginHelper(normalized))
+  }
+  refreshLoginIntentUI()
+  if (!options.skipSyncState) {
+    updateLoginFormState(state.auth.step)
+  }
+}
+
 function encourageEmailFallback() {
   if (state.auth.step !== 'idle') return
   if (!(elements.loginEmailHelper instanceof HTMLElement)) return
@@ -2810,8 +3540,14 @@ function updateLoginFormState(step) {
     elements.loginEmailForm.dataset.state = step
   }
   if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
-    elements.loginEmailSubmit.textContent = step === 'code' ? '코드 확인 후 로그인' : '인증 코드 받기'
-    elements.loginEmailSubmit.disabled = false
+    let label = '인증 코드 받기'
+    if (step === 'code') {
+      label = state.auth.intent === 'register' ? '코드 확인 후 가입 완료' : '코드 확인 후 로그인'
+    } else if (step === 'loading') {
+      label = '처리 중…'
+    }
+    elements.loginEmailSubmit.textContent = label
+    elements.loginEmailSubmit.disabled = step === 'loading'
   }
   if (elements.loginEmailResend instanceof HTMLButtonElement) {
     elements.loginEmailResend.hidden = step !== 'code'
@@ -2819,21 +3555,27 @@ function updateLoginFormState(step) {
   }
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.readOnly = step === 'code'
+    elements.loginEmailInput.disabled = step === 'loading'
   }
   if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
     elements.loginEmailCodeInput.disabled = step !== 'code'
     if (step !== 'code') {
       elements.loginEmailCodeInput.value = ''
+    } else {
+      window.requestAnimationFrame(() => elements.loginEmailCodeInput.focus())
     }
   }
+  refreshLoginIntentUI()
 }
 
 function resetLoginFlow() {
   state.auth.step = 'idle'
+  state.auth.intent = 'login'
   state.auth.pendingEmail = ''
-  state.auth.code = ''
   state.auth.expiresAt = 0
+  state.auth.issuedAt = 0
   state.auth.attempts = 0
+  state.auth.cooldownUntil = 0
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
     elements.loginEmailForm.reset()
@@ -2841,6 +3583,7 @@ function resetLoginFlow() {
   }
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.readOnly = false
+    elements.loginEmailInput.disabled = false
   }
   if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
     elements.loginEmailCodeInput.disabled = true
@@ -2854,51 +3597,98 @@ function resetLoginFlow() {
     elements.loginEmailResend.hidden = true
     elements.loginEmailResend.disabled = true
   }
-  setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+  setAuthIntent('login', { skipHelper: false, skipSyncState: true })
+  setLoginHelper(getDefaultLoginHelper('login'))
+  updateLoginFormState('idle')
   clearGoogleCooldown()
   runtime.google.retryCount = 0
   updateGoogleProviderAvailability()
-}
-
-function generateVerificationCode() {
-  return `${Math.floor(100000 + Math.random() * 900000)}`
 }
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
-function startEmailVerification(email) {
+async function startEmailVerification(email, options = {}) {
   const normalizedEmail = email.trim().toLowerCase()
   state.auth.pendingEmail = normalizedEmail
-  state.auth.code = generateVerificationCode()
-  state.auth.expiresAt = Date.now() + 5 * 60 * 1000
-  state.auth.attempts = 0
-
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.value = normalizedEmail
   }
 
-  updateLoginFormState('code')
+  updateLoginFormState('loading')
 
-  if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
-    window.requestAnimationFrame(() => elements.loginEmailCodeInput.focus())
-  }
+  try {
+    const response = await apiFetch('/api/auth/email/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalizedEmail, intent: state.auth.intent }),
+      credentials: 'include',
+    })
 
-  const helperMessage = `입력한 주소(${normalizedEmail})로 인증 코드를 전송했습니다. 5분 내에 6자리 코드를 입력하세요. (샌드박스 테스트용 코드: ${state.auth.code})`
-  setLoginHelper(helperMessage)
-  setStatus(`${normalizedEmail} 주소로 인증 코드를 전송했습니다. 이메일을 확인한 뒤 코드를 입력해주세요.`, 'info')
-}
+    const detail = await response.json().catch(() => ({}))
 
-function isVerificationCodeValid(code) {
-  if (!state.auth.code || Date.now() > state.auth.expiresAt) {
-    return { valid: false, reason: 'expired' }
+    if (!response.ok) {
+      const errorCode = detail?.error
+      switch (errorCode) {
+        case 'ACCOUNT_NOT_FOUND': {
+          setStatus('가입되지 않은 이메일 주소입니다. 회원가입 탭으로 전환해 인증 코드를 받아보세요.', 'warning')
+          setAuthIntent('register', { skipHelper: false })
+          break
+        }
+        case 'EMAIL_ALREADY_REGISTERED': {
+          setStatus('이미 가입된 이메일 주소입니다. 로그인 탭에서 인증 코드를 요청해주세요.', 'warning')
+          setAuthIntent('login', { skipHelper: false })
+          break
+        }
+        case 'VERIFICATION_RATE_LIMITED': {
+          const retryAfterSeconds = Number(detail?.retryAfter ?? 0)
+          const bounded = Number.isFinite(retryAfterSeconds) ? Math.max(1, Math.ceil(retryAfterSeconds)) : 30
+          state.auth.cooldownUntil = Date.now() + bounded * 1000
+          setStatus(`인증 코드 요청이 너무 잦습니다. 약 ${bounded}초 후 다시 시도해주세요.`, 'danger')
+          break
+        }
+        case 'EMAIL_SENDER_NOT_CONFIGURED':
+        case 'EMAIL_DELIVERY_FAILED': {
+          setStatus('인증 이메일을 전송할 수 없습니다. 관리자에게 문의해주세요.', 'danger')
+          break
+        }
+        case 'INVALID_EMAIL': {
+          setStatus('이메일 주소 형식이 올바르지 않습니다. 다시 입력해주세요.', 'danger')
+          break
+        }
+        default: {
+          setStatus('인증 코드를 요청하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+        }
+      }
+      updateLoginFormState('idle')
+      return
+    }
+
+    const issuedAt = Number(detail?.issuedAt ?? Date.now())
+    const expiresAt = Number(detail?.expiresAt ?? issuedAt + 5 * 60 * 1000)
+    state.auth.issuedAt = Number.isFinite(issuedAt) ? issuedAt : Date.now()
+    state.auth.expiresAt = Number.isFinite(expiresAt) ? expiresAt : state.auth.issuedAt + 5 * 60 * 1000
+    state.auth.attempts = 0
+    state.auth.cooldownUntil = 0
+
+    updateLoginFormState('code')
+
+    const helperMessage =
+      state.auth.intent === 'register'
+        ? `${normalizedEmail} 주소로 인증 코드를 전송했습니다. 받은 코드를 입력하면 가입이 완료됩니다.`
+        : `${normalizedEmail} 주소로 인증 코드를 전송했습니다. 받은 코드를 입력하면 로그인할 수 있습니다.`
+    setLoginHelper(helperMessage)
+
+    const statusMessage = options.resend
+      ? `${normalizedEmail} 주소로 새로운 인증 코드를 전송했습니다.`
+      : `${normalizedEmail} 주소로 인증 코드를 전송했습니다.`
+    setStatus(statusMessage, 'success')
+  } catch (error) {
+    console.error('email verification request error', error)
+    setStatus('인증 코드를 요청하는 중 오류가 발생했습니다. 네트워크 상태를 확인한 뒤 다시 시도해주세요.', 'danger')
+    updateLoginFormState('idle')
   }
-  if (code !== state.auth.code) {
-    state.auth.attempts += 1
-    return { valid: false, reason: 'mismatch' }
-  }
-  return { valid: true }
 }
 
 function updateOperationAvailability() {
@@ -3038,7 +3828,7 @@ async function handleGoogleLogin(event) {
 
     setStatus('Google 계정을 확인하고 있습니다…', 'info', 0)
 
-    const response = await fetch('/api/auth/google', {
+    const response = await apiFetch('/api/auth/google', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -3078,7 +3868,7 @@ async function handleGoogleLogin(event) {
         ? profile.name.trim()
         : email || 'Google 사용자'
 
-    applyLoginProfile({ name: displayName, email: email || undefined, plan: 'freemium' })
+    applyLoginProfile({ name: displayName, email: email || undefined, plan: 'free' })
     runtime.google.retryCount = 0
     clearGoogleCooldown()
     runtime.google.lastErrorHint = ''
@@ -3087,7 +3877,7 @@ async function handleGoogleLogin(event) {
     window.setTimeout(() => setGoogleLoginHelper('', 'muted'), 3200)
     closeLoginModal()
     setStatus(
-      `${displayName} Google 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`,
+      `${displayName} Google 계정으로 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`,
       'success',
     )
 
@@ -3224,7 +4014,7 @@ async function handleGoogleLogin(event) {
   }
 }
 
-function handleEmailResend(event) {
+async function handleEmailResend(event) {
   event.preventDefault()
   const currentEmail =
     state.auth.pendingEmail ||
@@ -3242,11 +4032,192 @@ function handleEmailResend(event) {
     updateLoginFormState('idle')
     return
   }
-  startEmailVerification(currentEmail)
-  setStatus(`${currentEmail} 주소로 새로운 인증 코드를 전송했습니다.`, 'success')
+  await startEmailVerification(currentEmail, { resend: true })
 }
 
-function handleEmailLogin(event) {
+async function verifyEmailCode(submittedCode) {
+  const email = state.auth.pendingEmail
+  if (!email) {
+    setStatus('이메일 정보를 확인할 수 없습니다. 다시 인증 코드를 요청해주세요.', 'danger')
+    updateLoginFormState('idle')
+    setLoginHelper(getDefaultLoginHelper())
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+    return
+  }
+
+  updateLoginFormState('loading')
+
+  try {
+    const response = await apiFetch('/api/auth/email/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code: submittedCode, intent: state.auth.intent }),
+      credentials: 'include',
+    })
+
+    const detail = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      const errorCode = detail?.error
+      switch (errorCode) {
+        case 'CODE_INVALID': {
+          const remaining = Number(detail?.remainingAttempts ?? 0)
+          const bounded = Number.isFinite(remaining) ? Math.max(0, Math.floor(remaining)) : 0
+          const helper =
+            bounded > 0
+              ? `코드가 일치하지 않습니다. 다시 입력해주세요. (남은 시도 ${bounded}회)`
+              : '인증 코드를 여러 번 잘못 입력했습니다. 새 코드를 요청해주세요.'
+          setLoginHelper(helper)
+          setStatus('인증 코드가 일치하지 않습니다.', 'danger')
+          if (bounded <= 0) {
+            state.auth.pendingEmail = ''
+            state.auth.expiresAt = 0
+            state.auth.issuedAt = 0
+            updateLoginFormState('idle')
+            setLoginHelper(getDefaultLoginHelper())
+            if (elements.loginEmailInput instanceof HTMLInputElement) {
+              elements.loginEmailInput.focus()
+            }
+          } else {
+            updateLoginFormState('code')
+            if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+              elements.loginEmailCodeInput.select()
+            }
+          }
+          return
+        }
+        case 'CODE_EXPIRED': {
+          setStatus('인증 코드가 만료되었습니다. 새 코드를 요청해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+        case 'VERIFICATION_NOT_FOUND': {
+          setStatus('인증 정보를 찾을 수 없습니다. 다시 요청해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          return
+        }
+        case 'VERIFICATION_ATTEMPTS_EXCEEDED': {
+          setStatus('인증 시도 횟수를 초과했습니다. 새 코드를 요청해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          return
+        }
+        case 'ACCOUNT_NOT_FOUND': {
+          setStatus('계정을 찾을 수 없습니다. 회원가입 후 이용해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setAuthIntent('register', { skipHelper: false })
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+        case 'EMAIL_ALREADY_REGISTERED': {
+          setStatus('이미 가입된 이메일 주소입니다. 로그인 탭에서 진행해주세요.', 'warning')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setAuthIntent('login', { skipHelper: false })
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+        case 'INVALID_CODE_FORMAT': {
+          setStatus('인증 코드 형식이 올바르지 않습니다.', 'danger')
+          updateLoginFormState('code')
+          if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
+            elements.loginEmailCodeInput.select()
+          }
+          return
+        }
+        default: {
+          setStatus('인증 코드를 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+          state.auth.pendingEmail = ''
+          state.auth.expiresAt = 0
+          state.auth.issuedAt = 0
+          updateLoginFormState('idle')
+          setLoginHelper(getDefaultLoginHelper())
+          if (elements.loginEmailInput instanceof HTMLInputElement) {
+            elements.loginEmailInput.focus()
+          }
+          return
+        }
+      }
+    }
+
+    const profile = detail?.profile ?? {}
+    const normalizedEmail =
+      typeof profile.email === 'string' && profile.email.trim().length > 0 ? profile.email.trim() : email
+    const displayName =
+      typeof profile.name === 'string' && profile.name.trim().length > 0
+        ? profile.name.trim()
+        : deriveDisplayName(normalizedEmail)
+
+    applyLoginProfile({
+      name: displayName,
+      email: normalizedEmail,
+      plan: profile.plan || 'free',
+      subscriptionCredits: profile.subscriptionCredits,
+      topUpCredits: profile.topUpCredits,
+      planExpiresAt: profile.planExpiresAt,
+      topUpExpiresAt: profile.topUpExpiresAt,
+      credits: profile.credits,
+    })
+    refreshAccessStates()
+
+    state.auth.pendingEmail = ''
+    state.auth.expiresAt = 0
+    state.auth.issuedAt = 0
+    state.auth.attempts = 0
+    state.auth.cooldownUntil = 0
+
+    closeLoginModal()
+
+    const resolvedIntent = detail?.intent === 'register' ? 'register' : state.auth.intent
+    const successMessage =
+      resolvedIntent === 'register'
+        ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
+        : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
+    setStatus(successMessage, 'success')
+
+    if (normalizedEmail) {
+      await syncChallengeProfile(normalizedEmail)
+    }
+  } catch (error) {
+    console.error('verify email code error', error)
+    setStatus('인증 코드를 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    state.auth.pendingEmail = ''
+    state.auth.expiresAt = 0
+    state.auth.issuedAt = 0
+    updateLoginFormState('idle')
+    setLoginHelper(getDefaultLoginHelper())
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+  }
+}
+
+async function handleEmailLogin(event) {
   event.preventDefault()
   if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
 
@@ -3257,58 +4228,7 @@ function handleEmailLogin(event) {
       setStatus('이메일로 받은 인증 코드를 입력해주세요.', 'danger')
       return
     }
-    const result = isVerificationCodeValid(submittedCode)
-    if (!result.valid) {
-      if (result.reason === 'expired') {
-        setStatus('인증 코드가 만료되었습니다. 새 코드를 요청해주세요.', 'danger')
-        state.auth.pendingEmail = ''
-        state.auth.code = ''
-        state.auth.expiresAt = 0
-        updateLoginFormState('idle')
-        setLoginHelper('인증 코드가 만료되었습니다. 이메일을 확인한 뒤 다시 요청해주세요.')
-        if (elements.loginEmailInput instanceof HTMLInputElement) {
-          elements.loginEmailInput.focus()
-        }
-        return
-      }
-      if (result.reason === 'mismatch') {
-        const remaining = Math.max(0, 5 - state.auth.attempts)
-        const helper =
-          remaining > 0
-            ? `코드가 일치하지 않습니다. 다시 입력해주세요. (남은 시도 ${remaining}회)`
-            : '인증 코드를 여러 번 잘못 입력했습니다. 새 코드를 요청해주세요.'
-        setLoginHelper(helper)
-        setStatus('인증 코드가 일치하지 않습니다.', 'danger')
-        if (remaining <= 0) {
-          state.auth.pendingEmail = ''
-          state.auth.code = ''
-          state.auth.expiresAt = 0
-          updateLoginFormState('idle')
-          setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
-          if (elements.loginEmailInput instanceof HTMLInputElement) {
-            elements.loginEmailInput.focus()
-          }
-        } else if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
-          elements.loginEmailCodeInput.select()
-        }
-        return
-      }
-    }
-
-    const email = state.auth.pendingEmail
-    if (!email) {
-      setStatus('이메일 정보를 확인할 수 없습니다. 다시 시도해주세요.', 'danger')
-      state.auth.pendingEmail = ''
-      state.auth.code = ''
-      state.auth.expiresAt = 0
-      updateLoginFormState('idle')
-      setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
-      return
-    }
-    const nickname = email.includes('@') ? email.split('@')[0] : email
-    applyLoginProfile({ name: nickname, email })
-    closeLoginModal()
-    setStatus(`${email} 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`, 'success')
+    await verifyEmailCode(submittedCode)
     return
   }
 
@@ -3322,7 +4242,12 @@ function handleEmailLogin(event) {
     setStatus('유효한 이메일 주소인지 확인해주세요.', 'danger')
     return
   }
-  startEmailVerification(email)
+  if (state.auth.cooldownUntil && Date.now() < state.auth.cooldownUntil) {
+    const remainingSeconds = Math.max(1, Math.ceil((state.auth.cooldownUntil - Date.now()) / 1000))
+    setStatus(`인증 코드 요청은 약 ${remainingSeconds}초 후 다시 시도할 수 있습니다.`, 'warning')
+    return
+  }
+  await startEmailVerification(email)
 }
 
 function handleGlobalKeydown(event) {
@@ -3333,12 +4258,19 @@ function handleGlobalKeydown(event) {
   if (elements.adminModal?.classList.contains('is-active')) {
     closeAdminModal()
   }
+  if (activePlanModal instanceof HTMLElement) {
+    closePlanUpsell()
+  }
 }
 
 function showCookieBanner() {
   if (!elements.cookieBanner) return
   elements.cookieBanner.classList.add('is-visible')
   elements.cookieBanner.setAttribute('aria-hidden', 'false')
+  if (elements.cookieConfirm instanceof HTMLInputElement) {
+    elements.cookieConfirm.checked = false
+  }
+  updateCookieAcceptState()
 }
 
 function hideCookieBanner() {
@@ -3351,7 +4283,14 @@ function readCookieConsent() {
   try {
     const value = window.localStorage.getItem('cookieConsent')
     if (!value) return null
-    return JSON.parse(value)
+    const parsed = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+    if (parsed.version !== COOKIE_CONSENT_VERSION) {
+      return null
+    }
+    return parsed
   } catch (error) {
     console.warn('쿠키 동의 정보를 불러오지 못했습니다.', error)
     return null
@@ -3360,7 +4299,8 @@ function readCookieConsent() {
 
 function writeCookieConsent(consent) {
   try {
-    window.localStorage.setItem('cookieConsent', JSON.stringify(consent))
+    const payload = { ...consent, version: COOKIE_CONSENT_VERSION }
+    window.localStorage.setItem('cookieConsent', JSON.stringify(payload))
   } catch (error) {
     console.warn('쿠키 동의 정보를 저장하지 못했습니다.', error)
   }
@@ -4230,6 +5170,29 @@ function getAnalysisKey(target) {
   return `${target.type}:${target.id}`
 }
 
+function getActiveAnalysisData() {
+  const key = getAnalysisKey(state.activeTarget)
+  if (!key) return null
+  const data = state.analysis.get(key)
+  if (!data) {
+    return null
+  }
+  return data
+}
+
+function sanitizeAnalysisKeywords(rawKeywords) {
+  if (!Array.isArray(rawKeywords)) {
+    return []
+  }
+  return rawKeywords
+    .map((keyword) => {
+      if (typeof keyword === 'string') return keyword.trim()
+      if (keyword === null || typeof keyword === 'undefined') return ''
+      return String(keyword).trim()
+    })
+    .filter((keyword) => keyword.length > 0)
+}
+
 function removeAnalysisFor(type, id) {
   state.analysis.delete(`${type}:${id}`)
 }
@@ -4250,6 +5213,10 @@ function displayAnalysisFor(target) {
   state.activeTarget = normalizedTarget
 
   const button = elements.analysisButton instanceof HTMLButtonElement ? elements.analysisButton : null
+  const copyTitleButton =
+    elements.analysisCopyTitle instanceof HTMLButtonElement ? elements.analysisCopyTitle : null
+  const copyKeywordsButton =
+    elements.analysisCopyKeywords instanceof HTMLButtonElement ? elements.analysisCopyKeywords : null
   if (button) {
     button.disabled = state.processing || !normalizedTarget
   }
@@ -4262,6 +5229,12 @@ function displayAnalysisFor(target) {
     elements.analysisHeadline.textContent = ''
     elements.analysisKeywords.innerHTML = ''
     elements.analysisSummary.textContent = ''
+    if (copyTitleButton) {
+      copyTitleButton.disabled = true
+    }
+    if (copyKeywordsButton) {
+      copyKeywordsButton.disabled = true
+    }
   }
 
   if (!normalizedTarget) {
@@ -4290,9 +5263,66 @@ function displayAnalysisFor(target) {
     elements.analysisMeta.textContent = ''
   }
   elements.analysisHint.textContent = ''
-  elements.analysisHeadline.textContent = data.title || ''
-  elements.analysisKeywords.innerHTML = data.keywords.map((keyword) => `<li>${keyword}</li>`).join('')
+  const normalizedTitle = typeof data.title === 'string' ? data.title.trim() : ''
+  elements.analysisHeadline.textContent = normalizedTitle
+  const normalizedKeywords = sanitizeAnalysisKeywords(data.keywords)
+  elements.analysisKeywords.innerHTML = normalizedKeywords.map((keyword) => `<li>${keyword}</li>`).join('')
   elements.analysisSummary.textContent = data.summary
+
+  if (copyTitleButton) {
+    copyTitleButton.disabled = normalizedTitle.length === 0
+  }
+  if (copyKeywordsButton) {
+    copyKeywordsButton.disabled = normalizedKeywords.length === 0
+  }
+}
+
+async function handleCopyAnalysisTitle() {
+  const data = getActiveAnalysisData()
+  const title = typeof data?.title === 'string' ? data.title.trim() : ''
+  if (!title) {
+    setStatus('복사할 분석 제목이 없습니다.', 'danger')
+    return
+  }
+
+  const copied = await copyTextToClipboard(title)
+  if (copied) {
+    setStatus('분석 제목을 복사했습니다.', 'success')
+  } else {
+    setStatus('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해주세요.', 'danger')
+  }
+}
+
+async function handleCopyAnalysisKeywords() {
+  const data = getActiveAnalysisData()
+  const keywords = sanitizeAnalysisKeywords(data?.keywords)
+  const title = typeof data?.title === 'string' ? data.title.trim() : ''
+
+  if (!data || (keywords.length === 0 && !title)) {
+    setStatus('복사할 분석 결과가 없습니다.', 'danger')
+    return
+  }
+
+  const lines = []
+  if (title) {
+    lines.push(`제목: ${title}`)
+  }
+  if (keywords.length > 0) {
+    lines.push(`키워드 (${keywords.length}개):`)
+    lines.push(keywords.join(', '))
+  }
+
+  const payload = lines.join('\n')
+  const copied = await copyTextToClipboard(payload)
+  if (copied) {
+    if (keywords.length > 0) {
+      setStatus(`제목과 키워드 ${keywords.length}개를 복사했습니다.`, 'success')
+    } else {
+      setStatus('분석 제목을 복사했습니다.', 'success')
+    }
+  } else {
+    setStatus('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해주세요.', 'danger')
+  }
 }
 
 function rgbToHsl(r, g, b) {
@@ -4878,7 +5908,7 @@ async function analyzeCurrentImage() {
 
     let fallbackReason = ''
     try {
-      const response = await fetch('/api/analyze', {
+      const response = await apiFetch('/api/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5657,7 +6687,7 @@ async function downloadResults(ids, mode = 'selected') {
     const url = URL.createObjectURL(zipBlob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `easy-image-results-${Date.now()}.zip`
+    link.download = `elliesbang-image-results-${Date.now()}.zip`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -5721,7 +6751,7 @@ function attachEventListeners() {
     elements.adminLoginButton.addEventListener('click', (event) => {
       event.preventDefault()
       if (state.admin.isLoggedIn) {
-        setView('admin')
+        navigateToView('admin')
         if (elements.adminDashboard instanceof HTMLElement) {
           elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }
@@ -5729,7 +6759,11 @@ function attachEventListeners() {
           elements.adminNavButton.focus()
         }
       } else {
-        openAdminModal()
+        openAdminModal({
+          message: '관리자 전용 페이지입니다.',
+          subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+          tone: 'warning',
+        })
       }
     })
   }
@@ -5742,10 +6776,17 @@ function attachEventListeners() {
     })
   })
 
+  if (elements.footerAdminLink instanceof HTMLAnchorElement) {
+    elements.footerAdminLink.addEventListener('click', (event) => {
+      event.preventDefault()
+      navigateToView('admin')
+    })
+  }
+
   if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
     elements.adminModalDashboardButton.addEventListener('click', () => {
       closeAdminModal()
-      setView('admin')
+      navigateToView('admin')
       if (elements.adminDashboard instanceof HTMLElement) {
         elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
@@ -5770,6 +6811,53 @@ function attachEventListeners() {
       button.addEventListener('click', closeAdminModal)
     }
   })
+
+  document.querySelectorAll('[data-action="open-login-modal"]').forEach((button) => {
+    if (button instanceof HTMLElement) {
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        openLoginModal()
+      })
+    }
+  })
+
+  elements.loginIntentButtons?.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      if (state.auth.step === 'code' || state.auth.step === 'loading') {
+        return
+      }
+      const targetIntent = button.dataset.intent === 'register' ? 'register' : 'login'
+      if (targetIntent !== state.auth.intent) {
+        setAuthIntent(targetIntent)
+      }
+    })
+  })
+
+  document.querySelectorAll('[data-action="open-admin-modal"]').forEach((button) => {
+    if (button instanceof HTMLElement) {
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        openAdminModal({
+          message: '관리자 전용 페이지입니다.',
+          subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+          tone: 'warning',
+        })
+      })
+    }
+  })
+
+  document.querySelectorAll('[data-action="close-access-modal"]').forEach((button) => {
+    if (button instanceof HTMLElement) {
+      button.addEventListener('click', closeAccessModal)
+    }
+  })
+
+  const accessBackdrop = elements.accessModal?.querySelector('.plan-modal__backdrop')
+  if (accessBackdrop instanceof HTMLElement) {
+    accessBackdrop.addEventListener('click', closeAccessModal)
+  }
 
   const adminBackdrop = elements.adminModal?.querySelector('.admin-modal__backdrop')
   if (adminBackdrop instanceof HTMLElement) {
@@ -5851,6 +6939,14 @@ function attachEventListeners() {
 
   if (elements.analysisButton instanceof HTMLButtonElement) {
     elements.analysisButton.addEventListener('click', analyzeCurrentImage)
+  }
+
+  if (elements.analysisCopyTitle instanceof HTMLButtonElement) {
+    elements.analysisCopyTitle.addEventListener('click', handleCopyAnalysisTitle)
+  }
+
+  if (elements.analysisCopyKeywords instanceof HTMLButtonElement) {
+    elements.analysisCopyKeywords.addEventListener('click', handleCopyAnalysisKeywords)
   }
 
   if (elements.resizeInput instanceof HTMLInputElement) {
@@ -5940,54 +7036,253 @@ function attachEventListeners() {
       })
     })
 
+  const plansLinkHref = resolvePlansLinkHref()
+
+  if (elements.upgradeButton instanceof HTMLAnchorElement) {
+    elements.upgradeButton.href = plansLinkHref
+  } else if (elements.upgradeButton instanceof HTMLElement) {
+    elements.upgradeButton.addEventListener('click', (event) => {
+      event.preventDefault()
+      window.location.href = plansLinkHref
+    })
+  }
+
+  if (elements.footerPlansLink instanceof HTMLAnchorElement) {
+    elements.footerPlansLink.href = plansLinkHref
+  }
+
+  elements.planModalCloseButtons?.forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      closePlanUpsell()
+    })
+  })
+
+  elements.planModalViewButtons?.forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      closePlanUpsell()
+      scrollToPricingSection()
+    })
+  })
+
+  document.querySelectorAll('[data-role="pricing-upgrade"]').forEach((button) => {
+    if (!(button instanceof HTMLElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      const plan = (button.getAttribute('data-plan') || '').toLowerCase()
+      if (plan) {
+        openPlanUpsell(plan)
+      } else {
+        scrollToPricingSection()
+      }
+    })
+  })
+
+  document.querySelectorAll('[data-role="pricing-free-login"]').forEach((button) => {
+    if (!(button instanceof HTMLElement)) return
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      openLoginModal()
+    })
+  })
+
   document.addEventListener('keydown', handleGlobalKeydown)
 }
 
-function init() {
-  const config = getAppConfig()
-  const allowedViews = new Set(['home', 'community', 'admin'])
-  const normalizeView = (value) => {
-    if (typeof value !== 'string') return ''
-    const trimmed = value.trim().toLowerCase()
-    return allowedViews.has(trimmed) ? trimmed : ''
+async function init() {
+  let config = getAppConfig()
+  const needsRemoteConfig = !config || Object.keys(config).length === 0 || !config.apiBase
+
+  if (needsRemoteConfig) {
+    try {
+      const response = await apiFetch('/api/config', {
+        headers: {
+          Accept: 'application/json',
+        },
+      })
+      if (response.ok) {
+        const remoteConfig = await response.json()
+        if (remoteConfig && typeof remoteConfig === 'object') {
+          config = { ...config, ...remoteConfig }
+          runtime.config = config
+          runtime.apiBase = normalizeApiBase(config.apiBase)
+          const script = document.querySelector('script[data-role="app-config"]')
+          if (script) {
+            script.textContent = JSON.stringify(config)
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('원격 앱 구성을 불러오지 못했습니다.', error)
+    }
+  }
+
+  config = runtime.config || config || {}
+  runtime.config = config
+  runtime.apiBase = normalizeApiBase(config.apiBase)
+  runtime.basePath = normalizeBasePath(config.basePath)
+
+  if (runtime.basePath !== (config.basePath || '/')) {
+    config.basePath = runtime.basePath
+  }
+
+  const baseElement = document.querySelector('base[href]')
+  if (baseElement && typeof baseElement.setAttribute === 'function') {
+    if (baseElement.getAttribute('href') !== runtime.basePath) {
+      baseElement.setAttribute('href', runtime.basePath)
+    }
+  }
+
+  if (elements.loginEmailForm instanceof HTMLFormElement) {
+    elements.loginEmailForm.method = 'post'
+    elements.loginEmailForm.action = buildApiUrl('/api/auth/email/request')
+  }
+
+  if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
+    elements.loginEmailSubmit.disabled = false
+  }
+
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.method = 'post'
+    elements.adminLoginForm.action = buildApiUrl('/api/auth/admin/login')
+  }
+
+  const resolvedCommunityUrl =
+    typeof config.communityUrl === 'string' && config.communityUrl.trim()
+      ? config.communityUrl.trim()
+      : joinBasePath(VIEW_ROUTES.community)
+
+  if (elements.communityLink instanceof HTMLAnchorElement) {
+    elements.communityLink.href = resolvedCommunityUrl
+  }
+
+  if (elements.footerAdminLink instanceof HTMLAnchorElement) {
+    elements.footerAdminLink.href = joinBasePath(VIEW_ROUTES.admin)
+  }
+
+  const spaRedirectPath = typeof window !== 'undefined' ? consumeSpaRedirect() : ''
+  const cameFromSpaRedirect = Boolean(spaRedirectPath)
+  let redirectUrl = null
+
+  if (spaRedirectPath) {
+    try {
+      redirectUrl = new URL(spaRedirectPath, window.location.origin)
+    } catch (error) {
+      console.warn('SPA 리디렉션 경로를 해석하지 못했습니다.', error)
+    }
   }
 
   let requestedView = ''
+  let canonicalSearch = ''
+  let canonicalHash = ''
+  let locationSearch = ''
+  let locationHash = ''
+  let locationRequestedView = ''
   try {
     const url = new URL(window.location.href)
-    requestedView = normalizeView(url.searchParams.get('view'))
-    if (!requestedView && url.hash) {
-      requestedView = normalizeView(url.hash.replace('#', ''))
+    locationSearch = url.search
+    locationHash = url.hash
+    const queryView = normalizeView(url.searchParams.get('view'))
+    if (queryView) {
+      locationRequestedView = queryView
+      url.searchParams.delete('view')
+      locationSearch = url.search
+    } else if (url.hash) {
+      const hashView = normalizeView(url.hash.replace('#', ''))
+      if (hashView) {
+        locationRequestedView = hashView
+        url.hash = ''
+        locationHash = url.hash
+      }
     }
   } catch (error) {
     requestedView = ''
   }
 
-  const configInitial = normalizeView(config.initialView)
-  const initialView = requestedView || configInitial || 'home'
-
-  runtime.config = config
-  runtime.initialView = initialView
-  const allowBypass = initialView !== 'home' && initialView !== 'admin'
-  runtime.allowViewBypass = allowBypass
-  state.view = initialView
-
-  if (elements.communityLink instanceof HTMLAnchorElement) {
-    const configuredUrl = typeof config.communityUrl === 'string' ? config.communityUrl.trim() : ''
-    if (configuredUrl) {
-      elements.communityLink.href = configuredUrl
-    }
+  if (redirectUrl) {
+    canonicalSearch = redirectUrl.search
+    canonicalHash = redirectUrl.hash
+    requestedView = normalizeView(resolveViewFromPath(redirectUrl.pathname)) || ''
   }
 
-  if (runtime.allowViewBypass) {
-    setView(initialView, { force: true, bypassAccess: true })
+  if (!requestedView) {
+    requestedView = locationRequestedView
+  }
+
+  if (!canonicalSearch) {
+    canonicalSearch = locationSearch
+  }
+
+  if (!canonicalHash) {
+    canonicalHash = locationHash
+  }
+
+  const configInitial = normalizeView(config.initialView)
+  const overrideInitialRoute = redirectUrl ? redirectUrl.pathname : ''
+  const pathForInitialView = overrideInitialRoute || window.location.pathname
+  const pathView = normalizeView(resolveViewFromPath(pathForInitialView)) || 'home'
+  let initialView = requestedView || configInitial || pathView || 'home'
+  const initialViewWasExplicit =
+    Boolean(requestedView) ||
+    Boolean(configInitial) ||
+    (pathView && pathView !== 'home')
+
+  if (initialView === 'admin' && !initialViewWasExplicit && !state.admin.isLoggedIn) {
+    initialView = 'home'
+  }
+
+  runtime.initialView = initialView
+  runtime.initialViewExplicit = initialViewWasExplicit
+  runtime.initialViewFromRedirect = cameFromSpaRedirect
+  runtime.lastAllowedView = 'home'
+
+  const initialRoute = overrideInitialRoute || joinBasePath(VIEW_ROUTES[initialView] || '/')
+  window.history.replaceState({ view: initialView }, '', `${initialRoute}${canonicalSearch}${canonicalHash}`)
+
+  const shouldPromptAdminLogin =
+    initialView === 'admin' &&
+    !state.admin.isLoggedIn &&
+    initialViewWasExplicit &&
+    !cameFromSpaRedirect
+
+  if (initialView === 'admin') {
+    setView('admin', { force: true, bypassAccess: true })
+    runtime.lastAllowedView = state.admin.isLoggedIn ? 'admin' : 'home'
+    if (shouldPromptAdminLogin) {
+      if (shouldPromptAdminLogin) {
+        openAdminModal({
+          message: '관리자 전용 페이지입니다.',
+          subtitle: '등록된 운영진만 접근할 수 있습니다. 인증 후 계속하세요.',
+          tone: 'warning',
+        })
+      }
+    }
+  } else if (initialView === 'community') {
+    if (hasCommunityAccess()) {
+      setView('community', { force: true, bypassAccess: true })
+      runtime.lastAllowedView = 'community'
+    } else {
+      runtime.lastAllowedView = 'home'
+      setView('home', { force: true, bypassAccess: true })
+      if (!cameFromSpaRedirect) {
+        openAccessModal(
+          '접근 권한이 없습니다.',
+          '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+        )
+      }
+      window.history.replaceState({ view: 'home' }, '', joinBasePath(VIEW_ROUTES.home))
+    }
   } else {
-    setView(initialView, { force: true })
+    setView('home', { force: true, bypassAccess: true })
+    runtime.lastAllowedView = 'home'
+    window.history.replaceState({ view: 'home' }, '', joinBasePath(VIEW_ROUTES.home))
   }
 
   updateOperationAvailability()
   updateResultActionAvailability()
   attachEventListeners()
+  window.addEventListener('popstate', handlePopState)
   updateAdminUI()
   initCookieBanner()
   resetLoginFlow()
@@ -6002,7 +7297,12 @@ function init() {
   refreshAccessStates()
 
   syncAdminSession().finally(() => {
-    if (runtime.initialView === 'admin' && !state.admin.isLoggedIn) {
+    if (
+      runtime.initialView === 'admin' &&
+      runtime.initialViewExplicit &&
+      !runtime.initialViewFromRedirect &&
+      !state.admin.isLoggedIn
+    ) {
       window.setTimeout(() => {
         if (!state.admin.isLoggedIn) {
           openAdminModal()
@@ -6012,4 +7312,6 @@ function init() {
   })
 }
 
-document.addEventListener('DOMContentLoaded', init)
+document.addEventListener('DOMContentLoaded', () => {
+  void init()
+})

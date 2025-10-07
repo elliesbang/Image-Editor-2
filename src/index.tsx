@@ -1,25 +1,63 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
+import { createHash } from 'node:crypto'
+import { createConnection } from 'node:net'
+import { connect as createTlsConnection } from 'node:tls'
 import { renderer } from './renderer'
+
+type KeyValueListKey = {
+  name: string
+}
+
+type KeyValueListResult = {
+  keys: KeyValueListKey[]
+  list_complete: boolean
+  cursor?: string
+}
+
+type KeyValueListOptions = {
+  prefix: string
+  cursor?: string
+}
+
+interface KeyValueStore {
+  get(key: string): Promise<string | null>
+  put(key: string, value: string): Promise<void>
+  delete(key: string): Promise<void>
+  list(options: KeyValueListOptions): Promise<KeyValueListResult>
+}
 
 type Bindings = {
   OPENAI_API_KEY?: string
+  OPEN_AI_API_KEY?: string
   ADMIN_EMAIL?: string
+  ADMIN_MAIL?: string
+  ADMIN_PASSWORD?: string
   ADMIN_PASSWORD_HASH?: string
   SESSION_SECRET?: string
   ADMIN_SESSION_VERSION?: string
   ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
   ADMIN_RATE_LIMIT_WINDOW_SECONDS?: string
   ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
-  CHALLENGE_KV?: KVNamespace
-  CHALLENGE_KV_BACKUP?: KVNamespace
+  CHALLENGE_KV?: KeyValueStore
+  CHALLENGE_KV_BACKUP?: KeyValueStore
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REDIRECT_URI?: string
   MICHINA_COMMUNITY_URL?: string
+  RESEND_API_KEY?: string
+  SENDGRID_API_KEY?: string
+  EMAIL_FROM_ADDRESS?: string
+  EMAIL_FROM_NAME?: string
+  EMAIL_SMTP_HOST?: string
+  EMAIL_SMTP_PORT?: string
+  EMAIL_SMTP_SECURE?: string
+  EMAIL_SMTP_USER?: string
+  EMAIL_SMTP_PASSWORD?: string
+  EMAIL_BRAND_NAME?: string
+  EMAIL_OTP_EXPIRY_SECONDS?: string
 }
 
 type ChallengeSubmission = {
@@ -70,6 +108,49 @@ type AdminRateLimitConfig = {
   cooldownSeconds: number
 }
 
+type UserPlan = 'public' | 'free' | 'basic' | 'pro' | 'premium' | 'michina' | 'admin'
+
+type UserAccount = {
+  email: string
+  name?: string
+  plan: UserPlan
+  createdAt: string
+  updatedAt: string
+  lastLoginAt?: string
+  subscriptionCredits?: number
+  topUpCredits?: number
+  topUpExpiresAt?: string
+  planExpiresAt?: string
+  lastOtpAt?: string
+  metadata?: Record<string, unknown>
+}
+
+type EmailVerificationIntent = 'login' | 'register'
+
+type EmailVerificationRecord = {
+  email: string
+  codeHash: string
+  intent: EmailVerificationIntent
+  issuedAt: number
+  expiresAt: number
+  attempts: number
+  createdAt: string
+  updatedAt: string
+}
+
+type EmailDispatchContext = {
+  brand: string
+  from: string
+  expirySeconds: number
+}
+
+type EmailSendPayload = {
+  to: string
+  subject: string
+  text: string
+  html: string
+}
+
 type AdminConfigValidationResult = {
   config: AdminConfig | null
   issues: string[]
@@ -90,23 +171,110 @@ type RateLimitStatus = {
 }
 
 const ADMIN_SESSION_COOKIE = 'admin_session'
-const ADMIN_SESSION_ISSUER = 'easy-image-editor'
-const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
+const ADMIN_SESSION_ISSUER = 'elliesbang-image-editor'
+const ADMIN_SESSION_AUDIENCE = 'elliesbang-image-editor/admin'
 const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
 const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
+const MIN_ADMIN_PASSWORD_LENGTH = 12
 const PARTICIPANT_KEY_PREFIX = 'participant:'
+const USER_ACCOUNT_KEY_PREFIX = 'user:'
+const EMAIL_VERIFICATION_KEY_PREFIX = 'email-verification:'
+const EMAIL_VERIFICATION_COOLDOWN_MS = 30_000
+const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5
+const EMAIL_VERIFICATION_CODE_LENGTH = 6
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
+const DEFAULT_EMAIL_OTP_EXPIRY_SECONDS = 300
+const FREE_MONTHLY_CREDITS = 30
+const TOP_UP_VALIDITY_DAYS = 365
+const TOP_UP_VALIDITY_MS = TOP_UP_VALIDITY_DAYS * 24 * 60 * 60 * 1000
+const SERVER_FUNCTION_PATH = '/.netlify/functions/server'
+const API_BASE_PATH = SERVER_FUNCTION_PATH
+const ALLOWED_CORS_ORIGINS = new Set([
+  'https://elliesbang-image-editor.netlify.app',
+  'https://www.elliesbang-image-editor.netlify.app',
+  'https://elliesbang.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+])
+const DEFAULT_CORS_HEADERS = 'Content-Type,Authorization'
+const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
+const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
+const STATIC_PAGE_SLUGS = new Set(['privacy', 'terms', 'cookies', 'plans'])
+
+function resolveAppHref(target?: string) {
+  const trimmed = target?.replace(/^\/+/u, '') ?? ''
+
+  if (!trimmed) {
+    return PUBLIC_BASE_PATH === '/' ? './' : PUBLIC_BASE_PATH
+  }
+
+  if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
+    return trimmed
+  }
+
+  const normalizedSlug = trimmed.replace(/\.html$/u, '')
+  const requiresHtmlExtension = STATIC_PAGE_SLUGS.has(normalizedSlug)
+  const normalizedTarget = requiresHtmlExtension ? `${normalizedSlug}.html` : trimmed
+  const withoutLeadingSlash = normalizedTarget.startsWith('/')
+    ? normalizedTarget.slice(1)
+    : normalizedTarget
+
+  return PUBLIC_BASE_PATH === '/' ? `./${withoutLeadingSlash}` : `${PUBLIC_BASE_PATH}${withoutLeadingSlash}`
+}
+
+function resolveCorsOrigin(origin: string | null | undefined) {
+  if (!origin) return ''
+  const trimmed = origin.trim()
+  if (!trimmed) return ''
+  if (ALLOWED_CORS_ORIGINS.has(trimmed)) {
+    return trimmed
+  }
+  return ''
+}
+
+function applyCorsHeaders(c: Context<{ Bindings: Bindings }>, origin: string) {
+  if (!origin) return
+  c.res.headers.set('Access-Control-Allow-Origin', origin)
+  c.res.headers.set('Access-Control-Allow-Credentials', 'true')
+  const currentVary = c.res.headers.get('Vary')
+  if (!currentVary) {
+    c.res.headers.set('Vary', 'Origin')
+  } else if (!currentVary.split(',').map((value) => value.trim()).includes('Origin')) {
+    c.res.headers.set('Vary', `${currentVary}, Origin`)
+  }
+}
+
+type RuntimeProcess = {
+  env?: Record<string, string | undefined>
+}
+
+const runtimeProcess =
+  typeof globalThis !== 'undefined' && 'process' in globalThis
+    ? (globalThis as { process?: RuntimeProcess }).process
+    : undefined
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
+const inMemoryExpiryStore = new Map<string, number>()
+const inMemoryBackupExpiryStore = new Map<string, number>()
 const rateLimitMemoryStore = new Map<string, RateLimitRecord>()
 
 function encodeKey(email: string) {
   return `${PARTICIPANT_KEY_PREFIX}${email.toLowerCase()}`
+}
+
+function encodeUserKey(email: string) {
+  return `${USER_ACCOUNT_KEY_PREFIX}${email.toLowerCase()}`
+}
+
+function buildVerificationKey(email: string) {
+  return `${EMAIL_VERIFICATION_KEY_PREFIX}${email.toLowerCase()}`
 }
 
 function isValidEmail(value: unknown): value is string {
@@ -149,21 +317,51 @@ function getFixedWindowBoundaries(now: number, windowSeconds: number) {
   }
 }
 
+function resolveAdminEmail(env: Bindings): string {
+  const raw = (env.ADMIN_MAIL ?? env.ADMIN_EMAIL ?? '').trim().toLowerCase()
+  return raw
+}
+
+function resolveOpenAIKey(env: Bindings): string | null {
+  const candidates = [env.OPENAI_API_KEY, env.OPEN_AI_API_KEY]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim()
+      if (trimmed.length > 0) {
+        return trimmed
+      }
+    }
+  }
+  return null
+}
+
 function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   const issues: string[] = []
 
-  const emailRaw = env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
+  const emailRaw = resolveAdminEmail(env)
   if (!emailRaw) {
-    issues.push('ADMIN_EMAIL is not configured')
+    issues.push('ADMIN_MAIL or ADMIN_EMAIL is not configured')
   } else if (!isValidEmail(emailRaw)) {
-    issues.push('ADMIN_EMAIL must be a valid email address')
+    issues.push('ADMIN_MAIL/ADMIN_EMAIL must be a valid email address')
   }
 
   const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
-  if (!passwordHashRaw) {
-    issues.push('ADMIN_PASSWORD_HASH is not configured')
-  } else if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-    issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
+  const passwordPlain = env.ADMIN_PASSWORD?.trim() ?? ''
+  let passwordHash = ''
+  if (passwordHashRaw) {
+    if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
+      issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
+    } else {
+      passwordHash = passwordHashRaw
+    }
+  } else if (passwordPlain) {
+    if (passwordPlain.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      issues.push(`ADMIN_PASSWORD must be at least ${MIN_ADMIN_PASSWORD_LENGTH} characters`)
+    } else {
+      passwordHash = createHash('sha256').update(passwordPlain, 'utf8').digest('hex')
+    }
+  } else {
+    issues.push('ADMIN_PASSWORD or ADMIN_PASSWORD_HASH must be configured')
   }
 
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
@@ -187,7 +385,7 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   return {
     config: {
       email: emailRaw,
-      passwordHash: passwordHashRaw,
+      passwordHash,
       sessionSecret: sessionSecretRaw,
       sessionVersion: sessionVersionRaw,
     },
@@ -555,13 +753,25 @@ async function kvGet(env: Bindings, key: string) {
   if (!primary) {
     const memoryValue = inMemoryStore.get(key)
     if (memoryValue) {
-      return memoryValue
+      const expiry = inMemoryExpiryStore.get(key)
+      if (typeof expiry === 'number' && expiry > 0 && expiry <= Date.now()) {
+        inMemoryStore.delete(key)
+        inMemoryExpiryStore.delete(key)
+      } else {
+        return memoryValue
+      }
     }
   }
   if (!backup) {
     const backupMemoryValue = inMemoryBackupStore.get(key)
     if (backupMemoryValue) {
-      return backupMemoryValue
+      const expiry = inMemoryBackupExpiryStore.get(key)
+      if (typeof expiry === 'number' && expiry > 0 && expiry <= Date.now()) {
+        inMemoryBackupStore.delete(key)
+        inMemoryBackupExpiryStore.delete(key)
+      } else {
+        return backupMemoryValue
+      }
     }
   }
   return null
@@ -572,12 +782,33 @@ async function kvPut(env: Bindings, key: string, value: string) {
     await env.CHALLENGE_KV.put(key, value)
   } else {
     inMemoryStore.set(key, value)
+    inMemoryExpiryStore.delete(key)
   }
 
   if (env.CHALLENGE_KV_BACKUP) {
     await env.CHALLENGE_KV_BACKUP.put(key, value)
   } else if (!env.CHALLENGE_KV) {
     inMemoryBackupStore.set(key, value)
+    inMemoryBackupExpiryStore.delete(key)
+  }
+}
+
+async function kvPutWithTTL(env: Bindings, key: string, value: string, ttlSeconds: number) {
+  const normalizedTtl = Math.max(1, Math.ceil(ttlSeconds))
+  const ttlMs = normalizedTtl * 1000
+
+  if (env.CHALLENGE_KV) {
+    await env.CHALLENGE_KV.put(key, value, { expirationTtl: normalizedTtl })
+  } else {
+    inMemoryStore.set(key, value)
+    inMemoryExpiryStore.set(key, Date.now() + ttlMs)
+  }
+
+  if (env.CHALLENGE_KV_BACKUP) {
+    await env.CHALLENGE_KV_BACKUP.put(key, value, { expirationTtl: normalizedTtl })
+  } else if (!env.CHALLENGE_KV) {
+    inMemoryBackupStore.set(key, value)
+    inMemoryBackupExpiryStore.set(key, Date.now() + ttlMs)
   }
 }
 
@@ -586,13 +817,563 @@ async function kvDelete(env: Bindings, key: string) {
     await env.CHALLENGE_KV.delete(key)
   } else {
     inMemoryStore.delete(key)
+    inMemoryExpiryStore.delete(key)
   }
 
   if (env.CHALLENGE_KV_BACKUP) {
     await env.CHALLENGE_KV_BACKUP.delete(key)
   } else if (!env.CHALLENGE_KV) {
     inMemoryBackupStore.delete(key)
+    inMemoryBackupExpiryStore.delete(key)
   }
+}
+
+function normalizeTopUpState(account: UserAccount): boolean {
+  if (!account) return false
+  const now = Date.now()
+  const credits = Number(account.topUpCredits ?? 0)
+  const hasCredits = Number.isFinite(credits) && credits > 0
+  const expiresRaw = typeof account.topUpExpiresAt === 'string' ? account.topUpExpiresAt.trim() : ''
+
+  if (!hasCredits) {
+    if (expiresRaw) {
+      account.topUpExpiresAt = ''
+      return true
+    }
+    account.topUpExpiresAt = ''
+    return false
+  }
+
+  if (!expiresRaw) {
+    account.topUpExpiresAt = new Date(now + TOP_UP_VALIDITY_MS).toISOString()
+    return true
+  }
+
+  const expiresAt = Date.parse(expiresRaw)
+  if (!Number.isFinite(expiresAt)) {
+    account.topUpExpiresAt = new Date(now + TOP_UP_VALIDITY_MS).toISOString()
+    return true
+  }
+
+  if (expiresAt <= now) {
+    account.topUpCredits = 0
+    account.topUpExpiresAt = ''
+    return true
+  }
+
+  return false
+}
+
+async function getUserAccount(env: Bindings, email: string): Promise<UserAccount | null> {
+  const key = encodeUserKey(email)
+  const stored = await kvGet(env, key)
+  if (!stored) return null
+  try {
+    const parsed = JSON.parse(stored) as UserAccount
+    if (typeof parsed.email !== 'string' || !parsed.email) {
+      return null
+    }
+    if (!parsed.plan) {
+      parsed.plan = 'free'
+    }
+    if (normalizeTopUpState(parsed)) {
+      await saveUserAccount(env, parsed)
+    }
+    return parsed
+  } catch (error) {
+    console.error('[auth/email] Failed to parse user account record', error)
+    return null
+  }
+}
+
+async function saveUserAccount(env: Bindings, account: UserAccount) {
+  const normalizedEmail = account.email.trim().toLowerCase()
+  const nowIso = new Date().toISOString()
+  normalizeTopUpState(account)
+  const record: UserAccount = {
+    email: normalizedEmail,
+    name: account.name,
+    plan: account.plan || 'free',
+    createdAt: account.createdAt || nowIso,
+    updatedAt: nowIso,
+    lastLoginAt: account.lastLoginAt,
+    subscriptionCredits: account.subscriptionCredits,
+    topUpCredits: account.topUpCredits,
+    topUpExpiresAt: account.topUpExpiresAt,
+    planExpiresAt: account.planExpiresAt,
+    lastOtpAt: account.lastOtpAt,
+    metadata: account.metadata,
+  }
+  await kvPut(env, encodeUserKey(normalizedEmail), JSON.stringify(record))
+}
+
+async function deleteUserAccount(env: Bindings, email: string) {
+  await kvDelete(env, encodeUserKey(email))
+}
+
+async function getEmailVerificationRecord(env: Bindings, email: string): Promise<EmailVerificationRecord | null> {
+  const key = buildVerificationKey(email)
+  const stored = await kvGet(env, key)
+  if (!stored) return null
+  try {
+    const parsed = JSON.parse(stored) as EmailVerificationRecord
+    if (!parsed.email || !parsed.codeHash) {
+      await kvDelete(env, key)
+      return null
+    }
+    if (typeof parsed.attempts !== 'number' || !Number.isFinite(parsed.attempts)) {
+      parsed.attempts = 0
+    }
+    if (typeof parsed.issuedAt !== 'number' || typeof parsed.expiresAt !== 'number') {
+      await kvDelete(env, key)
+      return null
+    }
+    if (parsed.expiresAt <= Date.now()) {
+      await kvDelete(env, key)
+      return null
+    }
+    return parsed
+  } catch (error) {
+    console.error('[auth/email] Failed to parse verification record', error)
+    await kvDelete(env, key)
+    return null
+  }
+}
+
+async function saveEmailVerificationRecord(env: Bindings, record: EmailVerificationRecord) {
+  const updated: EmailVerificationRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+  }
+  if (!updated.createdAt) {
+    updated.createdAt = updated.updatedAt
+  }
+  const ttlSeconds = Math.max(60, Math.ceil((updated.expiresAt - Date.now()) / 1000))
+  await kvPutWithTTL(env, buildVerificationKey(updated.email), JSON.stringify(updated), ttlSeconds)
+}
+
+async function deleteEmailVerificationRecord(env: Bindings, email: string) {
+  await kvDelete(env, buildVerificationKey(email))
+}
+
+async function computeVerificationHash(email: string, code: string) {
+  return sha256(`${email.toLowerCase()}::${code}`)
+}
+
+function createMessageId(domain: string) {
+  try {
+    if (typeof crypto.randomUUID === 'function') {
+      return `<${crypto.randomUUID()}@${domain}>`
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16)
+      crypto.getRandomValues(bytes)
+      const hex = Array.from(bytes)
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+      return `<${hex}@${domain}>`
+    }
+  } catch (error) {
+    // ignore entropy errors
+  }
+  const fallback = `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+  return `<${fallback}@${domain}>`
+}
+
+function generateNumericCode(length: number) {
+  const digits = '0123456789'
+  if (length <= 0) return ''
+  try {
+    const values = new Uint32Array(length)
+    if (typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(values)
+      return Array.from(values, (value) => digits[value % digits.length]).join('')
+    }
+  } catch (error) {
+    // ignore entropy errors and fall back to Math.random
+  }
+  let code = ''
+  for (let index = 0; index < length; index += 1) {
+    code += digits.charAt(Math.floor(Math.random() * digits.length))
+  }
+  return code
+}
+
+function deriveDisplayName(email: string) {
+  if (!email) {
+    return '크리에이터'
+  }
+  const local = email.split('@')[0] || ''
+  const cleaned = local.replace(/[._-]+/g, ' ').trim()
+  if (!cleaned) {
+    return '크리에이터'
+  }
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+}
+
+function getEmailBrand(env: Bindings) {
+  return env.EMAIL_BRAND_NAME?.trim() || 'Elliesbang Image Editor'
+}
+
+function getEmailDispatchContext(env: Bindings): EmailDispatchContext & { fromName: string } {
+  const brand = getEmailBrand(env)
+  const fromAddress = env.EMAIL_FROM_ADDRESS?.trim() || env.EMAIL_SMTP_USER?.trim() || ''
+  const fromName = env.EMAIL_FROM_NAME?.trim() || brand
+  const expirySeconds = parsePositiveInteger(env.EMAIL_OTP_EXPIRY_SECONDS, DEFAULT_EMAIL_OTP_EXPIRY_SECONDS, 60, 1800)
+  return { brand, from: fromAddress, fromName, expirySeconds }
+}
+
+async function openSmtpConnection(host: string, port: number, secure: boolean) {
+  return await new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {
+    let settled = false
+    const handleError = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const cleanup = () => {
+      socket.removeListener('error', handleError)
+      socket.removeListener('close', handleError)
+    }
+    const handleConnect = () => {
+      if (settled) {
+        cleanup()
+        return
+      }
+      settled = true
+      cleanup()
+      socket.setEncoding('utf8')
+      resolve(socket)
+    }
+
+    const socket = secure
+      ? createTlsConnection({ host, port, servername: host }, handleConnect)
+      : createConnection({ host, port }, handleConnect)
+
+    socket.once('error', handleError)
+    socket.once('close', handleError)
+  })
+}
+
+async function smtpSend(options: {
+  host: string
+  port: number
+  secure: boolean
+  user: string
+  pass: string
+  from: string
+  to: string
+  data: string
+}) {
+  const { host, port, secure, user, pass, from, to, data } = options
+  const socket = await openSmtpConnection(host, port, secure)
+  let closed = false
+
+  const close = () => {
+    if (!closed) {
+      closed = true
+      try {
+        socket.end()
+      } catch (error) {
+        socket.destroy()
+      }
+    }
+  }
+
+  const writeRaw = async (content: string) => {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        socket.removeListener('error', onError)
+        reject(error)
+      }
+      socket.once('error', onError)
+      socket.write(content, (error) => {
+        socket.removeListener('error', onError)
+        if (error) {
+          reject(error)
+        } else {
+          resolve()
+        }
+      })
+    })
+  }
+
+  const writeLine = async (line: string) => {
+    await writeRaw(`${line}\r\n`)
+  }
+
+  const waitFor = async (expectedCodes: number[], timeoutMs = 15000) => {
+    return await new Promise<void>((resolve, reject) => {
+      let buffer = ''
+      const timer = setTimeout(() => {
+        cleanup()
+        reject(new Error('SMTP_RESPONSE_TIMEOUT'))
+      }, timeoutMs)
+
+      const cleanup = () => {
+        clearTimeout(timer)
+        socket.removeListener('data', onData)
+        socket.removeListener('error', onError)
+        socket.removeListener('close', onClose)
+      }
+
+      const onError = (error: Error) => {
+        cleanup()
+        reject(error)
+      }
+
+      const onClose = () => {
+        cleanup()
+        reject(new Error('SMTP_CONNECTION_CLOSED'))
+      }
+
+      const onData = (chunk: Buffer | string) => {
+        buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        const lines = buffer.split('\r\n').filter((line) => line.length > 0)
+        if (lines.length === 0) {
+          return
+        }
+        const lastLine = lines[lines.length - 1]
+        const match = /^(\d{3})([ \-])(.*)$/.exec(lastLine)
+        if (!match) {
+          return
+        }
+        const [, codeRaw, continuation] = match
+        const code = Number.parseInt(codeRaw, 10)
+        if (continuation === '-') {
+          return
+        }
+        cleanup()
+        if (!expectedCodes.includes(code)) {
+          reject(new Error(`SMTP_UNEXPECTED_RESPONSE_${code}`))
+          return
+        }
+        resolve()
+      }
+
+      socket.on('data', onData)
+      socket.on('error', onError)
+      socket.on('close', onClose)
+    })
+  }
+
+  try {
+    await waitFor([220])
+    await writeLine(`EHLO ${host || 'elliesbang-image-editor.local'}`)
+    await waitFor([250])
+    await writeLine('AUTH LOGIN')
+    await waitFor([334])
+    await writeLine(Buffer.from(user, 'utf8').toString('base64'))
+    await waitFor([334])
+    await writeLine(Buffer.from(pass, 'utf8').toString('base64'))
+    await waitFor([235])
+    await writeLine(`MAIL FROM:<${from}>`)
+    await waitFor([250])
+    await writeLine(`RCPT TO:<${to}>`)
+    await waitFor([250, 251])
+    await writeLine('DATA')
+    await waitFor([354])
+    await writeRaw(data)
+    await waitFor([250])
+    await writeLine('QUIT')
+    await waitFor([221])
+  } finally {
+    close()
+  }
+}
+
+async function sendEmailViaSmtp(env: Bindings, context: EmailDispatchContext & { fromName: string }, payload: EmailSendPayload) {
+  const host = env.EMAIL_SMTP_HOST?.trim()
+  const user = env.EMAIL_SMTP_USER?.trim()
+  const pass = env.EMAIL_SMTP_PASSWORD?.trim()
+  if (!host || !user || !pass || !context.from) {
+    throw new Error('SMTP_NOT_CONFIGURED')
+  }
+  const securePreference = env.EMAIL_SMTP_SECURE?.trim().toLowerCase()
+  const defaultPort = securePreference === 'false' || securePreference === '0' ? 587 : 465
+  const port = parsePositiveInteger(env.EMAIL_SMTP_PORT, defaultPort, 1, 65535)
+  const secure = securePreference
+    ? !(securePreference === 'false' || securePreference === '0')
+    : port === 465
+
+  const fromHeader = context.fromName ? `${context.fromName} <${context.from}>` : context.from
+  const boundary = `----=_Elliesbang_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`
+  const normalizedText = payload.text.replace(/\r?\n/g, '\n')
+  const normalizedHtml = payload.html.replace(/\r?\n/g, '\n')
+  const messageLines = [
+    `Message-ID: ${createMessageId(host)}`,
+    `Date: ${new Date().toUTCString()}`,
+    `From: ${fromHeader}`,
+    `To: ${payload.to}`,
+    `Subject: ${payload.subject}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    normalizedText,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    normalizedHtml,
+    '',
+    `--${boundary}--`,
+    '',
+  ]
+
+  const rawMessage = messageLines.join('\r\n')
+  const preparedMessage = `${rawMessage.replace(/\r?\n/g, '\r\n').replace(/\r\n\./g, '\r\n..')}\r\n.\r\n`
+
+  await smtpSend({
+    host,
+    port,
+    secure,
+    user,
+    pass,
+    from: context.from,
+    to: payload.to,
+    data: preparedMessage,
+  })
+}
+
+async function sendEmailViaResend(env: Bindings, context: EmailDispatchContext & { fromName: string }, payload: EmailSendPayload) {
+  const apiKey = env.RESEND_API_KEY?.trim()
+  if (!apiKey) {
+    throw new Error('RESEND_NOT_CONFIGURED')
+  }
+  const fromHeader = context.fromName ? `${context.fromName} <${context.from}>` : context.from
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: fromHeader,
+      to: payload.to,
+      subject: payload.subject,
+      text: payload.text,
+      html: payload.html,
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`RESEND_REQUEST_FAILED_${response.status}_${detail}`)
+  }
+}
+
+async function sendEmailViaSendGrid(env: Bindings, context: EmailDispatchContext & { fromName: string }, payload: EmailSendPayload) {
+  const apiKey = env.SENDGRID_API_KEY?.trim()
+  if (!apiKey) {
+    throw new Error('SENDGRID_NOT_CONFIGURED')
+  }
+  const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      personalizations: [
+        {
+          to: [{ email: payload.to }],
+          subject: payload.subject,
+        },
+      ],
+      from: { email: context.from, name: context.fromName },
+      content: [
+        { type: 'text/plain', value: payload.text },
+        { type: 'text/html', value: payload.html },
+      ],
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`SENDGRID_REQUEST_FAILED_${response.status}_${detail}`)
+  }
+}
+
+async function dispatchEmail(
+  env: Bindings,
+  payload: EmailSendPayload,
+  providedContext?: EmailDispatchContext & { fromName: string },
+) {
+  const context = providedContext ?? getEmailDispatchContext(env)
+  if (!context.from) {
+    throw new Error('EMAIL_FROM_NOT_CONFIGURED')
+  }
+  if (env.RESEND_API_KEY?.trim()) {
+    try {
+      await sendEmailViaResend(env, context, payload)
+      return
+    } catch (error) {
+      console.error('[auth/email] Failed to send via Resend', error)
+    }
+  }
+  if (env.SENDGRID_API_KEY?.trim()) {
+    try {
+      await sendEmailViaSendGrid(env, context, payload)
+      return
+    } catch (error) {
+      console.error('[auth/email] Failed to send via SendGrid', error)
+    }
+  }
+  await sendEmailViaSmtp(env, context, payload)
+}
+
+async function sendVerificationEmail(
+  env: Bindings,
+  email: string,
+  code: string,
+  intent: EmailVerificationIntent,
+  context: EmailDispatchContext & { fromName: string },
+) {
+  const capitalizedIntent = intent === 'register' ? '회원가입' : '로그인'
+  const brand = context.brand
+  const subject = `[${brand}] ${capitalizedIntent} 인증 코드`
+  const minutes = Math.max(1, Math.ceil(context.expirySeconds / 60))
+  const text = [
+    `${brand} ${capitalizedIntent} 인증 코드`,
+    '',
+    `인증 코드: ${code}`,
+    `유효 시간: ${minutes}분`,
+    '',
+    '안전한 사용을 위해 타인과 인증 코드를 공유하지 마세요.',
+  ].join('\n')
+
+  const html = `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>${brand} 인증 코드</title>
+  </head>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #111827; background-color: #f9fafb; padding: 24px;">
+    <div style="max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 32px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);">
+      <h1 style="margin: 0 0 16px; font-size: 20px;">${brand} ${capitalizedIntent}</h1>
+      <p style="margin: 0 0 12px; font-size: 16px;">요청하신 인증 코드를 아래에 안내드립니다.</p>
+      <p style="margin: 16px 0; font-size: 32px; font-weight: 700; letter-spacing: 8px; text-align: center; color: #1f2937;">${code}</p>
+      <p style="margin: 16px 0; font-size: 14px; color: #6b7280;">해당 코드는 ${minutes}분 동안 유효하며, 한 번만 사용할 수 있습니다.</p>
+      <p style="margin: 16px 0 0; font-size: 14px; color: #6b7280;">안전한 사용을 위해 타인과 인증 코드를 공유하지 마세요.</p>
+    </div>
+    <p style="margin: 24px auto 0; max-width: 480px; font-size: 12px; color: #9ca3af; text-align: center;">이메일을 요청하지 않았다면 본 메시지를 무시해 주세요.</p>
+  </body>
+</html>`
+
+  await dispatchEmail(
+    env,
+    {
+      to: email,
+      subject,
+      text,
+      html,
+    },
+    context,
+  )
 }
 
 async function listParticipantKeys(env: Bindings) {
@@ -817,7 +1598,38 @@ function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
   deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
 }
 
-const app = new Hono<{ Bindings: Bindings }>()
+const app = new Hono<{ Bindings: Bindings }>({ strict: false })
+
+app.use('*', async (c, next) => {
+  const requestOrigin = c.req.header('Origin')
+  const allowedOrigin = resolveCorsOrigin(requestOrigin)
+
+  if (c.req.method === 'OPTIONS') {
+    if (allowedOrigin) {
+      applyCorsHeaders(c, allowedOrigin)
+    } else {
+      const existingVary = c.res.headers.get('Vary')
+      if (!existingVary) {
+        c.res.headers.set('Vary', 'Origin')
+      } else if (!existingVary.split(',').map((value) => value.trim()).includes('Origin')) {
+        c.res.headers.set('Vary', `${existingVary}, Origin`)
+      }
+    }
+
+    const requestedHeaders = c.req.header('Access-Control-Request-Headers')?.trim()
+    c.res.headers.set('Access-Control-Allow-Headers', requestedHeaders && requestedHeaders.length > 0 ? requestedHeaders : DEFAULT_CORS_HEADERS)
+    c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+    c.res.headers.set('Access-Control-Max-Age', '86400')
+
+    return c.body(null, 204)
+  }
+
+  await next()
+
+  if (allowedOrigin) {
+    applyCorsHeaders(c, allowedOrigin)
+  }
+})
 
 app.use('*', async (c, next) => {
   await next()
@@ -844,12 +1656,228 @@ app.use('*', async (c, next) => {
   c.res.headers.set('Cross-Origin-Opener-Policy', 'same-origin')
 })
 
-app.use('/static/*', serveStatic({ root: './public' }))
 app.use(renderer)
 
 app.get('/api/auth/session', async (c) => {
   const adminEmail = await requireAdminSession(c)
   return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
+})
+
+app.get('/api/config', (c) => {
+  const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
+  const googleRedirectUri = resolveGoogleRedirectUri(c)
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
+
+  return c.json({
+    googleClientId,
+    googleRedirectUri,
+    communityUrl,
+    apiBase: API_BASE_PATH,
+  })
+})
+
+app.post('/api/auth/email/request', async (c) => {
+  let payload: { email?: string; intent?: string } | undefined
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const rawIntent = typeof payload?.intent === 'string' ? payload.intent.toLowerCase() : 'login'
+  const intent: EmailVerificationIntent = rawIntent === 'register' ? 'register' : 'login'
+
+  const emailRaw = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  if (!isValidEmail(emailRaw)) {
+    const response = c.json({ error: 'INVALID_EMAIL' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const user = await getUserAccount(c.env, emailRaw)
+  if (intent === 'register' && user) {
+    const response = c.json({ error: 'EMAIL_ALREADY_REGISTERED' }, 409)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+  if (intent === 'login' && !user) {
+    const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const dispatchContext = getEmailDispatchContext(c.env)
+  if (!dispatchContext.from) {
+    const response = c.json({ error: 'EMAIL_SENDER_NOT_CONFIGURED' }, 500)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const now = Date.now()
+  const existingRecord = await getEmailVerificationRecord(c.env, emailRaw)
+  if (existingRecord && now - existingRecord.issuedAt < EMAIL_VERIFICATION_COOLDOWN_MS) {
+    const retryAfterMs = EMAIL_VERIFICATION_COOLDOWN_MS - (now - existingRecord.issuedAt)
+    const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000))
+    const response = c.json({ error: 'VERIFICATION_RATE_LIMITED', retryAfter }, 429)
+    response.headers.set('Retry-After', String(retryAfter))
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const code = generateNumericCode(EMAIL_VERIFICATION_CODE_LENGTH)
+  const codeHash = await computeVerificationHash(emailRaw, code)
+  const issuedAt = now
+  const expiresAt = issuedAt + dispatchContext.expirySeconds * 1000
+  const record: EmailVerificationRecord = {
+    email: emailRaw,
+    codeHash,
+    intent,
+    issuedAt,
+    expiresAt,
+    attempts: 0,
+    createdAt: existingRecord?.createdAt ?? new Date(issuedAt).toISOString(),
+    updatedAt: new Date(issuedAt).toISOString(),
+  }
+
+  await saveEmailVerificationRecord(c.env, record)
+
+  try {
+    await sendVerificationEmail(c.env, emailRaw, code, intent, dispatchContext)
+  } catch (error) {
+    console.error('[auth/email] Failed to deliver verification email', error)
+    await deleteEmailVerificationRecord(c.env, emailRaw)
+    const response = c.json({ error: 'EMAIL_DELIVERY_FAILED' }, 502)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const response = c.json({ ok: true, intent, issuedAt, expiresAt })
+  response.headers.set('Cache-Control', 'no-store')
+  return response
+})
+
+app.post('/api/auth/email/verify', async (c) => {
+  let payload: { email?: string; code?: string; intent?: string } | undefined
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const rawIntent = typeof payload?.intent === 'string' ? payload.intent.toLowerCase() : 'login'
+  const intent: EmailVerificationIntent = rawIntent === 'register' ? 'register' : 'login'
+
+  const emailRaw = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  if (!isValidEmail(emailRaw)) {
+    const response = c.json({ error: 'INVALID_EMAIL' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const code = typeof payload?.code === 'string' ? payload.code.trim() : ''
+  if (!code || !new RegExp(`^\\d{${EMAIL_VERIFICATION_CODE_LENGTH}}$`).test(code)) {
+    const response = c.json({ error: 'INVALID_CODE_FORMAT' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const record = await getEmailVerificationRecord(c.env, emailRaw)
+  if (!record) {
+    const response = c.json({ error: 'VERIFICATION_NOT_FOUND' }, 404)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  if (record.intent !== intent) {
+    const response = c.json({ error: 'INTENT_MISMATCH' }, 400)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  if (record.expiresAt <= Date.now()) {
+    await deleteEmailVerificationRecord(c.env, emailRaw)
+    const response = c.json({ error: 'CODE_EXPIRED' }, 410)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const submittedHash = await computeVerificationHash(emailRaw, code)
+  if (submittedHash !== record.codeHash) {
+    const attempts = Math.min(EMAIL_VERIFICATION_MAX_ATTEMPTS, (record.attempts ?? 0) + 1)
+    record.attempts = attempts
+    if (attempts >= EMAIL_VERIFICATION_MAX_ATTEMPTS) {
+      await deleteEmailVerificationRecord(c.env, emailRaw)
+      const response = c.json({ error: 'VERIFICATION_ATTEMPTS_EXCEEDED' }, 429)
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+    await saveEmailVerificationRecord(c.env, record)
+    const remaining = Math.max(0, EMAIL_VERIFICATION_MAX_ATTEMPTS - attempts)
+    const response = c.json({ error: 'CODE_INVALID', remainingAttempts: remaining }, 401)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  await deleteEmailVerificationRecord(c.env, emailRaw)
+
+  const now = new Date()
+  const nowIso = now.toISOString()
+
+  if (intent === 'register') {
+    const existing = await getUserAccount(c.env, emailRaw)
+    if (existing) {
+      const response = c.json({ error: 'EMAIL_ALREADY_REGISTERED' }, 409)
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+    const newAccount: UserAccount = {
+      email: emailRaw,
+      name: deriveDisplayName(emailRaw),
+      plan: 'free',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastLoginAt: nowIso,
+      subscriptionCredits: 0,
+      topUpCredits: 0,
+      topUpExpiresAt: '',
+      planExpiresAt: '',
+    }
+    await saveUserAccount(c.env, newAccount)
+  }
+
+  let account = await getUserAccount(c.env, emailRaw)
+  if (!account) {
+    const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  account.name = account.name?.trim() || deriveDisplayName(emailRaw)
+  account.plan = account.plan || 'free'
+  account.lastLoginAt = nowIso
+  account.lastOtpAt = new Date(record.issuedAt).toISOString()
+  await saveUserAccount(c.env, account)
+
+  account = (await getUserAccount(c.env, emailRaw)) ?? account
+
+  const responseProfile = {
+    email: account.email,
+    name: account.name || deriveDisplayName(account.email),
+    plan: account.plan || 'free',
+    subscriptionCredits: account.subscriptionCredits ?? 0,
+    topUpCredits: account.topUpCredits ?? 0,
+    topUpExpiresAt: account.topUpExpiresAt ?? '',
+    planExpiresAt: account.planExpiresAt ?? '',
+    credits: FREE_MONTHLY_CREDITS,
+  }
+
+  const response = c.json({ ok: true, intent, profile: responseProfile })
+  response.headers.set('Cache-Control', 'no-store')
+  return response
 })
 
 app.post('/api/auth/admin/login', async (c) => {
@@ -1569,9 +2597,16 @@ const buildKeywordListFromOpenAI = (
 
 app.post('/api/analyze', async (c) => {
   const env = c.env
+  const openAIKey = resolveOpenAIKey(env)
 
-  if (!env.OPENAI_API_KEY) {
-    return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
+  if (!openAIKey) {
+    return c.json(
+      {
+        error: 'OPENAI_API_KEY_NOT_CONFIGURED',
+        detail: 'Set OPENAI_API_KEY or OPEN_AI_API_KEY in the environment.',
+      },
+      500,
+    )
   }
 
   let payload: { image?: string; name?: string } | null = null
@@ -1598,7 +2633,10 @@ app.post('/api/analyze', async (c) => {
 }
 조건:
 - keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
+- 키워드는 이미지와 직접적으로 연관된 단어만 포함하고, 일반적이거나 중복된 표현은 제거합니다.
+- 25개의 키워드는 서로 다른 맥락을 다루도록 조합하며, 핵심 키워드를 활용해 제목에도 반영합니다.
 - 제목은 한국어로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
+- 제목은 60자 이내에서 2~3개의 핵심 키워드를 자연스럽게 결합해 작성합니다.
 - 요약은 이미지의 메시지, 분위기, 활용처를 한 문장으로 설명합니다.
 - 필요 시 색상, 분위기, 활용 매체 등을 키워드에 조합합니다.`
 
@@ -1666,7 +2704,7 @@ app.post('/api/analyze', async (c) => {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${openAIKey}`,
       },
       body: JSON.stringify(requestPayload),
     }
@@ -1871,12 +2909,14 @@ app.get('/', (c) => {
   const currentYear = new Date().getFullYear()
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
-  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
   const appConfig = JSON.stringify(
     {
       googleClientId,
       googleRedirectUri,
       communityUrl,
+      basePath: PUBLIC_BASE_PATH,
+      apiBase: API_BASE_PATH,
     },
     null,
     2,
@@ -1889,21 +2929,11 @@ app.get('/', (c) => {
       </script>
       <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
         <div class="app-header__left">
-          <a class="app-header__logo" href="/" aria-label="Easy Image Editor 홈">
-            <span class="app-header__brand">Easy Image Editor</span>
+          <a class="app-header__logo" href={resolveAppHref()} aria-label="Elliesbang Image Editor 홈">
+            <span class="app-header__brand">Elliesbang Image Editor</span>
             <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
         </div>
-        <nav class="app-header__nav" aria-label="주요 내비게이션">
-          <button
-            class="app-header__nav-item is-active"
-            type="button"
-            data-view-target="home"
-            aria-current="page"
-          >
-            홈
-          </button>
-        </nav>
         <div class="app-header__right">
           <div class="app-header__credit" data-role="credit-display" data-state="locked">
             <span class="app-header__plan-badge" data-role="plan-badge">게스트 모드</span>
@@ -1913,14 +2943,28 @@ app.get('/', (c) => {
             </span>
           </div>
           <a
-            class="btn btn--ghost btn--sm"
-            href={communityUrl}
-            target="_blank"
-            rel="noopener"
-            data-role="community-link"
+            class="btn btn--primary btn--sm app-header__upgrade"
+            href={resolveAppHref('plans')}
+            data-role="upgrade-button"
           >
-            미치나 커뮤니티
+            업그레이드
           </a>
+          <nav class="app-header__nav" aria-label="대시보드 탐색">
+            <a
+              class="app-header__nav-item"
+              href="./dashboard/community"
+              data-role="community-link"
+              data-view-target="community"
+            >
+              미치나 챌린지 대시보드
+            </a>
+            <button class="app-header__nav-item" type="button" data-role="admin-nav" data-view-target="admin" hidden>
+              관리자 대시보드
+            </button>
+          </nav>
+          <button class="btn btn--ghost btn--sm" type="button" data-role="admin-login">
+            관리자 전용
+          </button>
           <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
             로그인
           </button>
@@ -1987,12 +3031,172 @@ app.get('/', (c) => {
         </div>
       </section>
 
+      <section
+        class="pricing"
+        data-view="home"
+        id="pricing"
+        data-role="pricing-section"
+        aria-labelledby="pricing-heading"
+      >
+        <header class="pricing__header">
+          <p class="pricing__eyebrow">요금제 안내</p>
+          <h2 class="pricing__title" id="pricing-heading">업무 흐름에 맞춰 선택하는 크레딧 플랜</h2>
+          <p class="pricing__subtitle">
+            FREE, 구독, 충전 크레딧을 하나의 잔액으로 통합 표기하고, 기능 사용 시 구독 크레딧이 먼저 차감된 뒤 충전 크레딧이
+            이어서 사용되도록 설계했습니다.
+          </p>
+        </header>
+        <div class="pricing__policy">
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">FREE 크레딧</span>
+            <span class="pricing-policy__copy">매월 1일 30 크레딧 자동 지급 · 이월 불가</span>
+          </div>
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">구독 크레딧</span>
+            <span class="pricing-policy__copy">월/연간 플랜 모두 기간 종료 시 소멸 · 잔여량은 통합 잔액으로 표시</span>
+          </div>
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">충전 크레딧</span>
+            <span class="pricing-policy__copy">별도 구매 가능 · 구매일 기준 365일 유효 · 구독 크레딧 소진 후 자동 차감</span>
+          </div>
+        </div>
+        <section class="pricing__topup" aria-labelledby="topup-heading">
+          <div class="pricing-topup__header">
+            <h3 class="pricing-topup__title" id="topup-heading">충전 크레딧 패키지</h3>
+            <p class="pricing-topup__description">
+              충전 크레딧은 구독 크레딧이 모두 사용된 뒤 차감되며, 구매일로부터 365일간 유지됩니다.
+            </p>
+          </div>
+          <ul class="pricing-topup__grid">
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">소량 충전</span>
+              <span class="pricing-topup__credits">50 크레딧</span>
+              <span class="pricing-topup__price">₩5,000</span>
+            </li>
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">일반 충전</span>
+              <span class="pricing-topup__credits">150 크레딧</span>
+              <span class="pricing-topup__price">₩10,000</span>
+            </li>
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">대량 충전</span>
+              <span class="pricing-topup__credits">500 크레딧</span>
+              <span class="pricing-topup__price">₩30,000</span>
+            </li>
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">최대 충전</span>
+              <span class="pricing-topup__credits">1,000 크레딧</span>
+              <span class="pricing-topup__price">₩50,000</span>
+            </li>
+          </ul>
+        </section>
+        <div class="pricing__cards">
+          <article class="pricing-card pricing-card--free">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">FREE</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩0</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">매월 30 크레딧 자동 지급 · 잔액 통합 표시</p>
+            <ul class="pricing-card__features">
+              <li>기본 편집 도구와 표준 해상도 제공</li>
+              <li>로그인만으로 즉시 시작</li>
+              <li>구독 크레딧 우선 차감 정책 안내</li>
+            </ul>
+            <button class="btn btn--ghost pricing-card__cta" type="button" data-role="pricing-free-login">
+              무료로 시작
+            </button>
+          </article>
+
+          <article class="pricing-card">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">BASIC</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩9,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 150 크레딧 · 고해상도 다운로드 포함</p>
+            <ul class="pricing-card__features">
+              <li>FREE 기능 + 고해상도 다운로드</li>
+              <li>구독 크레딧부터 차감해 충전 크레딧을 보존</li>
+              <li>플랜 만료 시 자동으로 FREE 전환</li>
+            </ul>
+            <button
+              class="btn btn--outline pricing-card__cta"
+              type="button"
+              data-role="pricing-upgrade"
+              data-plan="basic"
+            >
+              BASIC 업그레이드
+            </button>
+          </article>
+
+          <article class="pricing-card pricing-card--highlight">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">PRO</span>
+              <span class="pricing-card__tag">추천</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩19,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 1,000 크레딧 · SVG 변환 우선 지원</p>
+            <ul class="pricing-card__features">
+              <li>BASIC 기능 + PNG → SVG 벡터 변환 무제한</li>
+              <li>팀 브랜드 에셋 작업을 위한 우선 큐</li>
+              <li>구독 크레딧 우선 차감 · 충전 크레딧 보조</li>
+            </ul>
+            <button
+              class="btn btn--primary pricing-card__cta"
+              type="button"
+              data-role="pricing-upgrade"
+              data-plan="pro"
+            >
+              PRO 업그레이드
+            </button>
+          </article>
+
+          <article class="pricing-card pricing-card--premium">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">PREMIUM</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩39,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 10,000 크레딧 · 키워드 분석 포함</p>
+            <ul class="pricing-card__features">
+              <li>PRO 기능 + 키워드 분석 · 자동화</li>
+              <li>운영 효율을 위한 우선 지원 &amp; 보고서</li>
+              <li>구독 크레딧 선차감 · 충전 크레딧 후순위 사용</li>
+            </ul>
+            <button
+              class="btn btn--primary pricing-card__cta"
+              type="button"
+              data-role="pricing-upgrade"
+              data-plan="premium"
+            >
+              PREMIUM 업그레이드
+            </button>
+          </article>
+        </div>
+        <aside class="pricing__note" aria-label="미치나 플랜 안내">
+          <strong>미치나 플랜</strong>
+          <p>
+            챌린지 신청 시 월 10,000 크레딧과 PREMIUM 기능을 제공하며, 기간이 끝나면 자동으로 FREE 플랜으로 전환됩니다.
+          </p>
+        </aside>
+      </section>
+
 
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
         <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
         <div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
           <header class="login-modal__header">
-            <h2 class="login-modal__title" id="login-modal-title">Easy Image Editor 로그인</h2>
+            <h2 class="login-modal__title" id="login-modal-title">Elliesbang Image Editor 로그인</h2>
             <button class="login-modal__close" type="button" data-action="close-login" aria-label="로그인 창 닫기">
               <i class="ri-close-line" aria-hidden="true"></i>
             </button>
@@ -2061,6 +3265,87 @@ app.get('/', (c) => {
               이메일 주소를 입력하면 인증 코드를 보내드립니다.
             </p>
           </form>
+        </div>
+      </div>
+
+      <div class="plan-modal" data-role="plan-modal-basic" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-basic-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">BASIC 이상 필요</span>
+            <h2 class="plan-modal__title" id="plan-modal-basic-title">고해상도 다운로드를 위해 업그레이드하세요</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="BASIC 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="plan-modal-hint">
+            고해상도 다운로드는 BASIC 이상 플랜에서 제공됩니다.
+          </p>
+          <ul class="plan-modal__list">
+            <li>월 150 크레딧 제공 · 잔여량은 통합 잔액으로 관리됩니다.</li>
+            <li>구독 크레딧부터 차감되어 충전 크레딧을 후순위로 사용합니다.</li>
+            <li>플랜 만료 시 자동으로 FREE 플랜으로 전환됩니다.</li>
+          </ul>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">
+              BASIC 요금제 살펴보기
+            </button>
+            <button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-modal" data-role="plan-modal-pro" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-pro-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">PRO 이상 필요</span>
+            <h2 class="plan-modal__title" id="plan-modal-pro-title">SVG 변환 기능을 바로 활용하세요</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="PRO 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="plan-modal-hint">
+            PNG → SVG 벡터 변환은 PRO 이상 플랜에서 사용할 수 있습니다.
+          </p>
+          <ul class="plan-modal__list">
+            <li>월 1,000 크레딧으로 대량의 디자인 변환을 지원합니다.</li>
+            <li>구독 크레딧이 먼저 차감되고 부족분은 충전 크레딧으로 이어집니다.</li>
+            <li>SVG 변환, 고해상도 다운로드, ZIP 묶음 저장 모두 활성화됩니다.</li>
+          </ul>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">
+              PRO 요금제 확인하기
+            </button>
+            <button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-modal" data-role="plan-modal-premium" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-plan-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="plan-modal-premium-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">PREMIUM 이상 필요</span>
+            <h2 class="plan-modal__title" id="plan-modal-premium-title">키워드 분석까지 한 번에 마무리하세요</h2>
+            <button class="plan-modal__close" type="button" data-action="close-plan-modal" aria-label="PREMIUM 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="plan-modal-hint">
+            키워드 분석 기능은 PREMIUM 이상 플랜에서 제공됩니다.
+          </p>
+          <ul class="plan-modal__list">
+            <li>월 10,000 크레딧과 전 기능 무제한 사용</li>
+            <li>운영 효율을 위한 우선 지원과 작업 보고서 제공</li>
+            <li>구독 크레딧 소진 후 충전 크레딧이 순차적으로 사용됩니다.</li>
+          </ul>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="plan-modal-view-pricing">
+              PREMIUM 요금제 알아보기
+            </button>
+            <button class="btn btn--ghost plan-modal__cta" type="button" data-action="close-plan-modal">나중에 결정</button>
+          </div>
         </div>
       </div>
 
@@ -2272,19 +3557,184 @@ app.get('/', (c) => {
         </div>
       </section>
 
+      <section class="admin-view" data-view="admin" aria-label="관리자 대시보드" hidden>
+        <article class="admin-dashboard" data-role="admin-dashboard" data-state="locked">
+          <header class="admin-dashboard__header">
+            <div class="admin-dashboard__meta">
+              <span class="admin-dashboard__badge" data-role="admin-category">운영진 전용</span>
+              <h2 class="admin-dashboard__title">Elliesbang 운영 대시보드</h2>
+              <p class="admin-dashboard__description">
+                미치나 플랜 참가자 명단을 관리하고 진행 현황을 점검할 수 있는 관리자 전용 공간입니다.
+              </p>
+            </div>
+            <div class="admin-dashboard__actions">
+              <button class="btn btn--ghost btn--sm" type="button" data-role="admin-refresh">현황 새로고침</button>
+              <button class="btn btn--ghost btn--sm" type="button" data-role="admin-run-completion">완주 체크 실행</button>
+              <button class="btn btn--ghost btn--sm" type="button" data-role="admin-download-completion">완주자 CSV</button>
+              <button class="btn btn--outline btn--sm" type="button" data-role="admin-logout">관리자 로그아웃</button>
+            </div>
+          </header>
+          <div class="admin-dashboard__guard" data-role="admin-guard">
+            <p>관리자 전용 페이지입니다. 보안 강화를 위해 로그인 후 이용해 주세요.</p>
+            <button class="btn btn--primary" type="button" data-action="open-admin-modal">관리자 로그인 열기</button>
+          </div>
+          <div class="admin-dashboard__content" data-role="admin-content">
+            <section class="admin-dashboard__section">
+              <h3 class="admin-dashboard__section-title">미치나 챌린지 참가자 등록</h3>
+              <form class="admin-import" data-role="admin-import-form" data-state="idle">
+                <div class="admin-import__grid">
+                  <label class="admin-import__label">
+                    CSV 업로드
+                    <input class="admin-import__input" type="file" accept=".csv" data-role="admin-import-file" />
+                  </label>
+                  <label class="admin-import__label">
+                    이메일/이름 수동 입력 (줄바꿈으로 구분)
+                    <textarea
+                      class="admin-import__textarea"
+                      rows={4}
+                      placeholder="name@example.com,홍길동"
+                      data-role="admin-import-manual"
+                    ></textarea>
+                  </label>
+                  <label class="admin-import__label">
+                    챌린지 종료일
+                    <input class="admin-import__input" type="date" data-role="admin-import-enddate" />
+                  </label>
+                </div>
+                <div class="admin-import__actions">
+                  <button class="btn btn--primary" type="submit">명단 등록</button>
+                </div>
+              </form>
+            </section>
+            <section class="admin-dashboard__section">
+              <h3 class="admin-dashboard__section-title">참가자 진행 현황</h3>
+              <div class="challenge-table-wrapper">
+                <table class="challenge-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">참가자</th>
+                      <th scope="col">진행률</th>
+                      <th scope="col">미제출</th>
+                      <th scope="col">참여 기간</th>
+                      <th scope="col">상태</th>
+                    </tr>
+                  </thead>
+                  <tbody data-role="admin-participants-body">
+                    <tr>
+                      <td colSpan={5}>관리자 로그인 후 참가자 정보를 확인할 수 있습니다.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </article>
+      </section>
+
+      <section class="challenge-view" data-view="community" data-role="challenge-section" aria-label="미치나 챌린지 대시보드" hidden>
+        <article class="challenge-card challenge-card--locked" data-role="challenge-locked">
+          <header class="challenge-card__header">
+            <h2>미치나 챌린지 대시보드</h2>
+            <p>관리자가 등록한 미치나 챌린저 또는 운영진만 접근할 수 있습니다.</p>
+          </header>
+          <p class="challenge-card__description">등록되지 않은 계정으로 접근하면 안내 모달이 표시됩니다.</p>
+          <div class="challenge-card__actions">
+            <button class="btn btn--primary" type="button" data-action="open-login-modal">로그인</button>
+          </div>
+        </article>
+        <article class="challenge-card challenge-card--participant" data-role="challenge-dashboard" hidden>
+          <header class="challenge-card__header">
+            <div>
+              <h2>미치나 챌린지 대시보드</h2>
+              <p data-role="challenge-summary">참가자 등록 후 일일 제출 현황이 표시됩니다.</p>
+            </div>
+          </header>
+          <section class="challenge-card__section">
+            <h3 class="challenge-card__section-title">진행 현황</h3>
+            <div class="challenge-progress" data-role="challenge-progress"></div>
+          </section>
+          <section class="challenge-card__section">
+            <h3 class="challenge-card__section-title">일일 제출 현황</h3>
+            <ul class="challenge-days" data-role="challenge-days"></ul>
+          </section>
+          <section class="challenge-card__section">
+            <h3 class="challenge-card__section-title">제출하기</h3>
+            <form class="challenge-submit" data-role="challenge-submit-form" data-state="locked">
+              <div class="challenge-submit__grid">
+                <label class="challenge-submit__label" for="challengeDay">진행 일차</label>
+                <select id="challengeDay" data-role="challenge-day">
+                  <option value="">일차 선택</option>
+                  {[...Array(15)].map((_, index) => {
+                    const day = index + 1
+                    return (
+                      <option value={day} key={day}>
+                        {`Day ${day}`}
+                      </option>
+                    )
+                  })}
+                </select>
+                <label class="challenge-submit__label" for="challengeUrl">결과 URL</label>
+                <input
+                  id="challengeUrl"
+                  class="challenge-submit__input"
+                  type="url"
+                  placeholder="https://example.com/work"
+                  data-role="challenge-url"
+                />
+                <label class="challenge-submit__label" for="challengeFile">이미지 업로드</label>
+                <input
+                  id="challengeFile"
+                  class="challenge-submit__input"
+                  type="file"
+                  accept="image/*"
+                  data-role="challenge-file"
+                />
+              </div>
+              <p class="challenge-submit__hint" data-role="challenge-submit-hint">참가자로 등록되면 제출 기능이 활성화됩니다.</p>
+              <div class="challenge-submit__actions">
+                <button class="btn btn--primary" type="submit">제출 저장</button>
+              </div>
+            </form>
+          </section>
+          <section class="challenge-card__section challenge-card__section--certificate" data-role="challenge-certificate" hidden>
+            <h3 class="challenge-card__section-title">수료증</h3>
+            <div class="certificate-preview" data-role="certificate-preview"></div>
+            <button class="btn btn--outline" type="button" data-role="certificate-download">수료증 다운로드</button>
+          </section>
+        </article>
+      </section>
+
+      <div class="plan-modal plan-modal--access" data-role="access-modal" aria-hidden="true">
+        <div class="plan-modal__backdrop" data-action="close-access-modal" aria-hidden="true"></div>
+        <div class="plan-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="access-modal-title">
+          <header class="plan-modal__header">
+            <span class="plan-modal__badge">접근 제한</span>
+            <h2 class="plan-modal__title" id="access-modal-title" data-role="access-modal-title">접근 권한이 없습니다.</h2>
+            <button class="plan-modal__close" type="button" data-action="close-access-modal" aria-label="접근 제한 안내 닫기">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <p class="plan-modal__hint" data-role="access-modal-message"></p>
+          <div class="plan-modal__actions">
+            <button class="btn btn--primary plan-modal__cta" type="button" data-action="close-access-modal">확인</button>
+          </div>
+        </div>
+      </div>
+
       <footer class="site-footer" aria-label="사이트 하단">
         <div class="site-footer__inner">
           <div class="site-footer__brand">
-            <span class="site-footer__title">Easy Image Editor</span>
+            <span class="site-footer__title">Elliesbang Image Editor</span>
             <span class="site-footer__contact">
               문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
             </span>
           </div>
           <nav class="site-footer__links" aria-label="법적 고지">
-            <a href="/privacy">개인정보 처리방침</a>
-            <a href="/terms">이용약관</a>
-            <a href="/cookies">쿠키 정책</a>
-            <a href="/?admin=1" target="_blank" rel="noopener">관리자 전용</a>
+            <a href={resolveAppHref('plans')} data-role="footer-plans-link">요금제 안내</a>
+            <a href={resolveAppHref('privacy')}>개인정보 처리방침</a>
+            <a href={resolveAppHref('terms')}>이용약관</a>
+            <a href={resolveAppHref('cookies')}>쿠키 정책</a>
+            <a href="./admin/dashboard" data-role="footer-admin-link">관리자 전용</a>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>
@@ -2318,7 +3768,9 @@ app.get('/', (c) => {
             </label>
           </div>
           <div class="cookie-banner__actions">
-            <a class="cookie-banner__link" href="/cookies" target="_blank" rel="noopener">쿠키 정책 자세히 보기</a>
+            <a class="cookie-banner__link" href={resolveAppHref('cookies')} target="_blank" rel="noopener">
+              쿠키 정책 자세히 보기
+            </a>
             <button class="cookie-banner__button" type="button" data-action="accept-cookies" disabled>동의하고 계속하기</button>
           </div>
         </div>
@@ -2335,11 +3787,11 @@ app.get('/privacy', (c) => {
       <header class="legal-page__header">
         <p class="legal-page__eyebrow">Privacy Policy</p>
         <h1 class="legal-page__title" id="privacy-heading">
-          Easy Image Editor 개인정보 처리방침
+          Elliesbang Image Editor 개인정보 처리방침
         </h1>
         <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
         <p class="legal-page__lead">
-          Easy Image Editor(이하 “서비스”)는 이용자의 개인정보를 소중하게 생각하며, 관련 법령을 준수합니다.
+          Elliesbang Image Editor(이하 “서비스”)는 이용자의 개인정보를 소중하게 생각하며, 관련 법령을 준수합니다.
           본 처리는 수집 항목, 이용 목적, 보관 기간 등을 투명하게 안내드리기 위한 문서입니다.
         </p>
       </header>
@@ -2403,7 +3855,7 @@ app.get('/privacy', (c) => {
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
         <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
-        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+        <a class="legal-page__back" href={resolveAppHref()}>← 에디터로 돌아가기</a>
       </footer>
     </main>
   )
@@ -2417,11 +3869,11 @@ app.get('/terms', (c) => {
       <header class="legal-page__header">
         <p class="legal-page__eyebrow">Terms of Service</p>
         <h1 class="legal-page__title" id="terms-heading">
-          Easy Image Editor 이용약관
+          Elliesbang Image Editor 이용약관
         </h1>
         <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
         <p class="legal-page__lead">
-          본 약관은 Easy Image Editor가 제공하는 모든 서비스의 이용 조건과 절차, 이용자와 서비스의 권리·의무 및 책임사항을 규정합니다.
+          본 약관은 Elliesbang Image Editor가 제공하는 모든 서비스의 이용 조건과 절차, 이용자와 서비스의 권리·의무 및 책임사항을 규정합니다.
         </p>
       </header>
 
@@ -2481,7 +3933,7 @@ app.get('/terms', (c) => {
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
         <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
-        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+        <a class="legal-page__back" href={resolveAppHref()}>← 에디터로 돌아가기</a>
       </footer>
     </main>
   )
@@ -2495,11 +3947,11 @@ app.get('/cookies', (c) => {
       <header class="legal-page__header">
         <p class="legal-page__eyebrow">Cookie Policy</p>
         <h1 class="legal-page__title" id="cookies-heading">
-          Easy Image Editor 쿠키 정책
+          Elliesbang Image Editor 쿠키 정책
         </h1>
         <p class="legal-page__meta">시행일: 2025년 10월 2일</p>
         <p class="legal-page__lead">
-          본 쿠키 정책은 Easy Image Editor(이하 “서비스”)가 이용자의 디바이스에 저장하는 쿠키의 종류와 사용 목적,
+          본 쿠키 정책은 Elliesbang Image Editor(이하 “서비스”)가 이용자의 디바이스에 저장하는 쿠키의 종류와 사용 목적,
           관리 방법을 안내하기 위해 마련되었습니다.
         </p>
       </header>
@@ -2556,7 +4008,186 @@ app.get('/cookies', (c) => {
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
         <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
-        <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
+        <a class="legal-page__back" href={resolveAppHref()}>← 에디터로 돌아가기</a>
+      </footer>
+    </main>
+  )
+})
+
+app.get('/plans', (c) => {
+  const currentYear = new Date().getFullYear()
+
+  return c.render(
+    <main class="plans-page" aria-labelledby="plans-heading">
+      <header class="plans-page__header">
+        <p class="plans-page__eyebrow">Pricing Guide</p>
+        <h1 class="plans-page__title" id="plans-heading">
+          Elliesbang Image Editor 요금제 안내
+        </h1>
+        <p class="plans-page__lead">
+          Elliesbang Image Editor는 FREE, 구독, 충전 크레딧을 하나로 통합해 보여주며 기능 이용 시 구독 크레딧이 먼저 차감된 뒤
+          충전 크레딧이 후순위로 사용됩니다.
+        </p>
+        <p class="plans-page__summary">
+          모든 요금제는 월간·연간 결제 주기 동안 사용할 수 있는 구독 크레딧을 제공하며, 충전 크레딧은 구매일로부터 365일간
+          유효합니다. 플랜 기간이 종료되면 계정은 자동으로 FREE 플랜으로 전환됩니다.
+        </p>
+        <a class="plans-page__back" href={resolveAppHref()}>
+          ← 에디터로 돌아가기
+        </a>
+      </header>
+
+      <section class="pricing pricing--standalone" aria-labelledby="pricing-heading">
+        <header class="pricing__header">
+          <p class="pricing__eyebrow">요금제 안내</p>
+          <h2 class="pricing__title" id="pricing-heading">업무 흐름에 맞춰 선택하는 크레딧 플랜</h2>
+          <p class="pricing__subtitle">
+            FREE, 구독, 충전 크레딧을 하나의 잔액으로 통합 표기하고, 기능 사용 시 구독 크레딧이 먼저 차감된 뒤 충전 크레딧이
+            이어서 사용되도록 설계했습니다.
+          </p>
+        </header>
+        <div class="pricing__policy">
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">FREE 크레딧</span>
+            <span class="pricing-policy__copy">매월 1일 30 크레딧 자동 지급 · 이월 불가</span>
+          </div>
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">구독 크레딧</span>
+            <span class="pricing-policy__copy">월/연간 플랜 모두 기간 종료 시 소멸 · 잔여량은 통합 잔액으로 표시</span>
+          </div>
+          <div class="pricing-policy__item">
+            <span class="pricing-policy__label">충전 크레딧</span>
+            <span class="pricing-policy__copy">별도 구매 가능 · 구매일 기준 365일 유효 · 구독 크레딧 소진 후 자동 차감</span>
+          </div>
+        </div>
+        <section class="pricing__topup" aria-labelledby="plans-topup-heading">
+          <div class="pricing-topup__header">
+            <h3 class="pricing-topup__title" id="plans-topup-heading">충전 크레딧 패키지</h3>
+            <p class="pricing-topup__description">
+              충전 크레딧은 구독 크레딧이 모두 사용된 뒤 차감되며, 구매일로부터 365일간 유지됩니다.
+            </p>
+          </div>
+          <ul class="pricing-topup__grid">
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">소량 충전</span>
+              <span class="pricing-topup__credits">50 크레딧</span>
+              <span class="pricing-topup__price">₩5,000</span>
+            </li>
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">일반 충전</span>
+              <span class="pricing-topup__credits">150 크레딧</span>
+              <span class="pricing-topup__price">₩10,000</span>
+            </li>
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">대량 충전</span>
+              <span class="pricing-topup__credits">500 크레딧</span>
+              <span class="pricing-topup__price">₩30,000</span>
+            </li>
+            <li class="pricing-topup__item">
+              <span class="pricing-topup__label">최대 충전</span>
+              <span class="pricing-topup__credits">1,000 크레딧</span>
+              <span class="pricing-topup__price">₩50,000</span>
+            </li>
+          </ul>
+        </section>
+        <div class="pricing__cards">
+          <article class="pricing-card pricing-card--free">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">FREE</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩0</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">매월 30 크레딧 자동 지급 · 잔액 통합 표시</p>
+            <ul class="pricing-card__features">
+              <li>기본 편집 도구와 표준 해상도 제공</li>
+              <li>로그인만으로 즉시 시작</li>
+              <li>구독 크레딧 우선 차감 정책 안내</li>
+            </ul>
+          </article>
+          <article class="pricing-card">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">BASIC</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩9,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 150 크레딧 · 고해상도 다운로드 포함</p>
+            <ul class="pricing-card__features">
+              <li>FREE 기능 + 고해상도 다운로드</li>
+              <li>구독 크레딧부터 차감해 충전 크레딧을 보존</li>
+              <li>플랜 만료 시 자동으로 FREE 전환</li>
+            </ul>
+          </article>
+          <article class="pricing-card pricing-card--highlight">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">PRO</span>
+              <span class="pricing-card__tag">추천</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩19,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 1,000 크레딧 · SVG 변환 우선 지원</p>
+            <ul class="pricing-card__features">
+              <li>BASIC 기능 + PNG → SVG 벡터 변환 무제한</li>
+              <li>팀 브랜드 에셋 작업을 위한 우선 큐</li>
+              <li>구독 크레딧 우선 차감 · 충전 크레딧 보조</li>
+            </ul>
+          </article>
+          <article class="pricing-card pricing-card--premium">
+            <header class="pricing-card__header">
+              <span class="pricing-card__plan">PREMIUM</span>
+            </header>
+            <div class="pricing-card__price">
+              <span class="pricing-card__value">₩39,900</span>
+              <span class="pricing-card__per">/월</span>
+            </div>
+            <p class="pricing-card__credits">월 10,000 크레딧 · 키워드 분석 포함</p>
+            <ul class="pricing-card__features">
+              <li>PRO 기능 + 키워드 분석 · 자동화</li>
+              <li>운영 효율을 위한 우선 지원 &amp; 보고서</li>
+              <li>구독 크레딧 선차감 · 충전 크레딧 후순위 사용</li>
+            </ul>
+          </article>
+        </div>
+        <aside class="pricing__note" aria-label="미치나 플랜 안내">
+          <strong>미치나 플랜</strong>
+          <p>챌린지 신청 시 월 10,000 크레딧과 PREMIUM 기능을 제공하며, 기간이 끝나면 자동으로 FREE 플랜으로 전환됩니다.</p>
+        </aside>
+      </section>
+
+      <section class="plans-page__policies" aria-labelledby="plans-policy-heading">
+        <h2 class="plans-page__section-title" id="plans-policy-heading">크레딧 운영 정책 요약</h2>
+        <ul class="plans-page__policy-list">
+          <li>
+            <strong>FREE 크레딧</strong>: 매월 1일 30 크레딧이 자동 충전되며, 미사용분은 다음 달로 이월되지 않습니다.
+          </li>
+          <li>
+            <strong>구독 크레딧</strong>: 월간·연간 구독 기간 동안 사용 가능하며 만료 시 잔여량은 소멸하고 계정은 FREE 플랜으로
+            전환됩니다.
+          </li>
+          <li>
+            <strong>충전 크레딧</strong>: 필요 시 추가 구매가 가능하며 구매일 기준 365일간 유효합니다. 구독 크레딧이 모두 소진된 이후
+            차감됩니다.
+          </li>
+          <li>
+            <strong>잔액 표시</strong>: FREE, 구독, 충전 크레딧을 합산해 하나의 통합 수치로 보여주어 사용량을 직관적으로 파악할 수
+            있습니다.
+          </li>
+        </ul>
+      </section>
+
+      <footer class="plans-page__footer">
+        <p class="plans-page__contact">
+          문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
+        </p>
+        <p class="plans-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
+        <a class="plans-page__back plans-page__back--footer" href={resolveAppHref()}>
+          ← 에디터로 돌아가기
+        </a>
       </footer>
     </main>
   )
