@@ -145,6 +145,9 @@ EMAIL_SMTP_PASSWORD="smtp-password"
 EOF
 
 # 3. 번들 생성 (로컬에서는 빌드 직후 gh-pages 브랜치로 자동 푸시)
+#    - Netlify 등 루트 도메인 배포 환경: `npm run build`
+#    - GitHub Pages 등 서브 디렉터리 배포: `PUBLIC_BASE_PATH=/Image-Editor-2 npm run build`
+#      (Windows PowerShell: `$env:PUBLIC_BASE_PATH="/Image-Editor-2"; npm run build`)
 npm run build
 
 # CI나 원격 환경(Netlify 등)에서 GitHub Pages 푸시를 건너뛰고 싶다면 아래처럼 실행하세요.

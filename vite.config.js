@@ -66,7 +66,41 @@ const injectSpaRedirect = async (filePath, basePath) => {
   }
 }
 
-const PUBLIC_BASE_PATH = '/Image-Editor-2/'
+const normalizeBasePath = (value) => {
+  if (!value) {
+    return '/'
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === '/') {
+    return '/'
+  }
+
+  const withLeadingSlash = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+  return ensureTrailingSlash(withLeadingSlash)
+}
+
+const resolvePublicBasePath = () => {
+  if (process.env.PUBLIC_BASE_PATH) {
+    return normalizeBasePath(process.env.PUBLIC_BASE_PATH)
+  }
+
+  if (process.env.NETLIFY === 'true') {
+    return '/'
+  }
+
+  const repository = process.env.GITHUB_REPOSITORY
+  if (process.env.CI === 'true' && repository) {
+    const [, repoName] = repository.split('/')
+    if (repoName) {
+      return normalizeBasePath(repoName)
+    }
+  }
+
+  return '/Image-Editor-2/'
+}
+
+const PUBLIC_BASE_PATH = resolvePublicBasePath()
 
 const serverBuildPlugin = () => {
   return {
