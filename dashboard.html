@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ellie's Image Editor - 관리자 대시보드</title>
+    <link rel="stylesheet" href="static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="header-inner">
+        <div class="brand">Ellie's Image Editor</div>
+        <span class="header-spacer"></span>
+        <button type="button" class="btn-ghost" onclick="window.location.href='index.html'">에디터로 돌아가기</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="page-section">
+        <div class="banner visible" style="background:#fff4d0; border-color:#f9a825; color:#7a4b00;">
+          <div>
+            <strong>데모 모드</strong>
+            <p style="margin:4px 0 0; color:#7a4b00;">연결된 서버가 없으면 로컬 데모 데이터만 표시됩니다. 실제 API는 Netlify + Hono 배포 후 연동할 수 있습니다.</p>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+            <h2 style="margin:0;">미치나 챌린지 참가자</h2>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn-secondary" data-action="refresh">새로고침</button>
+              <button type="button" data-action="run-completion">완주 판별 실행</button>
+              <button type="button" class="btn-secondary" data-action="export-csv">CSV 다운로드</button>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>이름</th>
+                <th>이메일</th>
+                <th>진행률</th>
+                <th>제출 횟수</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody data-table-body></tbody>
+          </table>
+          <div data-empty-state class="hidden" style="text-align:center; padding:24px; color:#5f6368;">표시할 참가자가 없습니다.</div>
+        </div>
+
+        <div class="challenge-card">
+          <h3>데이터 가져오기</h3>
+          <p>CSV 형식 <code>name,email,submissions,target</code> 으로 입력 후 “참가자 불러오기”를 클릭하세요.</p>
+          <textarea rows="6" placeholder="name,email,submissions,target" data-import-text></textarea>
+          <div style="display:flex; gap:12px; flex-wrap:wrap;">
+            <button type="button" data-action="import-csv">참가자 불러오기</button>
+            <button type="button" class="btn-secondary" data-action="load-demo">데모 데이터 불러오기</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-inner">
+        <div class="footer-links">
+          <a href="privacy.html">Privacy</a>
+          <a href="terms.html">Terms</a>
+          <a href="cookies.html">Cookies</a>
+        </div>
+        <span style="font-size:0.85rem; color:#5f6368;">© Elliesbang Image Editor</span>
+      </div>
+    </footer>
+
+    <script src="static/app.js"></script>
+    <script src="static/dashboard.js"></script>
+  </body>
+</html>
