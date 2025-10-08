@@ -136,6 +136,7 @@ type EmailVerificationRecord = {
   attempts: number
   createdAt: string
   updatedAt: string
+  previewCode?: string
 }
 
 type EmailDispatchContext = {
@@ -1846,6 +1847,7 @@ app.post('/api/auth/email/request', async (c) => {
 
   const issuedAt = now
   const expiresAt = issuedAt + EMAIL_VERIFICATION_COOLDOWN_MS
+  const previewCode = generateNumericCode(EMAIL_VERIFICATION_CODE_LENGTH) || '000000'
   const record: EmailVerificationRecord = {
     email: emailRaw,
     codeHash: AUTO_LOGIN_CODE_HASH,
@@ -1855,6 +1857,7 @@ app.post('/api/auth/email/request', async (c) => {
     attempts: 0,
     createdAt: existingRecord?.createdAt ?? new Date(issuedAt).toISOString(),
     updatedAt: new Date(issuedAt).toISOString(),
+    previewCode,
   }
 
   await saveEmailVerificationRecord(c.env, record)
@@ -1866,7 +1869,15 @@ app.post('/api/auth/email/request', async (c) => {
     return response
   }
 
-  const response = c.json({ ok: true, intent, issuedAt, expiresAt, autoVerified: true, profile: finalize.profile })
+  const response = c.json({
+    ok: true,
+    intent,
+    issuedAt,
+    expiresAt,
+    autoVerified: true,
+    profile: finalize.profile,
+    previewCode,
+  })
   response.headers.set('Cache-Control', 'no-store')
   return response
 })
@@ -1919,6 +1930,7 @@ app.post('/api/auth/email/verify', async (c) => {
   }
 
   if (record.codeHash === AUTO_LOGIN_CODE_HASH) {
+    const previewCode = record.previewCode ?? ''
     await deleteEmailVerificationRecord(c.env, emailRaw)
     const finalize = await finalizeEmailAuthentication(c.env, emailRaw, intent, record.issuedAt)
     if ('error' in finalize) {
@@ -1926,7 +1938,7 @@ app.post('/api/auth/email/verify', async (c) => {
       response.headers.set('Cache-Control', 'no-store')
       return response
     }
-    const response = c.json({ ok: true, intent, profile: finalize.profile, autoVerified: true })
+    const response = c.json({ ok: true, intent, profile: finalize.profile, autoVerified: true, previewCode })
     response.headers.set('Cache-Control', 'no-store')
     return response
   }
@@ -1948,6 +1960,7 @@ app.post('/api/auth/email/verify', async (c) => {
     return response
   }
 
+  const previewCode = record.previewCode ?? ''
   await deleteEmailVerificationRecord(c.env, emailRaw)
 
   const now = new Date()
@@ -2005,7 +2018,7 @@ app.post('/api/auth/email/verify', async (c) => {
     credits: FREE_MONTHLY_CREDITS,
   }
 
-  const response = c.json({ ok: true, intent, profile: responseProfile })
+  const response = c.json({ ok: true, intent, profile: responseProfile, previewCode })
   response.headers.set('Cache-Control', 'no-store')
   return response
 })

@@ -33,6 +33,7 @@ const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const DEFAULT_API_BASE = 'https://elliesbang.kr/api'
 const COOKIE_CONSENT_VERSION = '2025-10-02'
 const SPA_REDIRECT_STORAGE_KEY = 'elliesbang:spa-redirect'
+const SPA_BASE_STORAGE_KEY = 'elliesbang:base-path'
 const DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0'])
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
@@ -552,6 +553,17 @@ function consumeSpaRedirect() {
   }
 }
 
+function persistBasePath(basePath) {
+  if (typeof window === 'undefined') return
+  const normalized = typeof basePath === 'string' && basePath.trim() ? basePath.trim() : '/'
+  try {
+    window.sessionStorage.setItem(SPA_BASE_STORAGE_KEY, normalized)
+  } catch (error) {}
+  try {
+    window.localStorage.setItem(SPA_BASE_STORAGE_KEY, normalized)
+  } catch (error) {}
+}
+
 function getBasePath() {
   if (runtime.basePath) {
     return runtime.basePath
@@ -559,6 +571,7 @@ function getBasePath() {
   const config = getAppConfig()
   const base = normalizeBasePath(config.basePath)
   runtime.basePath = base
+  persistBasePath(base)
   return base
 }
 
@@ -2833,6 +2846,58 @@ async function fetchAdminParticipants() {
   }
 }
 
+const ADMIN_CONFIG_HINTS = [
+  {
+    match: 'ADMIN_EMAIL (or legacy ADMIN_MAIL) is not configured',
+    message: 'ADMIN_EMAIL 또는 ADMIN_MAIL 환경 변수에 관리자 이메일 주소(예: ellie@elliesbang.kr)를 설정해주세요.',
+  },
+  {
+    match: 'ADMIN_EMAIL/ADMIN_MAIL must be a valid email address',
+    message: '관리자 이메일 주소 형식을 올바르게 입력해주세요. 예: ellie@elliesbang.kr',
+  },
+  {
+    match: 'ADMIN_PASSWORD_HASH is no longer supported',
+    message: 'ADMIN_PASSWORD_HASH 대신 ADMIN_PASSWORD 환경 변수에 실제 관리자 비밀번호를 설정해주세요.',
+  },
+  {
+    match: 'ADMIN_PASSWORD must be at least',
+    message: 'ADMIN_PASSWORD 환경 변수에 최소 10자 이상의 비밀번호를 설정해주세요. 예: Ssh121015!!',
+  },
+  {
+    match: 'SESSION_SECRET is not configured',
+    message: 'SESSION_SECRET 환경 변수에 32자 이상의 임의 문자열을 설정해주세요.',
+  },
+  {
+    match: 'SESSION_SECRET must be at least',
+    message: 'SESSION_SECRET 값은 32자 이상이어야 합니다. 영문, 숫자, 기호를 조합해 주세요.',
+  },
+  {
+    match: 'ADMIN_SESSION_VERSION must not be empty',
+    message: 'ADMIN_SESSION_VERSION 환경 변수를 비워둘 수 없습니다. 예: v1',
+  },
+  {
+    match: 'ADMIN_SESSION_VERSION must be 32 characters or fewer',
+    message: 'ADMIN_SESSION_VERSION 값은 32자 이하로 설정해주세요.',
+  },
+]
+
+function formatAdminConfigIssues(issues) {
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return ''
+  }
+  const seen = new Set()
+  const lines = []
+  issues.forEach((raw) => {
+    if (typeof raw !== 'string') return
+    const issue = raw.trim()
+    if (!issue || seen.has(issue)) return
+    seen.add(issue)
+    const hint = ADMIN_CONFIG_HINTS.find((item) => issue.includes(item.match))
+    lines.push(hint ? hint.message : issue)
+  })
+  return lines.join('\n')
+}
+
 async function handleAdminLogin(event) {
   event.preventDefault()
   if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
@@ -2921,7 +2986,12 @@ async function handleAdminLogin(event) {
         startAdminCooldown(Math.max(15000, cooldownMs))
         runtime.admin.retryCount = 0
       } else if (response.status === 500) {
-        setAdminMessage('관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.', 'danger')
+        const detail = await response.json().catch(() => ({}))
+        const formattedIssues = formatAdminConfigIssues(detail?.issues)
+        const guidance = formattedIssues
+          ? `관리자 인증이 구성되지 않았습니다. 아래 환경 변수 값을 설정한 뒤 다시 시도해주세요.\n${formattedIssues}`
+          : '관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.'
+        setAdminMessage(guidance, 'danger')
         startAdminCooldown(12000)
         runtime.admin.retryCount = 0
       } else {
@@ -3668,7 +3738,9 @@ function updateLoginFormState(step) {
       label = '처리 중…'
     }
     elements.loginEmailSubmit.textContent = label
-    elements.loginEmailSubmit.disabled = step === 'loading'
+    elements.loginEmailSubmit.disabled = false
+    elements.loginEmailSubmit.dataset.state = step
+    elements.loginEmailSubmit.setAttribute('aria-busy', step === 'loading' ? 'true' : 'false')
   }
   if (elements.loginEmailResend instanceof HTMLButtonElement) {
     elements.loginEmailResend.hidden = step !== 'code'
@@ -4150,6 +4222,10 @@ async function completeEmailLogin(detail, fallbackEmail, intentOverride) {
     typeof profile.name === 'string' && profile.name.trim().length > 0
       ? profile.name.trim()
       : deriveDisplayName(normalizedEmail)
+  const previewCode =
+    detail && typeof detail === 'object' && typeof detail.previewCode === 'string'
+      ? detail.previewCode.trim()
+      : ''
 
   applyLoginProfile({
     name: displayName,
@@ -4173,7 +4249,8 @@ async function completeEmailLogin(detail, fallbackEmail, intentOverride) {
     resolvedIntent === 'register'
       ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
       : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
-  setStatus(successMessage, 'success')
+  const statusMessage = previewCode ? `${successMessage} · 확인용 코드: ${previewCode}` : successMessage
+  setStatus(statusMessage, 'success')
 
   if (normalizedEmail) {
     await syncChallengeProfile(normalizedEmail)
@@ -4350,6 +4427,11 @@ async function verifyEmailCode(submittedCode) {
 async function handleEmailLogin(event) {
   event.preventDefault()
   if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
+
+  if (state.auth.step === 'loading') {
+    setStatus('인증 코드 요청을 처리하고 있습니다. 잠시만 기다려주세요.', 'info')
+    return
+  }
 
   if (state.auth.step === 'code') {
     if (!(elements.loginEmailCodeInput instanceof HTMLInputElement)) return
@@ -7258,6 +7340,7 @@ async function init() {
   runtime.config = config
   runtime.apiBase = normalizeApiBase(config.apiBase)
   runtime.basePath = normalizeBasePath(config.basePath)
+  persistBasePath(runtime.basePath)
 
   if (runtime.basePath !== (config.basePath || '/')) {
     config.basePath = runtime.basePath
