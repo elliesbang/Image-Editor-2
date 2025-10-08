@@ -69,9 +69,6 @@ const shouldSkipDeploy = () => {
   if (truthy.has(String(process.env.CI).toLowerCase())) {
     return true
   }
-  if (truthy.has(String(process.env.NETLIFY).toLowerCase())) {
-    return true
-  }
   return false
 }
 

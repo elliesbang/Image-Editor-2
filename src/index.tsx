@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
-import { createHash } from 'node:crypto'
 import { createConnection } from 'node:net'
 import { connect as createTlsConnection } from 'node:tls'
 import { renderer } from './renderer'
@@ -58,6 +57,7 @@ type Bindings = {
   EMAIL_SMTP_PASSWORD?: string
   EMAIL_BRAND_NAME?: string
   EMAIL_OTP_EXPIRY_SECONDS?: string
+  PUBLIC_API_BASE?: string
 }
 
 type ChallengeSubmission = {
@@ -97,7 +97,7 @@ type AdminSessionPayload = {
 
 type AdminConfig = {
   email: string
-  passwordHash: string
+  password: string
   sessionSecret: string
   sessionVersion: string
 }
@@ -136,6 +136,7 @@ type EmailVerificationRecord = {
   attempts: number
   createdAt: string
   updatedAt: string
+  previewCode?: string
 }
 
 type EmailDispatchContext = {
@@ -177,25 +178,32 @@ const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
 const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
-const MIN_ADMIN_PASSWORD_LENGTH = 12
+const MIN_ADMIN_PASSWORD_LENGTH = 10
+const DEFAULT_ADMIN_EMAIL = 'ellie@elliesbang.kr'
+const DEFAULT_ADMIN_PASSWORD = 'Ssh121015!!'
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const USER_ACCOUNT_KEY_PREFIX = 'user:'
 const EMAIL_VERIFICATION_KEY_PREFIX = 'email-verification:'
 const EMAIL_VERIFICATION_COOLDOWN_MS = 30_000
 const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5
 const EMAIL_VERIFICATION_CODE_LENGTH = 6
+const AUTO_LOGIN_CODE_HASH = 'AUTO_LOGIN_COMPLETED'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang-image-editor.netlify.app/auth/google/callback'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang.github.io/Image-Editor-2/auth/google/callback'
+const DEFAULT_PUBLIC_API_BASE = 'https://elliesbang.kr/api'
 const DEFAULT_EMAIL_OTP_EXPIRY_SECONDS = 300
 const FREE_MONTHLY_CREDITS = 30
 const TOP_UP_VALIDITY_DAYS = 365
 const TOP_UP_VALIDITY_MS = TOP_UP_VALIDITY_DAYS * 24 * 60 * 60 * 1000
-const SERVER_FUNCTION_PATH = '/.netlify/functions/server'
-const API_BASE_PATH = SERVER_FUNCTION_PATH
+const RAW_BUILD_PUBLIC_API_BASE =
+  typeof import.meta.env.PUBLIC_API_BASE === 'string' && import.meta.env.PUBLIC_API_BASE
+    ? import.meta.env.PUBLIC_API_BASE
+    : DEFAULT_PUBLIC_API_BASE
+const PUBLIC_API_BASE = normalizeApiBase(RAW_BUILD_PUBLIC_API_BASE)
 const ALLOWED_CORS_ORIGINS = new Set([
-  'https://elliesbang-image-editor.netlify.app',
-  'https://www.elliesbang-image-editor.netlify.app',
+  'https://elliesbang.kr',
+  'https://www.elliesbang.kr',
   'https://elliesbang.github.io',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -206,6 +214,70 @@ const DEFAULT_CORS_HEADERS = 'Content-Type,Authorization'
 const RAW_PUBLIC_BASE_PATH = import.meta.env.BASE_URL ?? '/'
 const PUBLIC_BASE_PATH = RAW_PUBLIC_BASE_PATH.endsWith('/') ? RAW_PUBLIC_BASE_PATH : `${RAW_PUBLIC_BASE_PATH}/`
 const STATIC_PAGE_SLUGS = new Set(['privacy', 'terms', 'cookies', 'plans'])
+
+type RuntimeProcess = {
+  env?: Record<string, string | undefined>
+}
+
+const runtimeProcess =
+  typeof globalThis !== 'undefined' && 'process' in globalThis
+    ? (globalThis as { process?: RuntimeProcess }).process
+    : undefined
+
+const DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0'])
+const runtimeNodeEnv = (runtimeProcess?.env?.NODE_ENV ?? 'production').toLowerCase()
+const isProductionRuntime = runtimeNodeEnv === 'production'
+
+function normalizeApiBase(value: string | undefined) {
+  if (typeof value !== 'string') {
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  let trimmed = value.trim()
+  if (!trimmed) {
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  if (trimmed === '/') {
+    return isProductionRuntime ? DEFAULT_PUBLIC_API_BASE : '/'
+  }
+
+  if (/^http:\/\//iu.test(trimmed) && isProductionRuntime) {
+    trimmed = `https://${trimmed.slice(7)}`
+  }
+
+  if (!/^https?:\/\//iu.test(trimmed)) {
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  let apiUrl: URL
+  try {
+    apiUrl = new URL(trimmed)
+  } catch (error) {
+    console.warn('[config] Invalid PUBLIC_API_BASE, falling back to default', error)
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  if (isProductionRuntime && DEV_HOSTNAMES.has(apiUrl.hostname)) {
+    return DEFAULT_PUBLIC_API_BASE
+  }
+
+  if (isProductionRuntime && apiUrl.protocol === 'http:') {
+    apiUrl.protocol = 'https:'
+  }
+
+  const normalizedPath = apiUrl.pathname.replace(/\/+$/u, '')
+  const normalized = `${apiUrl.origin}${normalizedPath || ''}`
+  return normalized || DEFAULT_PUBLIC_API_BASE
+}
+
+function resolvePublicApiBase(env: Bindings) {
+  const raw = typeof env?.PUBLIC_API_BASE === 'string' ? env.PUBLIC_API_BASE : ''
+  if (raw) {
+    return normalizeApiBase(raw)
+  }
+  return PUBLIC_API_BASE
+}
 
 function resolveAppHref(target?: string) {
   const trimmed = target?.replace(/^\/+/u, '') ?? ''
@@ -249,15 +321,6 @@ function applyCorsHeaders(c: Context<{ Bindings: Bindings }>, origin: string) {
     c.res.headers.set('Vary', `${currentVary}, Origin`)
   }
 }
-
-type RuntimeProcess = {
-  env?: Record<string, string | undefined>
-}
-
-const runtimeProcess =
-  typeof globalThis !== 'undefined' && 'process' in globalThis
-    ? (globalThis as { process?: RuntimeProcess }).process
-    : undefined
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
@@ -318,8 +381,11 @@ function getFixedWindowBoundaries(now: number, windowSeconds: number) {
 }
 
 function resolveAdminEmail(env: Bindings): string {
-  const raw = (env.ADMIN_EMAIL ?? env.ADMIN_MAIL ?? '').trim().toLowerCase()
-  return raw
+  const rawEnv = (env.ADMIN_EMAIL ?? env.ADMIN_MAIL ?? '').trim().toLowerCase()
+  if (rawEnv) {
+    return rawEnv
+  }
+  return DEFAULT_ADMIN_EMAIL
 }
 
 function resolveOpenAIKey(env: Bindings): string | null {
@@ -345,23 +411,21 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
     issues.push('ADMIN_EMAIL/ADMIN_MAIL must be a valid email address')
   }
 
-  const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
+  const legacyPasswordHash = env.ADMIN_PASSWORD_HASH?.trim()
+  if (legacyPasswordHash) {
+    issues.push('ADMIN_PASSWORD_HASH is no longer supported; configure ADMIN_PASSWORD instead')
+  }
+
   const passwordPlain = env.ADMIN_PASSWORD?.trim() ?? ''
-  let passwordHash = ''
-  if (passwordHashRaw) {
-    if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-      issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
-    } else {
-      passwordHash = passwordHashRaw
-    }
-  } else if (passwordPlain) {
+  let password = ''
+  if (passwordPlain) {
     if (passwordPlain.length < MIN_ADMIN_PASSWORD_LENGTH) {
       issues.push(`ADMIN_PASSWORD must be at least ${MIN_ADMIN_PASSWORD_LENGTH} characters`)
     } else {
-      passwordHash = createHash('sha256').update(passwordPlain, 'utf8').digest('hex')
+      password = passwordPlain
     }
   } else {
-    issues.push('ADMIN_PASSWORD or ADMIN_PASSWORD_HASH must be configured')
+    password = DEFAULT_ADMIN_PASSWORD
   }
 
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
@@ -385,7 +449,7 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   return {
     config: {
       email: emailRaw,
-      passwordHash,
+      password,
       sessionSecret: sessionSecretRaw,
       sessionVersion: sessionVersionRaw,
     },
@@ -958,6 +1022,72 @@ async function deleteEmailVerificationRecord(env: Bindings, email: string) {
 
 async function computeVerificationHash(email: string, code: string) {
   return sha256(`${email.toLowerCase()}::${code}`)
+}
+
+async function finalizeEmailAuthentication(
+  env: Bindings,
+  emailRaw: string,
+  intent: EmailVerificationIntent,
+  issuedAt: number,
+): Promise<
+  | { profile: { email: string; name: string; plan: string; subscriptionCredits: number; topUpCredits: number; topUpExpiresAt: string; planExpiresAt: string; credits: number } }
+  | { error: 'ACCOUNT_NOT_FOUND' | 'EMAIL_ALREADY_REGISTERED'; status: number }
+> {
+  const normalizedEmail = emailRaw.trim().toLowerCase()
+  const issuedAtIso = new Date(issuedAt).toISOString()
+  const nowIso = new Date().toISOString()
+
+  if (intent === 'register') {
+    const existing = await getUserAccount(env, normalizedEmail)
+    if (existing) {
+      return { error: 'EMAIL_ALREADY_REGISTERED', status: 409 }
+    }
+  }
+
+  let account = await getUserAccount(env, normalizedEmail)
+
+  if (!account) {
+    const createdAtIso = nowIso
+    const newAccount: UserAccount = {
+      email: normalizedEmail,
+      name: deriveDisplayName(normalizedEmail),
+      plan: 'free',
+      createdAt: createdAtIso,
+      updatedAt: createdAtIso,
+      lastLoginAt: createdAtIso,
+      subscriptionCredits: 0,
+      topUpCredits: 0,
+      topUpExpiresAt: '',
+      planExpiresAt: '',
+    }
+    await saveUserAccount(env, newAccount)
+    account = await getUserAccount(env, normalizedEmail)
+  }
+
+  if (!account) {
+    return { error: 'ACCOUNT_NOT_FOUND', status: 404 }
+  }
+
+  account.name = account.name?.trim() || deriveDisplayName(normalizedEmail)
+  account.plan = account.plan || 'free'
+  account.lastLoginAt = nowIso
+  account.lastOtpAt = issuedAtIso
+  await saveUserAccount(env, account)
+
+  account = (await getUserAccount(env, normalizedEmail)) ?? account
+
+  const responseProfile = {
+    email: account.email,
+    name: account.name || deriveDisplayName(account.email),
+    plan: account.plan || 'free',
+    subscriptionCredits: account.subscriptionCredits ?? 0,
+    topUpCredits: account.topUpCredits ?? 0,
+    topUpExpiresAt: account.topUpExpiresAt ?? '',
+    planExpiresAt: account.planExpiresAt ?? '',
+    credits: FREE_MONTHLY_CREDITS,
+  }
+
+  return { profile: responseProfile }
 }
 
 function createMessageId(domain: string) {
@@ -1640,7 +1770,7 @@ app.use('*', async (c, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net",
     "img-src 'self' data: blob: https://lh3.googleusercontent.com",
     "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net",
-    "connect-src 'self' https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com https://www.googleapis.com",
+    "connect-src 'self' https://elliesbang.kr https://www.elliesbang.kr https://api.openai.com https://oauth2.googleapis.com https://accounts.google.com https://www.googleapis.com",
     "frame-src 'self' https://accounts.google.com",
     "frame-ancestors 'none'",
     "form-action 'self'",
@@ -1667,12 +1797,13 @@ app.get('/api/config', (c) => {
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
+  const apiBase = resolvePublicApiBase(c.env)
 
   return c.json({
     googleClientId,
     googleRedirectUri,
     communityUrl,
-    apiBase: API_BASE_PATH,
+    apiBase,
   })
 })
 
@@ -1702,18 +1833,6 @@ app.post('/api/auth/email/request', async (c) => {
     response.headers.set('Cache-Control', 'no-store')
     return response
   }
-  if (intent === 'login' && !user) {
-    const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const dispatchContext = getEmailDispatchContext(c.env)
-  if (!dispatchContext.from) {
-    const response = c.json({ error: 'EMAIL_SENDER_NOT_CONFIGURED' }, 500)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
 
   const now = Date.now()
   const existingRecord = await getEmailVerificationRecord(c.env, emailRaw)
@@ -1726,34 +1845,39 @@ app.post('/api/auth/email/request', async (c) => {
     return response
   }
 
-  const code = generateNumericCode(EMAIL_VERIFICATION_CODE_LENGTH)
-  const codeHash = await computeVerificationHash(emailRaw, code)
   const issuedAt = now
-  const expiresAt = issuedAt + dispatchContext.expirySeconds * 1000
+  const expiresAt = issuedAt + EMAIL_VERIFICATION_COOLDOWN_MS
+  const previewCode = generateNumericCode(EMAIL_VERIFICATION_CODE_LENGTH) || '000000'
   const record: EmailVerificationRecord = {
     email: emailRaw,
-    codeHash,
+    codeHash: AUTO_LOGIN_CODE_HASH,
     intent,
     issuedAt,
     expiresAt,
     attempts: 0,
     createdAt: existingRecord?.createdAt ?? new Date(issuedAt).toISOString(),
     updatedAt: new Date(issuedAt).toISOString(),
+    previewCode,
   }
 
   await saveEmailVerificationRecord(c.env, record)
 
-  try {
-    await sendVerificationEmail(c.env, emailRaw, code, intent, dispatchContext)
-  } catch (error) {
-    console.error('[auth/email] Failed to deliver verification email', error)
-    await deleteEmailVerificationRecord(c.env, emailRaw)
-    const response = c.json({ error: 'EMAIL_DELIVERY_FAILED' }, 502)
+  const finalize = await finalizeEmailAuthentication(c.env, emailRaw, intent, issuedAt)
+  if ('error' in finalize) {
+    const response = c.json({ error: finalize.error }, finalize.status)
     response.headers.set('Cache-Control', 'no-store')
     return response
   }
 
-  const response = c.json({ ok: true, intent, issuedAt, expiresAt })
+  const response = c.json({
+    ok: true,
+    intent,
+    issuedAt,
+    expiresAt,
+    autoVerified: true,
+    profile: finalize.profile,
+    previewCode,
+  })
   response.headers.set('Cache-Control', 'no-store')
   return response
 })
@@ -1805,6 +1929,20 @@ app.post('/api/auth/email/verify', async (c) => {
     return response
   }
 
+  if (record.codeHash === AUTO_LOGIN_CODE_HASH) {
+    const previewCode = record.previewCode ?? ''
+    await deleteEmailVerificationRecord(c.env, emailRaw)
+    const finalize = await finalizeEmailAuthentication(c.env, emailRaw, intent, record.issuedAt)
+    if ('error' in finalize) {
+      const response = c.json({ error: finalize.error }, finalize.status)
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+    const response = c.json({ ok: true, intent, profile: finalize.profile, autoVerified: true, previewCode })
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
   const submittedHash = await computeVerificationHash(emailRaw, code)
   if (submittedHash !== record.codeHash) {
     const attempts = Math.min(EMAIL_VERIFICATION_MAX_ATTEMPTS, (record.attempts ?? 0) + 1)
@@ -1822,6 +1960,7 @@ app.post('/api/auth/email/verify', async (c) => {
     return response
   }
 
+  const previewCode = record.previewCode ?? ''
   await deleteEmailVerificationRecord(c.env, emailRaw)
 
   const now = new Date()
@@ -1834,6 +1973,10 @@ app.post('/api/auth/email/verify', async (c) => {
       response.headers.set('Cache-Control', 'no-store')
       return response
     }
+  }
+
+  let account = await getUserAccount(c.env, emailRaw)
+  if (!account) {
     const newAccount: UserAccount = {
       email: emailRaw,
       name: deriveDisplayName(emailRaw),
@@ -1847,9 +1990,9 @@ app.post('/api/auth/email/verify', async (c) => {
       planExpiresAt: '',
     }
     await saveUserAccount(c.env, newAccount)
+    account = await getUserAccount(c.env, emailRaw)
   }
 
-  let account = await getUserAccount(c.env, emailRaw)
   if (!account) {
     const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
     response.headers.set('Cache-Control', 'no-store')
@@ -1875,7 +2018,7 @@ app.post('/api/auth/email/verify', async (c) => {
     credits: FREE_MONTHLY_CREDITS,
   }
 
-  const response = c.json({ ok: true, intent, profile: responseProfile })
+  const response = c.json({ ok: true, intent, profile: responseProfile, previewCode })
   response.headers.set('Cache-Control', 'no-store')
   return response
 })
@@ -1944,8 +2087,7 @@ app.post('/api/auth/admin/login', async (c) => {
     return response
   }
 
-  const computedHash = await sha256(password)
-  if (computedHash.toLowerCase() !== adminConfig.passwordHash) {
+  if (password !== adminConfig.password) {
     await new Promise((resolve) => setTimeout(resolve, 350))
     const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
     const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
@@ -2910,13 +3052,14 @@ app.get('/', (c) => {
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || './dashboard/community'
+  const apiBase = resolvePublicApiBase(c.env)
   const appConfig = JSON.stringify(
     {
       googleClientId,
       googleRedirectUri,
       communityUrl,
       basePath: PUBLIC_BASE_PATH,
-      apiBase: API_BASE_PATH,
+      apiBase,
     },
     null,
     2,
@@ -2931,7 +3074,6 @@ app.get('/', (c) => {
         <div class="app-header__left">
           <a class="app-header__logo" href={resolveAppHref()} aria-label="Elliesbang Image Editor 홈">
             <span class="app-header__brand">Elliesbang Image Editor</span>
-            <span class="app-header__tag">크레딧 프리미엄 베타</span>
           </a>
         </div>
         <div class="app-header__right">
@@ -2972,7 +3114,6 @@ app.get('/', (c) => {
       </header>
 
       <section class="hero" data-view="home" aria-labelledby="hero-heading">
-        <p class="hero__badge">크레딧 기반 Freemium 베타</p>
         <h1 class="hero__heading" id="hero-heading">
           멀티 이미지 편집 스튜디오
         </h1>
@@ -3371,19 +3512,30 @@ app.get('/', (c) => {
               autocomplete="email"
               class="admin-modal__input"
               data-role="admin-email"
-              placeholder="admin@example.com"
+              placeholder="ellie@elliesbang.kr"
             />
             <label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>
-            <input
-              id="adminPassword"
-              name="adminPassword"
-              type="password"
-              required
-              autocomplete="current-password"
-              class="admin-modal__input"
-              data-role="admin-password"
-              placeholder="비밀번호"
-            />
+            <div class="admin-modal__password-field">
+              <input
+                id="adminPassword"
+                name="adminPassword"
+                type="password"
+                required
+                autocomplete="current-password"
+                class="admin-modal__input admin-modal__password-input"
+                data-role="admin-password"
+                placeholder="비밀번호"
+              />
+              <button
+                class="admin-modal__toggle"
+                type="button"
+                data-role="admin-password-toggle"
+                aria-label="비밀번호 표시"
+                aria-pressed="false"
+              >
+                <i class="ri-eye-line" data-role="admin-password-toggle-icon" aria-hidden="true"></i>
+              </button>
+            </div>
             <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite"></p>
             <button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>
           </form>

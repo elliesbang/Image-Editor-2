@@ -30,9 +30,11 @@ const CREDIT_COSTS = {
 }
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const DEFAULT_API_BASE = '/.netlify/functions/server'
+const DEFAULT_API_BASE = 'https://elliesbang.kr/api'
 const COOKIE_CONSENT_VERSION = '2025-10-02'
 const SPA_REDIRECT_STORAGE_KEY = 'elliesbang:spa-redirect'
+const SPA_BASE_STORAGE_KEY = 'elliesbang:base-path'
+const DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0'])
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -174,6 +176,7 @@ const runtime = {
     retryCount: 0,
     cooldownTimer: null,
     cooldownUntil: 0,
+    passwordVisible: false,
   },
 }
 
@@ -457,11 +460,46 @@ function normalizeApiBase(value = DEFAULT_API_BASE) {
   if (typeof value !== 'string') {
     return DEFAULT_API_BASE
   }
-  const trimmed = value.trim()
+
+  let trimmed = value.trim()
   if (!trimmed) {
     return DEFAULT_API_BASE
   }
-  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed
+
+  const isBrowserDev = typeof window !== 'undefined' && DEV_HOSTNAMES.has(window.location.hostname)
+
+  if (trimmed === '/') {
+    return isBrowserDev ? '/' : DEFAULT_API_BASE
+  }
+
+  if (/^http:\/\//iu.test(trimmed) && !isBrowserDev) {
+    trimmed = `https://${trimmed.slice(7)}`
+  }
+
+  if (!/^https?:\/\//iu.test(trimmed)) {
+    return DEFAULT_API_BASE
+  }
+
+  let apiUrl
+  try {
+    apiUrl = new URL(trimmed)
+  } catch (error) {
+    console.warn('잘못된 API 베이스 URL이 감지되어 기본값으로 되돌립니다.', error)
+    return DEFAULT_API_BASE
+  }
+
+  if (!isBrowserDev && DEV_HOSTNAMES.has(apiUrl.hostname)) {
+    return DEFAULT_API_BASE
+  }
+
+  if (!isBrowserDev && apiUrl.protocol === 'http:') {
+    apiUrl.protocol = 'https:'
+  }
+
+  const normalizedPath = apiUrl.pathname.replace(/\/+$/u, '')
+  const normalized = `${apiUrl.origin}${normalizedPath || ''}`
+
+  return normalized || DEFAULT_API_BASE
 }
 
 function getApiBase() {
@@ -515,6 +553,17 @@ function consumeSpaRedirect() {
   }
 }
 
+function persistBasePath(basePath) {
+  if (typeof window === 'undefined') return
+  const normalized = typeof basePath === 'string' && basePath.trim() ? basePath.trim() : '/'
+  try {
+    window.sessionStorage.setItem(SPA_BASE_STORAGE_KEY, normalized)
+  } catch (error) {}
+  try {
+    window.localStorage.setItem(SPA_BASE_STORAGE_KEY, normalized)
+  } catch (error) {}
+}
+
 function getBasePath() {
   if (runtime.basePath) {
     return runtime.basePath
@@ -522,6 +571,7 @@ function getBasePath() {
   const config = getAppConfig()
   const base = normalizeBasePath(config.basePath)
   runtime.basePath = base
+  persistBasePath(base)
   return base
 }
 
@@ -614,14 +664,40 @@ function resolveViewFromPath(pathname) {
 }
 
 function buildApiUrl(path) {
-  const base = getApiBase()
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const base = getApiBase() || ''
+  const normalizedPath = path && path.startsWith('/') ? path : `/${path || ''}`
   const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base
+
+  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api')) {
+    const suffix = normalizedPath.slice(4)
+    return `${normalizedBase}${suffix}` || '/api'
+  }
+
+  if (!normalizedBase) {
+    return normalizedPath || '/'
+  }
+
   return `${normalizedBase}${normalizedPath}`
 }
 
 function apiFetch(path, options) {
-  return fetch(buildApiUrl(path), options)
+  const init = { ...(options || {}) }
+
+  if (!init.mode) {
+    init.mode = 'cors'
+  }
+
+  if (!('credentials' in init)) {
+    init.credentials = 'include'
+  }
+
+  const headers = new Headers(options?.headers || {})
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json')
+  }
+  init.headers = headers
+
+  return fetch(buildApiUrl(path), init)
 }
 
 function waitForGoogleSdk(timeout = 8000) {
@@ -822,6 +898,8 @@ const elements = {
   adminLoginForm: document.querySelector('[data-role="admin-login-form"]'),
   adminEmailInput: document.querySelector('[data-role="admin-email"]'),
   adminPasswordInput: document.querySelector('[data-role="admin-password"]'),
+  adminPasswordToggle: document.querySelector('[data-role="admin-password-toggle"]'),
+  adminPasswordToggleIcon: document.querySelector('[data-role="admin-password-toggle-icon"]'),
   adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
   adminModalSubtitle: document.querySelector('[data-role="admin-modal-subtitle"]'),
   adminModalActions: document.querySelector('[data-role="admin-modal-actions"]'),
@@ -1795,10 +1873,16 @@ function navigateToView(targetView, options = {}) {
 
   if (normalized === 'community' && !hasCommunityAccess()) {
     if (!silent) {
-      openAccessModal(
-        '접근 권한이 없습니다.',
-        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
-      )
+      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+      if (!loggedIn) {
+        setStatus('미치나 커뮤니티에 접근하려면 먼저 로그인해주세요.', 'warning')
+        openLoginModal()
+      } else {
+        openAccessModal(
+          '접근 권한이 없습니다.',
+          '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+        )
+      }
       setView(runtime.lastAllowedView || 'home', { force: true, bypassAccess: true })
     }
     if (replace) {
@@ -1846,10 +1930,16 @@ function handlePopState() {
     if (hasCommunityAccess()) {
       setView('community', { force: true, bypassAccess: true })
     } else {
-      openAccessModal(
-        '접근 권한이 없습니다.',
-        '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
-      )
+      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
+      if (!loggedIn) {
+        setStatus('미치나 커뮤니티에 접근하려면 먼저 로그인해주세요.', 'warning')
+        openLoginModal()
+      } else {
+        openAccessModal(
+          '접근 권한이 없습니다.',
+          '접근 권한이 없습니다. 해당 대시보드는 관리자가 미리캔버스 요소 챌린지 미치나 명단에 제출한 분만 이용 가능합니다.',
+        )
+      }
       const fallbackView = runtime.lastAllowedView || 'home'
       setView(fallbackView, { force: true, bypassAccess: true })
       const fallbackRoute = joinBasePath(VIEW_ROUTES[fallbackView] || '/')
@@ -1880,13 +1970,7 @@ function updateNavigationAccess() {
       return
     }
 
-    if (target === 'community') {
-      const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
-      button.hidden = !loggedIn
-      if (!loggedIn) {
-        return
-      }
-    }
+    button.hidden = false
 
     if (target === 'admin') {
       return
@@ -2206,7 +2290,12 @@ function clearAdminCooldown(restoreForm = true) {
   if (elements.adminLoginForm instanceof HTMLFormElement && elements.adminLoginForm.dataset.state === 'cooldown') {
     elements.adminLoginForm.dataset.state = 'idle'
   }
-  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm?.querySelector('button[type="submit"]')]
+  const controls = [
+    elements.adminEmailInput,
+    elements.adminPasswordInput,
+    elements.adminPasswordToggle,
+    elements.adminLoginForm?.querySelector('button[type="submit"]'),
+  ]
   controls.forEach((control) => {
     if (control instanceof HTMLElement) {
       control.removeAttribute('disabled')
@@ -2221,7 +2310,12 @@ function startAdminCooldown(durationMs = 15000) {
   const end = Date.now() + normalized
   runtime.admin.cooldownUntil = end
   elements.adminLoginForm.dataset.state = 'cooldown'
-  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm.querySelector('button[type="submit"]')]
+  const controls = [
+    elements.adminEmailInput,
+    elements.adminPasswordInput,
+    elements.adminPasswordToggle,
+    elements.adminLoginForm.querySelector('button[type="submit"]'),
+  ]
   controls.forEach((control) => {
     if (control instanceof HTMLElement) {
       control.setAttribute('disabled', 'true')
@@ -2248,6 +2342,30 @@ function setAdminMessage(message = '', tone = 'info') {
   elements.adminLoginMessage.dataset.tone = tone
 }
 
+function setAdminPasswordVisibility(visible = false) {
+  runtime.admin.passwordVisible = Boolean(visible)
+  if (elements.adminPasswordInput instanceof HTMLInputElement) {
+    elements.adminPasswordInput.type = visible ? 'text' : 'password'
+  }
+  if (elements.adminPasswordToggle instanceof HTMLButtonElement) {
+    elements.adminPasswordToggle.setAttribute('aria-pressed', visible ? 'true' : 'false')
+    elements.adminPasswordToggle.setAttribute('aria-label', visible ? '비밀번호 숨기기' : '비밀번호 표시')
+    elements.adminPasswordToggle.dataset.state = visible ? 'visible' : 'hidden'
+  }
+  if (elements.adminPasswordToggleIcon instanceof HTMLElement) {
+    elements.adminPasswordToggleIcon.classList.remove('ri-eye-line', 'ri-eye-off-line')
+    elements.adminPasswordToggleIcon.classList.add(visible ? 'ri-eye-off-line' : 'ri-eye-line')
+  }
+}
+
+function handleAdminPasswordToggle(event) {
+  event.preventDefault()
+  setAdminPasswordVisibility(!runtime.admin.passwordVisible)
+  if (elements.adminPasswordInput instanceof HTMLInputElement) {
+    elements.adminPasswordInput.focus()
+  }
+}
+
 function openAdminModal(options = {}) {
   if (!(elements.adminModal instanceof HTMLElement)) return
   const isAdmin = state.admin.isLoggedIn
@@ -2266,6 +2384,7 @@ function openAdminModal(options = {}) {
     if (elements.adminPasswordInput instanceof HTMLInputElement) {
       elements.adminPasswordInput.value = ''
     }
+    setAdminPasswordVisibility(false)
     if (elements.adminEmailInput instanceof HTMLInputElement) {
       elements.adminEmailInput.value = state.admin.email || ''
     }
@@ -2308,6 +2427,7 @@ function closeAdminModal() {
   elements.adminModal.classList.remove('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'true')
   document.body.classList.remove('is-modal-open')
+  setAdminPasswordVisibility(false)
 }
 
 function revokeAdminSessionState() {
@@ -2726,6 +2846,58 @@ async function fetchAdminParticipants() {
   }
 }
 
+const ADMIN_CONFIG_HINTS = [
+  {
+    match: 'ADMIN_EMAIL (or legacy ADMIN_MAIL) is not configured',
+    message: 'ADMIN_EMAIL 또는 ADMIN_MAIL 환경 변수에 관리자 이메일 주소(예: ellie@elliesbang.kr)를 설정해주세요.',
+  },
+  {
+    match: 'ADMIN_EMAIL/ADMIN_MAIL must be a valid email address',
+    message: '관리자 이메일 주소 형식을 올바르게 입력해주세요. 예: ellie@elliesbang.kr',
+  },
+  {
+    match: 'ADMIN_PASSWORD_HASH is no longer supported',
+    message: 'ADMIN_PASSWORD_HASH 대신 ADMIN_PASSWORD 환경 변수에 실제 관리자 비밀번호를 설정해주세요.',
+  },
+  {
+    match: 'ADMIN_PASSWORD must be at least',
+    message: 'ADMIN_PASSWORD 환경 변수에 최소 10자 이상의 비밀번호를 설정해주세요. 예: Ssh121015!!',
+  },
+  {
+    match: 'SESSION_SECRET is not configured',
+    message: 'SESSION_SECRET 환경 변수에 32자 이상의 임의 문자열을 설정해주세요.',
+  },
+  {
+    match: 'SESSION_SECRET must be at least',
+    message: 'SESSION_SECRET 값은 32자 이상이어야 합니다. 영문, 숫자, 기호를 조합해 주세요.',
+  },
+  {
+    match: 'ADMIN_SESSION_VERSION must not be empty',
+    message: 'ADMIN_SESSION_VERSION 환경 변수를 비워둘 수 없습니다. 예: v1',
+  },
+  {
+    match: 'ADMIN_SESSION_VERSION must be 32 characters or fewer',
+    message: 'ADMIN_SESSION_VERSION 값은 32자 이하로 설정해주세요.',
+  },
+]
+
+function formatAdminConfigIssues(issues) {
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return ''
+  }
+  const seen = new Set()
+  const lines = []
+  issues.forEach((raw) => {
+    if (typeof raw !== 'string') return
+    const issue = raw.trim()
+    if (!issue || seen.has(issue)) return
+    seen.add(issue)
+    const hint = ADMIN_CONFIG_HINTS.find((item) => issue.includes(item.match))
+    lines.push(hint ? hint.message : issue)
+  })
+  return lines.join('\n')
+}
+
 async function handleAdminLogin(event) {
   event.preventDefault()
   if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
@@ -2773,6 +2945,9 @@ async function handleAdminLogin(event) {
   if (submitButton instanceof HTMLButtonElement) {
     submitButton.disabled = true
   }
+  if (elements.adminPasswordToggle instanceof HTMLButtonElement) {
+    elements.adminPasswordToggle.setAttribute('disabled', 'true')
+  }
 
   try {
     const response = await apiFetch('/api/auth/admin/login', {
@@ -2790,6 +2965,7 @@ async function handleAdminLogin(event) {
         if (elements.adminPasswordInput instanceof HTMLInputElement) {
           elements.adminPasswordInput.setAttribute('aria-invalid', 'true')
           elements.adminPasswordInput.value = ''
+          setAdminPasswordVisibility(false)
           elements.adminPasswordInput.focus()
         }
         runtime.admin.retryCount += 1
@@ -2810,7 +2986,12 @@ async function handleAdminLogin(event) {
         startAdminCooldown(Math.max(15000, cooldownMs))
         runtime.admin.retryCount = 0
       } else if (response.status === 500) {
-        setAdminMessage('관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.', 'danger')
+        const detail = await response.json().catch(() => ({}))
+        const formattedIssues = formatAdminConfigIssues(detail?.issues)
+        const guidance = formattedIssues
+          ? `관리자 인증이 구성되지 않았습니다. 아래 환경 변수 값을 설정한 뒤 다시 시도해주세요.\n${formattedIssues}`
+          : '관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.'
+        setAdminMessage(guidance, 'danger')
         startAdminCooldown(12000)
         runtime.admin.retryCount = 0
       } else {
@@ -2839,6 +3020,7 @@ async function handleAdminLogin(event) {
       elements.adminPasswordInput.value = ''
       elements.adminPasswordInput.removeAttribute('aria-invalid')
     }
+    setAdminPasswordVisibility(false)
     if (elements.adminEmailInput instanceof HTMLInputElement) {
       elements.adminEmailInput.removeAttribute('aria-invalid')
     }
@@ -2857,7 +3039,7 @@ async function handleAdminLogin(event) {
       if (submit instanceof HTMLButtonElement) {
         submit.disabled = false
       }
-      const controls = [elements.adminEmailInput, elements.adminPasswordInput]
+      const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminPasswordToggle]
       controls.forEach((control) => {
         if (control instanceof HTMLElement) {
           control.removeAttribute('disabled')
@@ -3556,7 +3738,9 @@ function updateLoginFormState(step) {
       label = '처리 중…'
     }
     elements.loginEmailSubmit.textContent = label
-    elements.loginEmailSubmit.disabled = step === 'loading'
+    elements.loginEmailSubmit.disabled = false
+    elements.loginEmailSubmit.dataset.state = step
+    elements.loginEmailSubmit.setAttribute('aria-busy', step === 'loading' ? 'true' : 'false')
   }
   if (elements.loginEmailResend instanceof HTMLButtonElement) {
     elements.loginEmailResend.hidden = step !== 'code'
@@ -3625,6 +3809,8 @@ async function startEmailVerification(email, options = {}) {
     elements.loginEmailInput.value = normalizedEmail
   }
 
+  const intentBeforeRequest = state.auth.intent
+
   updateLoginFormState('loading')
 
   try {
@@ -3636,6 +3822,11 @@ async function startEmailVerification(email, options = {}) {
     })
 
     const detail = await response.json().catch(() => ({}))
+
+    if (detail && typeof detail === 'object' && detail.profile && (detail.autoVerified || !detail.requiresCode)) {
+      await completeEmailLogin(detail, normalizedEmail, intentBeforeRequest)
+      return
+    }
 
     if (!response.ok) {
       const errorCode = detail?.error
@@ -4023,6 +4214,49 @@ async function handleGoogleLogin(event) {
   }
 }
 
+async function completeEmailLogin(detail, fallbackEmail, intentOverride) {
+  const profile = detail && typeof detail === 'object' && detail.profile ? detail.profile : {}
+  const profileEmail = typeof profile.email === 'string' ? profile.email.trim() : ''
+  const normalizedEmail = profileEmail || (typeof fallbackEmail === 'string' ? fallbackEmail.trim().toLowerCase() : '')
+  const displayName =
+    typeof profile.name === 'string' && profile.name.trim().length > 0
+      ? profile.name.trim()
+      : deriveDisplayName(normalizedEmail)
+  const previewCode =
+    detail && typeof detail === 'object' && typeof detail.previewCode === 'string'
+      ? detail.previewCode.trim()
+      : ''
+
+  applyLoginProfile({
+    name: displayName,
+    email: normalizedEmail,
+    plan: profile.plan || 'free',
+    subscriptionCredits: profile.subscriptionCredits,
+    topUpCredits: profile.topUpCredits,
+    planExpiresAt: profile.planExpiresAt,
+    topUpExpiresAt: profile.topUpExpiresAt,
+    credits: profile.credits,
+  })
+  refreshAccessStates()
+
+  const originalIntent = intentOverride === 'register' ? 'register' : 'login'
+
+  resetLoginFlow()
+  closeLoginModal()
+
+  const resolvedIntent = detail && detail.intent === 'register' ? 'register' : originalIntent
+  const successMessage =
+    resolvedIntent === 'register'
+      ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
+      : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
+  const statusMessage = previewCode ? `${successMessage} · 확인용 코드: ${previewCode}` : successMessage
+  setStatus(statusMessage, 'success')
+
+  if (normalizedEmail) {
+    await syncChallengeProfile(normalizedEmail)
+  }
+}
+
 async function handleEmailResend(event) {
   event.preventDefault()
   const currentEmail =
@@ -4046,6 +4280,7 @@ async function handleEmailResend(event) {
 
 async function verifyEmailCode(submittedCode) {
   const email = state.auth.pendingEmail
+  const intentBeforeSubmit = state.auth.intent
   if (!email) {
     setStatus('이메일 정보를 확인할 수 없습니다. 다시 인증 코드를 요청해주세요.', 'danger')
     updateLoginFormState('idle')
@@ -4174,44 +4409,7 @@ async function verifyEmailCode(submittedCode) {
       }
     }
 
-    const profile = detail?.profile ?? {}
-    const normalizedEmail =
-      typeof profile.email === 'string' && profile.email.trim().length > 0 ? profile.email.trim() : email
-    const displayName =
-      typeof profile.name === 'string' && profile.name.trim().length > 0
-        ? profile.name.trim()
-        : deriveDisplayName(normalizedEmail)
-
-    applyLoginProfile({
-      name: displayName,
-      email: normalizedEmail,
-      plan: profile.plan || 'free',
-      subscriptionCredits: profile.subscriptionCredits,
-      topUpCredits: profile.topUpCredits,
-      planExpiresAt: profile.planExpiresAt,
-      topUpExpiresAt: profile.topUpExpiresAt,
-      credits: profile.credits,
-    })
-    refreshAccessStates()
-
-    state.auth.pendingEmail = ''
-    state.auth.expiresAt = 0
-    state.auth.issuedAt = 0
-    state.auth.attempts = 0
-    state.auth.cooldownUntil = 0
-
-    closeLoginModal()
-
-    const resolvedIntent = detail?.intent === 'register' ? 'register' : state.auth.intent
-    const successMessage =
-      resolvedIntent === 'register'
-        ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
-        : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
-    setStatus(successMessage, 'success')
-
-    if (normalizedEmail) {
-      await syncChallengeProfile(normalizedEmail)
-    }
+    await completeEmailLogin(detail, email, intentBeforeSubmit)
   } catch (error) {
     console.error('verify email code error', error)
     setStatus('인증 코드를 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
@@ -4229,6 +4427,11 @@ async function verifyEmailCode(submittedCode) {
 async function handleEmailLogin(event) {
   event.preventDefault()
   if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
+
+  if (state.auth.step === 'loading') {
+    setStatus('인증 코드 요청을 처리하고 있습니다. 잠시만 기다려주세요.', 'info')
+    return
+  }
 
   if (state.auth.step === 'code') {
     if (!(elements.loginEmailCodeInput instanceof HTMLInputElement)) return
@@ -6873,6 +7076,10 @@ function attachEventListeners() {
     adminBackdrop.addEventListener('click', closeAdminModal)
   }
 
+  if (elements.adminPasswordToggle instanceof HTMLButtonElement) {
+    elements.adminPasswordToggle.addEventListener('click', handleAdminPasswordToggle)
+  }
+
   const logoutButton = document.querySelector('[data-action="logout"]')
   if (logoutButton instanceof HTMLButtonElement) {
     logoutButton.addEventListener('click', handleLogout)
@@ -7103,6 +7310,8 @@ async function init() {
   let config = getAppConfig()
   const needsRemoteConfig = !config || Object.keys(config).length === 0 || !config.apiBase
 
+  setAdminPasswordVisibility(false)
+
   if (needsRemoteConfig) {
     try {
       const response = await apiFetch('/api/config', {
@@ -7131,6 +7340,7 @@ async function init() {
   runtime.config = config
   runtime.apiBase = normalizeApiBase(config.apiBase)
   runtime.basePath = normalizeBasePath(config.basePath)
+  persistBasePath(runtime.basePath)
 
   if (runtime.basePath !== (config.basePath || '/')) {
     config.basePath = runtime.basePath

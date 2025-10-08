@@ -1147,18 +1147,6 @@ main.page {
   gap: 24px;
 }
 
-.hero__badge {
-  padding: 8px 18px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(59, 130, 246, 0.18));
-  border: 1px solid rgba(139, 92, 246, 0.32);
-  font-size: 0.85rem;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  font-weight: 600;
-  color: var(--heading);
-}
-
 .hero__heading {
   max-width: 720px;
   font-size: clamp(2.5rem, 4.2vw, 3.4rem);
@@ -2644,6 +2632,10 @@ body.is-modal-open {
   color: var(--text-muted);
 }
 
+.admin-modal__password-field {
+  position: relative;
+}
+
 .admin-modal__input {
   width: 100%;
   padding: 12px 14px;
@@ -2654,9 +2646,40 @@ body.is-modal-open {
   font-size: 0.95rem;
 }
 
+.admin-modal__password-input {
+  padding-right: 48px;
+}
+
 .admin-modal__input:focus-visible {
   outline: 2px solid rgba(254, 245, 104, 0.65);
   outline-offset: 3px;
+}
+
+.admin-modal__toggle {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-muted);
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.admin-modal__toggle:hover {
+  background: rgba(148, 163, 184, 0.28);
+  color: var(--heading);
+}
+
+.admin-modal__toggle:focus-visible {
+  outline: 2px solid rgba(254, 245, 104, 0.65);
+  outline-offset: 2px;
 }
 
 .admin-modal__helper {

@@ -1,10 +1,9 @@
-import buildNetlify from '@hono/vite-build/netlify-functions'
 import devServer from '@hono/vite-dev-server'
 import nodeAdapter from '@hono/vite-dev-server/node'
 import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { build as runViteBuild, defineConfig } from 'vite'
+import { defineConfig } from 'vite'
 
 const isEnoent = (error) =>
   Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')
@@ -66,28 +65,37 @@ const injectSpaRedirect = async (filePath, basePath) => {
   }
 }
 
-const PUBLIC_BASE_PATH = '/Image-Editor-2/'
-
-const serverBuildPlugin = () => {
-  return {
-    name: 'netlify-functions-post-build',
-    apply: 'build',
-    enforce: 'post',
-    async closeBundle() {
-      await runViteBuild({
-        configFile: false,
-        plugins: [
-          buildNetlify({
-            entry: 'src/index.tsx',
-            outputDir: './netlify/functions',
-            output: 'server.js',
-            emptyOutDir: true,
-          }),
-        ],
-      })
-    },
+const normalizeBasePath = (value) => {
+  if (!value) {
+    return '/'
   }
+
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === '/') {
+    return '/'
+  }
+
+  const withLeadingSlash = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+  return ensureTrailingSlash(withLeadingSlash)
 }
+
+const resolvePublicBasePath = () => {
+  if (process.env.PUBLIC_BASE_PATH) {
+    return normalizeBasePath(process.env.PUBLIC_BASE_PATH)
+  }
+
+  const repository = process.env.GITHUB_REPOSITORY
+  if (process.env.CI === 'true' && repository) {
+    const [, repoName] = repository.split('/')
+    if (repoName) {
+      return normalizeBasePath(repoName)
+    }
+  }
+
+  return '/Image-Editor-2/'
+}
+
+const PUBLIC_BASE_PATH = resolvePublicBasePath()
 
 const copyRedirectsPlugin = (basePath, htmlFiles) => {
   return {
@@ -151,6 +159,6 @@ export default defineConfig(({ command }) => {
         input: HTML_INPUTS,
       },
     },
-    plugins: [copyRedirectsPlugin(PUBLIC_BASE_PATH, HTML_PAGES), serverBuildPlugin()],
+    plugins: [copyRedirectsPlugin(PUBLIC_BASE_PATH, HTML_PAGES)],
   }
 })
