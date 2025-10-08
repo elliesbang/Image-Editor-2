@@ -3114,6 +3114,7 @@ app.get('/', (c) => {
       </header>
 
       <section class="hero" data-view="home" aria-labelledby="hero-heading">
+        <p class="hero__badge">크레딧 기반 Freemium 베타</p>
         <h1 class="hero__heading" id="hero-heading">
           멀티 이미지 편집 스튜디오
         </h1>
