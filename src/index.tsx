@@ -1041,22 +1041,28 @@ async function finalizeEmailAuthentication(
     if (existing) {
       return { error: 'EMAIL_ALREADY_REGISTERED', status: 409 }
     }
+  }
+
+  let account = await getUserAccount(env, normalizedEmail)
+
+  if (!account) {
+    const createdAtIso = nowIso
     const newAccount: UserAccount = {
       email: normalizedEmail,
       name: deriveDisplayName(normalizedEmail),
       plan: 'free',
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      lastLoginAt: nowIso,
+      createdAt: createdAtIso,
+      updatedAt: createdAtIso,
+      lastLoginAt: createdAtIso,
       subscriptionCredits: 0,
       topUpCredits: 0,
       topUpExpiresAt: '',
       planExpiresAt: '',
     }
     await saveUserAccount(env, newAccount)
+    account = await getUserAccount(env, normalizedEmail)
   }
 
-  let account = await getUserAccount(env, normalizedEmail)
   if (!account) {
     return { error: 'ACCOUNT_NOT_FOUND', status: 404 }
   }
@@ -1826,11 +1832,6 @@ app.post('/api/auth/email/request', async (c) => {
     response.headers.set('Cache-Control', 'no-store')
     return response
   }
-  if (intent === 'login' && !user) {
-    const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
 
   const now = Date.now()
   const existingRecord = await getEmailVerificationRecord(c.env, emailRaw)
@@ -1959,6 +1960,10 @@ app.post('/api/auth/email/verify', async (c) => {
       response.headers.set('Cache-Control', 'no-store')
       return response
     }
+  }
+
+  let account = await getUserAccount(c.env, emailRaw)
+  if (!account) {
     const newAccount: UserAccount = {
       email: emailRaw,
       name: deriveDisplayName(emailRaw),
@@ -1972,9 +1977,9 @@ app.post('/api/auth/email/verify', async (c) => {
       planExpiresAt: '',
     }
     await saveUserAccount(c.env, newAccount)
+    account = await getUserAccount(c.env, emailRaw)
   }
 
-  let account = await getUserAccount(c.env, emailRaw)
   if (!account) {
     const response = c.json({ error: 'ACCOUNT_NOT_FOUND' }, 404)
     response.headers.set('Cache-Control', 'no-store')
