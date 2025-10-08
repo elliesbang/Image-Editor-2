@@ -13,7 +13,7 @@
 ## 현재 구현 기능
 - **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
 - **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
-- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, 실제 메일 발송(SMTP/Resend/SendGrid) 기반 OTP 전달, Google 로그인은 비활성화되어 이메일 인증만 지원
+- **이메일 로그인 UX**: 이메일 주소만 입력하면 즉시 가입/로그인까지 완료되는 원클릭 흐름을 지원하며, 추가 코드 입력 없이 무료 30 크레딧이 바로 충전됩니다. (기존 OTP 검증 엔드포인트는 호환용으로 유지)
 - **관리자 인증 & 보안 강화**
   - 평문 비밀번호 비교 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
@@ -30,7 +30,7 @@
 - **헤더 커뮤니티 링크**: 로그인 버튼 옆 “미치나 커뮤니티” 버튼을 새 탭으로 열어 외부 커뮤니티 또는 내부 뷰(`/?view=community`)에 접근 가능
 
 ## 관리자 & 챌린지 운영 흐름
-0. **이메일 로그인**: 로그인/회원가입 모달에서 이메일 주소 입력 → 실제 이메일로 6자리 인증 코드 전송 → 코드 입력 후 로그인/가입(쿨다운, 중복 가입 방지 포함)
+0. **이메일 로그인**: 로그인/회원가입 모달에서 이메일 주소만 입력하면 즉시 가입 또는 로그인까지 자동 완료되며, 중복 가입 및 쿨다운 방지도 동일하게 적용됩니다.
 1. **관리자 로그인**: `/api/auth/admin/login`으로 이메일·비밀번호 제출 → 환경 변수 `ADMIN_PASSWORD`(기본값 `Ssh121015!!`)와 일치 여부를 즉시 확인한 뒤 JWT 서명, HttpOnly 세션 쿠키 발급(8시간). 로그인 성공 후에는 자동 이동 없이 상태 배너/안내 패널의 CTA(현재 창 이동 또는 새 탭 열기)를 통해 대시보드 진입 방식을 선택
 2. **명단 등록**: CSV 업로드(이메일, 이름, 종료일) 또는 textarea 입력 → KV/in-memory에 참가자 레코드 저장, 미치나 플랜 권한 부여
 3. **대시보드 모니터링**: 진행률/미제출 현황 표, 완료 상태 필터, 새로고침·완주 판별 버튼 제공
@@ -64,8 +64,8 @@
 | POST | `/api/analyze` | OpenAI GPT-4o-mini 기반 키워드/제목 분석 (data URL 입력) | Server-side API key |
 | POST | `/api/auth/google` | Google OAuth 코드 ↔ ID 토큰 교환 및 프로필 반환 | Google OAuth 코드 |
 | GET | `/api/auth/session` | 관리자 세션 상태 확인 | 세션 쿠키 |
-| POST | `/api/auth/email/request` | 이메일 OTP 요청 (body: `{ email, intent }`) | - |
-| POST | `/api/auth/email/verify` | 이메일 OTP 검증/로그인 (body: `{ email, intent, code }`) | - |
+| POST | `/api/auth/email/request` | 이메일 주소 제출만으로 자동 가입/로그인 처리 (body: `{ email, intent }`) | - |
+| POST | `/api/auth/email/verify` | (선택) 기존 6자리 OTP 코드 검증/로그인 흐름 유지용 | - |
 | POST | `/api/auth/admin/login` | 관리자 로그인 (body: `{ email, password }`) | 세션 쿠키 발급 |
 | POST | `/api/auth/admin/logout` | 관리자 로그아웃 | 세션 쿠키 |
 | POST | `/api/admin/challenge/import` | 참가자 명단 등록(CSV/JSON/textarea) | 관리자 세션 |
@@ -102,17 +102,17 @@
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
-| `EMAIL_FROM_ADDRESS` | OTP 메일 발송 발신 주소 | 필수 | SMTP/Resend/SendGrid 공통 사용 |
-| `EMAIL_FROM_NAME` | OTP 메일 발신자 이름 | 선택 | 미설정 시 브랜드명 사용 |
-| `EMAIL_BRAND_NAME` | OTP 메일에 표기할 브랜드명 | 선택 | 기본값 `Elliesbang Image Editor` |
-| `EMAIL_SMTP_HOST` | SMTP 호스트 이름 | 필수* | SMTP 사용 시 필수 (*API 사용 시 미필요) |
-| `EMAIL_SMTP_PORT` | SMTP 포트 번호 | 선택 | 기본 465 (secure) / 587 (starttls) |
-| `EMAIL_SMTP_SECURE` | SMTP 보안 플래그(`true`/`false`) | 선택 | 기본 포트 기반 자동 판별 |
-| `EMAIL_SMTP_USER` | SMTP 인증 사용자 | 필수* | SMTP 사용 시 필수 |
-| `EMAIL_SMTP_PASSWORD` | SMTP 인증 비밀번호 | 필수* | SMTP 사용 시 필수 |
-| `RESEND_API_KEY` | Resend 이메일 API 키 | 선택 | 설정 시 Resend 우선 시도 |
-| `SENDGRID_API_KEY` | SendGrid 이메일 API 키 | 선택 | Resend 실패 시 2차 시도 |
-| `EMAIL_OTP_EXPIRY_SECONDS` | OTP 만료 시간(초) | 선택 | 60~1800 사이, 기본 300 |
+| `EMAIL_FROM_ADDRESS` | (선택) 알림 메일 발신 주소 | 선택 | 자동 로그인에는 필요하지 않으며, 별도 알림 메일을 보낼 때만 설정 |
+| `EMAIL_FROM_NAME` | (선택) 메일 발신자 이름 | 선택 | 메일 발송 시 브랜드명 재정의 |
+| `EMAIL_BRAND_NAME` | (선택) 메일 본문 브랜드명 | 선택 | 기본값 `Elliesbang Image Editor` |
+| `EMAIL_SMTP_HOST` | (선택) SMTP 호스트 이름 | 선택 | 메일 발송을 직접 구성할 때만 필요 |
+| `EMAIL_SMTP_PORT` | (선택) SMTP 포트 번호 | 선택 | 기본 465 (secure) / 587 (starttls) |
+| `EMAIL_SMTP_SECURE` | (선택) SMTP 보안 플래그(`true`/`false`) | 선택 | 기본 포트 기반 자동 판별 |
+| `EMAIL_SMTP_USER` | (선택) SMTP 인증 사용자 | 선택 | SMTP 사용 시 필요 |
+| `EMAIL_SMTP_PASSWORD` | (선택) SMTP 인증 비밀번호 | 선택 | SMTP 사용 시 필요 |
+| `RESEND_API_KEY` | (선택) Resend 이메일 API 키 | 선택 | 메일 발송 시 Resend 사용 |
+| `SENDGRID_API_KEY` | (선택) SendGrid 이메일 API 키 | 선택 | 메일 발송 시 SendGrid 사용 |
+| `EMAIL_OTP_EXPIRY_SECONDS` | (선택) 레거시 OTP 만료 시간(초) | 선택 | 기존 코드 검증 흐름을 유지할 때만 적용 |
 | `CHALLENGE_KV` | 외부 KV/데이터 스토리지 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | 외부 KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 | `PUBLIC_API_BASE` | 프론트엔드에서 사용할 기본 API 엔드포인트 베이스 URL | 선택 | 기본값 `https://elliesbang.kr/api`, 로컬 개발 시 `/` 또는 `http://localhost:3000/api` 등으로 재정의 |
@@ -139,11 +139,13 @@ ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
 # GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
 # GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
 MICHINA_COMMUNITY_URL="https://community.example.com"
-EMAIL_FROM_ADDRESS="noreply@example.com"
-EMAIL_FROM_NAME="Elliesbang Image Editor"
-EMAIL_SMTP_HOST="smtp.example.com"
-EMAIL_SMTP_USER="smtp-user"
-EMAIL_SMTP_PASSWORD="smtp-password"
+# 아래 이메일 발송 변수는 자동 로그인 흐름에는 필요하지 않으며,
+# 별도 알림 메일을 구성할 때만 설정합니다.
+# EMAIL_FROM_ADDRESS="noreply@example.com"
+# EMAIL_FROM_NAME="Elliesbang Image Editor"
+# EMAIL_SMTP_HOST="smtp.example.com"
+# EMAIL_SMTP_USER="smtp-user"
+# EMAIL_SMTP_PASSWORD="smtp-password"
 # GitHub Pages 배포 시 API 엔드포인트를 절대 경로로 지정합니다.
 PUBLIC_API_BASE="https://elliesbang.kr/api"
 # 로컬 테스트 시에는 `/` 또는 `http://localhost:3000/api` 로 조정하세요.
@@ -218,7 +220,7 @@ curl http://localhost:3000/api/health
    - GitHub Actions 워크플로우를 사용한다면 `PUBLIC_API_BASE`, `SESSION_SECRET`, `ADMIN_PASSWORD` 등의 값을 GitHub Secrets로 관리하세요.
 
 ## 사용자 가이드 요약
-- **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
+- **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력만으로 바로 로그인 → 무료 크레딧 충전 후 편집 진행
 - **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
 - **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
 - **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 GitHub Secrets 또는 별도 시크릿 매니저로만 관리하고 프론트엔드에 노출하지 마세요.

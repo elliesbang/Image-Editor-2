@@ -3737,6 +3737,8 @@ async function startEmailVerification(email, options = {}) {
     elements.loginEmailInput.value = normalizedEmail
   }
 
+  const intentBeforeRequest = state.auth.intent
+
   updateLoginFormState('loading')
 
   try {
@@ -3748,6 +3750,11 @@ async function startEmailVerification(email, options = {}) {
     })
 
     const detail = await response.json().catch(() => ({}))
+
+    if (detail && typeof detail === 'object' && detail.profile && (detail.autoVerified || !detail.requiresCode)) {
+      await completeEmailLogin(detail, normalizedEmail, intentBeforeRequest)
+      return
+    }
 
     if (!response.ok) {
       const errorCode = detail?.error
@@ -4135,6 +4142,44 @@ async function handleGoogleLogin(event) {
   }
 }
 
+async function completeEmailLogin(detail, fallbackEmail, intentOverride) {
+  const profile = detail && typeof detail === 'object' && detail.profile ? detail.profile : {}
+  const profileEmail = typeof profile.email === 'string' ? profile.email.trim() : ''
+  const normalizedEmail = profileEmail || (typeof fallbackEmail === 'string' ? fallbackEmail.trim().toLowerCase() : '')
+  const displayName =
+    typeof profile.name === 'string' && profile.name.trim().length > 0
+      ? profile.name.trim()
+      : deriveDisplayName(normalizedEmail)
+
+  applyLoginProfile({
+    name: displayName,
+    email: normalizedEmail,
+    plan: profile.plan || 'free',
+    subscriptionCredits: profile.subscriptionCredits,
+    topUpCredits: profile.topUpCredits,
+    planExpiresAt: profile.planExpiresAt,
+    topUpExpiresAt: profile.topUpExpiresAt,
+    credits: profile.credits,
+  })
+  refreshAccessStates()
+
+  const originalIntent = intentOverride === 'register' ? 'register' : 'login'
+
+  resetLoginFlow()
+  closeLoginModal()
+
+  const resolvedIntent = detail && detail.intent === 'register' ? 'register' : originalIntent
+  const successMessage =
+    resolvedIntent === 'register'
+      ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
+      : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
+  setStatus(successMessage, 'success')
+
+  if (normalizedEmail) {
+    await syncChallengeProfile(normalizedEmail)
+  }
+}
+
 async function handleEmailResend(event) {
   event.preventDefault()
   const currentEmail =
@@ -4158,6 +4203,7 @@ async function handleEmailResend(event) {
 
 async function verifyEmailCode(submittedCode) {
   const email = state.auth.pendingEmail
+  const intentBeforeSubmit = state.auth.intent
   if (!email) {
     setStatus('이메일 정보를 확인할 수 없습니다. 다시 인증 코드를 요청해주세요.', 'danger')
     updateLoginFormState('idle')
@@ -4286,44 +4332,7 @@ async function verifyEmailCode(submittedCode) {
       }
     }
 
-    const profile = detail?.profile ?? {}
-    const normalizedEmail =
-      typeof profile.email === 'string' && profile.email.trim().length > 0 ? profile.email.trim() : email
-    const displayName =
-      typeof profile.name === 'string' && profile.name.trim().length > 0
-        ? profile.name.trim()
-        : deriveDisplayName(normalizedEmail)
-
-    applyLoginProfile({
-      name: displayName,
-      email: normalizedEmail,
-      plan: profile.plan || 'free',
-      subscriptionCredits: profile.subscriptionCredits,
-      topUpCredits: profile.topUpCredits,
-      planExpiresAt: profile.planExpiresAt,
-      topUpExpiresAt: profile.topUpExpiresAt,
-      credits: profile.credits,
-    })
-    refreshAccessStates()
-
-    state.auth.pendingEmail = ''
-    state.auth.expiresAt = 0
-    state.auth.issuedAt = 0
-    state.auth.attempts = 0
-    state.auth.cooldownUntil = 0
-
-    closeLoginModal()
-
-    const resolvedIntent = detail?.intent === 'register' ? 'register' : state.auth.intent
-    const successMessage =
-      resolvedIntent === 'register'
-        ? `${displayName}님, 회원가입이 완료되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧이 충전되었습니다.`
-        : `${displayName}님, 로그인되었습니다. 무료 ${FREE_MONTHLY_CREDITS} 크레딧으로 작업을 시작하세요.`
-    setStatus(successMessage, 'success')
-
-    if (normalizedEmail) {
-      await syncChallengeProfile(normalizedEmail)
-    }
+    await completeEmailLogin(detail, email, intentBeforeSubmit)
   } catch (error) {
     console.error('verify email code error', error)
     setStatus('인증 코드를 확인하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')

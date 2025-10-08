@@ -186,6 +186,7 @@ const EMAIL_VERIFICATION_KEY_PREFIX = 'email-verification:'
 const EMAIL_VERIFICATION_COOLDOWN_MS = 30_000
 const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5
 const EMAIL_VERIFICATION_CODE_LENGTH = 6
+const AUTO_LOGIN_CODE_HASH = 'AUTO_LOGIN_COMPLETED'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://elliesbang.github.io/Image-Editor-2/auth/google/callback'
@@ -1022,6 +1023,66 @@ async function computeVerificationHash(email: string, code: string) {
   return sha256(`${email.toLowerCase()}::${code}`)
 }
 
+async function finalizeEmailAuthentication(
+  env: Bindings,
+  emailRaw: string,
+  intent: EmailVerificationIntent,
+  issuedAt: number,
+): Promise<
+  | { profile: { email: string; name: string; plan: string; subscriptionCredits: number; topUpCredits: number; topUpExpiresAt: string; planExpiresAt: string; credits: number } }
+  | { error: 'ACCOUNT_NOT_FOUND' | 'EMAIL_ALREADY_REGISTERED'; status: number }
+> {
+  const normalizedEmail = emailRaw.trim().toLowerCase()
+  const issuedAtIso = new Date(issuedAt).toISOString()
+  const nowIso = new Date().toISOString()
+
+  if (intent === 'register') {
+    const existing = await getUserAccount(env, normalizedEmail)
+    if (existing) {
+      return { error: 'EMAIL_ALREADY_REGISTERED', status: 409 }
+    }
+    const newAccount: UserAccount = {
+      email: normalizedEmail,
+      name: deriveDisplayName(normalizedEmail),
+      plan: 'free',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastLoginAt: nowIso,
+      subscriptionCredits: 0,
+      topUpCredits: 0,
+      topUpExpiresAt: '',
+      planExpiresAt: '',
+    }
+    await saveUserAccount(env, newAccount)
+  }
+
+  let account = await getUserAccount(env, normalizedEmail)
+  if (!account) {
+    return { error: 'ACCOUNT_NOT_FOUND', status: 404 }
+  }
+
+  account.name = account.name?.trim() || deriveDisplayName(normalizedEmail)
+  account.plan = account.plan || 'free'
+  account.lastLoginAt = nowIso
+  account.lastOtpAt = issuedAtIso
+  await saveUserAccount(env, account)
+
+  account = (await getUserAccount(env, normalizedEmail)) ?? account
+
+  const responseProfile = {
+    email: account.email,
+    name: account.name || deriveDisplayName(account.email),
+    plan: account.plan || 'free',
+    subscriptionCredits: account.subscriptionCredits ?? 0,
+    topUpCredits: account.topUpCredits ?? 0,
+    topUpExpiresAt: account.topUpExpiresAt ?? '',
+    planExpiresAt: account.planExpiresAt ?? '',
+    credits: FREE_MONTHLY_CREDITS,
+  }
+
+  return { profile: responseProfile }
+}
+
 function createMessageId(domain: string) {
   try {
     if (typeof crypto.randomUUID === 'function') {
@@ -1771,13 +1832,6 @@ app.post('/api/auth/email/request', async (c) => {
     return response
   }
 
-  const dispatchContext = getEmailDispatchContext(c.env)
-  if (!dispatchContext.from) {
-    const response = c.json({ error: 'EMAIL_SENDER_NOT_CONFIGURED' }, 500)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
   const now = Date.now()
   const existingRecord = await getEmailVerificationRecord(c.env, emailRaw)
   if (existingRecord && now - existingRecord.issuedAt < EMAIL_VERIFICATION_COOLDOWN_MS) {
@@ -1789,13 +1843,11 @@ app.post('/api/auth/email/request', async (c) => {
     return response
   }
 
-  const code = generateNumericCode(EMAIL_VERIFICATION_CODE_LENGTH)
-  const codeHash = await computeVerificationHash(emailRaw, code)
   const issuedAt = now
-  const expiresAt = issuedAt + dispatchContext.expirySeconds * 1000
+  const expiresAt = issuedAt + EMAIL_VERIFICATION_COOLDOWN_MS
   const record: EmailVerificationRecord = {
     email: emailRaw,
-    codeHash,
+    codeHash: AUTO_LOGIN_CODE_HASH,
     intent,
     issuedAt,
     expiresAt,
@@ -1806,17 +1858,14 @@ app.post('/api/auth/email/request', async (c) => {
 
   await saveEmailVerificationRecord(c.env, record)
 
-  try {
-    await sendVerificationEmail(c.env, emailRaw, code, intent, dispatchContext)
-  } catch (error) {
-    console.error('[auth/email] Failed to deliver verification email', error)
-    await deleteEmailVerificationRecord(c.env, emailRaw)
-    const response = c.json({ error: 'EMAIL_DELIVERY_FAILED' }, 502)
+  const finalize = await finalizeEmailAuthentication(c.env, emailRaw, intent, issuedAt)
+  if ('error' in finalize) {
+    const response = c.json({ error: finalize.error }, finalize.status)
     response.headers.set('Cache-Control', 'no-store')
     return response
   }
 
-  const response = c.json({ ok: true, intent, issuedAt, expiresAt })
+  const response = c.json({ ok: true, intent, issuedAt, expiresAt, autoVerified: true, profile: finalize.profile })
   response.headers.set('Cache-Control', 'no-store')
   return response
 })
@@ -1864,6 +1913,19 @@ app.post('/api/auth/email/verify', async (c) => {
   if (record.expiresAt <= Date.now()) {
     await deleteEmailVerificationRecord(c.env, emailRaw)
     const response = c.json({ error: 'CODE_EXPIRED' }, 410)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  if (record.codeHash === AUTO_LOGIN_CODE_HASH) {
+    await deleteEmailVerificationRecord(c.env, emailRaw)
+    const finalize = await finalizeEmailAuthentication(c.env, emailRaw, intent, record.issuedAt)
+    if ('error' in finalize) {
+      const response = c.json({ error: finalize.error }, finalize.status)
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+    const response = c.json({ ok: true, intent, profile: finalize.profile, autoVerified: true })
     response.headers.set('Cache-Control', 'no-store')
     return response
   }
