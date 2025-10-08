@@ -130,16 +130,9 @@ cat <<'EOF' > .dev.vars
 OPEN_AI_API_KEY="sk-..."
 ADMIN_MAIL="ellie@elliesbang.kr"
 ADMIN_PASSWORD="Ssh121015!!"
-SESSION_SECRET="<랜덤 32자 이상>"
-ADMIN_SESSION_VERSION="1"
 ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
 ADMIN_RATE_LIMIT_WINDOW_SECONDS="60"
 ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
-# Google OAuth 변수 (현재 Google 로그인 비활성화 상태이므로 입력하지 않아도 됩니다)
-# GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
-# GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
-# GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
-MICHINA_COMMUNITY_URL="https://community.example.com"
 # 아래 이메일 발송 변수는 자동 로그인 흐름에는 필요하지 않으며,
 # 별도 알림 메일을 구성할 때만 설정합니다.
 # EMAIL_FROM_ADDRESS="noreply@example.com"
