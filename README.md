@@ -1,230 +1,67 @@
-# Elliesbang Image Editor 
+# Elliesbang Image Editor
 
-## 프로젝트 개요
-- **이름**: Elliesbang Image Editor
-- **목표**:  Netlify+ Hono 조합으로 동작하는 경량 이미지 편집 스튜디오에 **관리자용 무제한 테스트 흐름**과 **미치나 플랜 3주 챌린지 관리 시스템**을 결합
-- **핵심 특징**: HTML5 Canvas 기반 이미지 파이프라인, Freemium 크레딧 게이트, 관리자 전용 인증/세션 유지, 참가자 진행률·수료증 UI, OpenAI 연동 키워드 분석(25개 키워드 및 제목·키워드 복사 지원)
+## 소개
+Elliesbang Image Editor는 HTML5 Canvas 기반의 멀티 이미지 편집 스튜디오입니다. GitHub Pages에서 동작할 수 있도록 완전한 정적 자산으로 구성되었으며, 루트 경로(`/index.html`)에서 항상 이미지 편집 UI를 우선적으로 제공합니다. 로그인 및 관리자 대시보드는 별도의 문서(`/login.html`, `/dashboard.html`)로 분리되어 있어 자동 리디렉션 없이 사용자가 직접 이동할 수 있습니다.
 
-## 현재 구현 기능
-- **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
-- **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
-- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, 실제 메일 발송(SMTP/Resend/SendGrid) 기반 OTP 전달, Google 로그인은 비활성화되어 이메일 인증만 지원
-- **관리자 인증 & 보안 강화**
-  - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
-  - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
-  - 고정 윈도우 + 추가 쿨다운 기반 레이트 리밋(`ADMIN_RATE_LIMIT_*`) 및 `Retry-After`/`X-RateLimit-*` 헤더 제공
-  - 관리자 로그인/세션 복원 시 자동 페이지 전환 없이 상태 배너에서 ‘대시보드 이동’·‘새 탭에서 열기’ CTA를 즉시 제공하고, 내비게이션 버튼 하이라이트와 안내 패널(현재 페이지 이동/새 탭 열기)을 동시에 노출해 대시보드 위치를 즉시 안내(상태 배너 문안: “관리자 로그인 완료! 대시보드를 현재 페이지에서 열거나 새 탭으로 띄울 수 있습니다.”)
-  - `/api/auth/admin/login/logout/session` REST API, 실패 시 지연 응답 및 429 처리
-- **미치나 플랜 3주 챌린지 관리**
-  - 관리자: CSV/수동 입력으로 참가자 명단 업로드, D+15 영업일 자동 만료일, 진행률 대시보드, 완주 판별 실행, 완주자 CSV 추출, 참가자 데이터 백업/스냅샷 API
-  - 참가자: 제출 진행률 바, Day별 제출 카드, URL/이미지 제출(이미지 → base64 저장), 자동 완주 판정, 수료증 발급
-  - 키-값 저장소(KV) 사용 시 전역 영속화, 로컬 개발 시 in-memory fallback + 백업 스토어 동기화
-- **수료증 발급 (배경 #fef568)**: `/api/challenge/certificate` 응답을 기반으로 html2canvas로 PNG 다운로드 생성
-- **보안 헤더 & 보호**: 전역 CSP, HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, Cross-Origin-Opener-Policy 적용
-- **법적 문서 & 쿠키 배너**: 개인정보 처리방침(`/privacy`), 이용약관(`/terms`), 쿠키 정책(`/cookies`) 및 선택형 쿠키 배너
-- **헤더 커뮤니티 링크**: 로그인 버튼 옆 “미치나 커뮤니티” 버튼을 새 탭으로 열어 외부 커뮤니티 또는 내부 뷰(`/?view=community`)에 접근 가능
+## 주요 기능
+- **멀티 이미지 편집 파이프라인**: 최대 50장을 업로드해 배경 제거, 타이트 크롭, 노이즈 제거, 가로폭 리사이즈, PNG→SVG 변환(ImageTracer.js 사용)을 한 번에 적용할 수 있습니다.
+- **ZIP 내보내기**: 선택한 이미지 또는 전체 결과를 JSZip 호환 빌더로 묶어 다운로드합니다. SVG 변환이 활성화된 경우 벡터 파일도 함께 포함됩니다.
+- **Freemium 크레딧 UX**: 로그인 시 30크레딧이 충전되며, 작업 수행 시 잔여 크레딧 배지가 `success → warning → danger` 단계로 변합니다. GitHub Pages에서는 로컬 스토리지에만 저장됩니다.
+- **이메일 OTP 로그인(데모)**: `/login.html`에서 이메일 주소와 6자리 코드를 입력하는 흐름을 시뮬레이션합니다. 실 서비스 연동 전까지는 setTimeout 기반으로 데모 토스트를 출력합니다.
+- **관리자 대시보드(데모)**: `/dashboard.html`에서 참가자 진행률 표, CSV 가져오기/내보내기, 완주 판별 버튼을 제공합니다. API가 없으면 자동으로 데모 데이터가 로드됩니다.
+- **법적 문서**: `/privacy.html`, `/terms.html`, `/cookies.html` 페이지에서 개인정보·이용약관·쿠키 정책을 확인할 수 있습니다.
+- **보안·법적 안내**: 헤더에 미치나 커뮤니티 링크, 푸터에 법적 문서 링크, 상태 배너에서 관리자 세션 안내 CTA를 제공합니다.
 
-## 관리자 & 챌린지 운영 흐름
-0. **이메일 로그인**: 로그인/회원가입 모달에서 이메일 주소 입력 → 실제 이메일로 6자리 인증 코드 전송 → 코드 입력 후 로그인/가입(쿨다운, 중복 가입 방지 포함)
-1. **관리자 로그인**: `/api/auth/admin/login`으로 이메일·비밀번호 제출 → SHA-256 해시 비교 후 JWT 서명, HttpOnly 세션 쿠키 발급(8시간). 로그인 성공 후에는 자동 이동 없이 상태 배너/안내 패널의 CTA(현재 창 이동 또는 새 탭 열기)를 통해 대시보드 진입 방식을 선택
-2. **명단 등록**: CSV 업로드(이메일, 이름, 종료일) 또는 textarea 입력 → KV/in-memory에 참가자 레코드 저장, 미치나 플랜 권한 부여
-3. **대시보드 모니터링**: 진행률/미제출 현황 표, 완료 상태 필터, 새로고침·완주 판별 버튼 제공
-4. **완주 판별**: `/api/admin/challenge/run-completion-check` 호출 시 제출 횟수 15회 이상 참가자를 `completed=true`로 업데이트
-5. **CSV 추출**: `/api/admin/challenge/completions?format=csv` 응답을 통해 완주자 명단 다운로드
-6. **백업/스냅샷**: `/api/admin/challenge/backup`으로 기본/백업 KV 동기화, `/api/admin/challenge/backup/snapshot`으로 참가자 JSON 스냅샷 저장
-7. **세션 종료**: `/api/auth/admin/logout` 호출 또는 401 응답 시 프론트에서 세션 제거 및 관리자 모달 재요청
-
-## 참가자 UI 가이드
-0. **커뮤니티 이동**: 헤더 로그인 버튼 옆 “미치나 커뮤니티” 새 탭 링크를 통해 커뮤니티 페이지 접근
-1. **프로필 확인**: 로그인 후 이메일이 챌린지 참가자라면 `/api/challenge/profile` 로드 → 진행률·남은 제출 수 표시
-2. **일일 제출**: Day 선택 → URL 입력 또는 이미지 업로드(이미지 선택 시 URL보다 우선) → 제출 시 `/api/challenge/submit`
-3. **진행률 추적**: 진행률 바(퍼센트), 남은 횟수, 각 Day 카드(`예정/제출 대기/완주/기록 없음`) 확인
-4. **수료증**: 15회 제출 완료 시 자동 완주 처리, `/api/challenge/certificate` fetch 후 html2canvas로 PNG 저장(배경 #fef568)
-
-## 보안 강화 요소
-- 관리자 자격 증명은 SHA-256(소문자 hex)으로 비교, 인증 실패 시 지연 응답으로 타이밍 공격 완화
-- JWT 페이로드 → `{ sub, role, exp, iss, aud, ver, iat }`, HttpOnly + Secure + SameSite=Lax 쿠키, 세션 버전 변경 시 즉시 무효화
-- 관리자 로그인 레이트 리밋: 고정 윈도우 + 쿨다운 + IP 기반 키(`ratelimit:admin-login:*`), 429 시 `Retry-After` 헤더 포함
-- CSP `default-src 'self'`, script/style CDN 화이트리스트, 이미지 data/blob 허용, frame-ancestors 'none'
-- Strict-Transport-Security(180일, preload), Referrer-Policy(`strict-origin-when-cross-origin`), Permissions-Policy(카메라/마이크/geolocation 차단)
-- KV 기반 저장소 + 백업 저장소 연동(선택): 배포 환경에서 제공하는 KV/데이터 스토리지와 연결하고, 미바인딩 시 in-memory Map으로 기본/백업 저장소를 분리 유지
-
-## URL & 엔드포인트 요약
-| Method | Path | 설명 | 인증 |
-| --- | --- | --- | --- |
-| GET | `/` | 멀티 이미지 편집 UI + 오퍼레이션 스테이지 | - |
-| GET | `/privacy`, `/terms`, `/cookies` | 법적 고지 페이지 | - |
-| GET | `/static/*` | 정적 자산(app.js, styles.css 등) | - |
-| GET | `/api/health` | 상태 점검 JSON `{ "status": "ok" }` | - |
-| POST | `/api/analyze` | OpenAI GPT-4o-mini 기반 키워드/제목 분석 (data URL 입력) | Server-side API key |
-| POST | `/api/auth/google` | Google OAuth 코드 ↔ ID 토큰 교환 및 프로필 반환 | Google OAuth 코드 |
-| GET | `/api/auth/session` | 관리자 세션 상태 확인 | 세션 쿠키 |
-| POST | `/api/auth/email/request` | 이메일 OTP 요청 (body: `{ email, intent }`) | - |
-| POST | `/api/auth/email/verify` | 이메일 OTP 검증/로그인 (body: `{ email, intent, code }`) | - |
-| POST | `/api/auth/admin/login` | 관리자 로그인 (body: `{ email, password }`) | 세션 쿠키 발급 |
-| POST | `/api/auth/admin/logout` | 관리자 로그아웃 | 세션 쿠키 |
-| POST | `/api/admin/challenge/import` | 참가자 명단 등록(CSV/JSON/textarea) | 관리자 세션 |
-| GET | `/api/admin/challenge/participants` | 참가자 목록/진행률 조회 | 관리자 세션 |
-| POST | `/api/admin/challenge/run-completion-check` | 완주 판별 실행 | 관리자 세션 |
-| GET | `/api/admin/challenge/completions` | 완주자 목록(`?format=csv` 지원) | 관리자 세션 |
-| POST | `/api/admin/challenge/backup` | 참가자 레코드 기본/백업 저장소 동기화 | 관리자 세션 |
-| POST | `/api/admin/challenge/backup/snapshot` | 참가자 JSON 스냅샷 백업 | 관리자 세션 |
-| GET | `/api/challenge/profile?email=...` | 참가자 진행률/제출 현황 조회 | 참가자 이메일 |
-| POST | `/api/challenge/submit` | 참가자 제출 저장 (body: `{ email, day, type, value }`) | 참가자 이메일 |
-| GET | `/api/challenge/certificate?email=...` | 수료증 메타데이터 반환 | 참가자 이메일 |
-
-> 관리자 API는 세션 쿠키(HttpOnly) 기반으로만 접근 가능합니다. 프론트엔드 fetch 시 항상 `credentials: 'include'` 설정을 잊지 마세요. 429 응답 시 `Retry-After`를 읽어 재시도 시간을 안내하세요.
-
-## 데이터 아키텍처
-- **KV 스토리지 (선택)**: `CHALLENGE_KV` 환경 변수를 통해 참가자 레코드/제출 로그를 외부 키-값 저장소에 영속화
-- **백업 KV (선택)**: `CHALLENGE_KV_BACKUP` 바인딩 시 기본 KV와 동기화, 스냅샷 백업 키(`backup:snapshot:*`) 저장
-- **In-memory fallback**: 로컬 개발 또는 KV 미바인딩 시 Map 기반 임시 저장 (기본/백업 각각 유지), 재시작 시 데이터 초기화
-- **OpenAI API**: `POST /api/analyze`에서 Responses API(gpt-4o-mini + JSON Schema `response_format`, 25초 타임아웃, `x-request-id` 전달) 호출, 이미지 data URL을 `input_image`로 전달해 25개 키워드/제목/요약을 구조화 수신, 서버 측 키워드 정규화·보강(문자열 응답/중복 제거, 25개 보장), 실패 시 상세 코드와 함께 로컬 캔버스 분석으로 자동 대체
-- **수료증 생성**: 프론트엔드 html2canvas(1.4.1)로 DOM → PNG 렌더, 배경색 #fef568 강제 지정
-
-## 환경 변수 & 시크릿
-| 변수 | 용도 | 필수 여부 | 비고 |
-| --- | --- | --- | --- |
-| `OPENAI_API_KEY` / `OPEN_AI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | 두 변수 중 하나만 설정하면 됩니다. Netlify 환경 변수 등록 권장 |
-| `ADMIN_EMAIL` / `ADMIN_MAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
-| `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수* | `echo -n 'password' | shasum -a 256` (*`ADMIN_PASSWORD` 제공 시 선택) |
-| `ADMIN_PASSWORD` | 관리자 비밀번호(플레인 텍스트) | 필수* | 배포 환경에서 SHA-256 해시 자동 생성(로컬/테스트용 권장) |
-| `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
-| `ADMIN_SESSION_VERSION` | 관리자 세션 버전 문자열 | 선택 (기본 `1`) | 변경 시 기존 쿠키 무효화 |
-| `ADMIN_RATE_LIMIT_MAX_ATTEMPTS` | 관리자 로그인 허용 시도 횟수 | 선택 (기본 `5`) | 1~20 범위 |
-| `ADMIN_RATE_LIMIT_WINDOW_SECONDS` | 레이트 리밋 윈도우(초) | 선택 (기본 `60`) | 10~3600 범위 |
-| `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS` | 최대 시도 초과 시 추가 쿨다운 | 선택 (기본 `300`) | 윈도우 이상 7200 이하 |
-| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 클라이언트 ID | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
-| `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
-| `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
-| `EMAIL_FROM_ADDRESS` | OTP 메일 발송 발신 주소 | 필수 | SMTP/Resend/SendGrid 공통 사용 |
-| `EMAIL_FROM_NAME` | OTP 메일 발신자 이름 | 선택 | 미설정 시 브랜드명 사용 |
-| `EMAIL_BRAND_NAME` | OTP 메일에 표기할 브랜드명 | 선택 | 기본값 `Elliesbang Image Editor` |
-| `EMAIL_SMTP_HOST` | SMTP 호스트 이름 | 필수* | SMTP 사용 시 필수 (*API 사용 시 미필요) |
-| `EMAIL_SMTP_PORT` | SMTP 포트 번호 | 선택 | 기본 465 (secure) / 587 (starttls) |
-| `EMAIL_SMTP_SECURE` | SMTP 보안 플래그(`true`/`false`) | 선택 | 기본 포트 기반 자동 판별 |
-| `EMAIL_SMTP_USER` | SMTP 인증 사용자 | 필수* | SMTP 사용 시 필수 |
-| `EMAIL_SMTP_PASSWORD` | SMTP 인증 비밀번호 | 필수* | SMTP 사용 시 필수 |
-| `RESEND_API_KEY` | Resend 이메일 API 키 | 선택 | 설정 시 Resend 우선 시도 |
-| `SENDGRID_API_KEY` | SendGrid 이메일 API 키 | 선택 | Resend 실패 시 2차 시도 |
-| `EMAIL_OTP_EXPIRY_SECONDS` | OTP 만료 시간(초) | 선택 | 60~1800 사이, 기본 300 |
-| `CHALLENGE_KV` | 외부 KV/데이터 스토리지 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
-| `CHALLENGE_KV_BACKUP` | 외부 KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
-
-> 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다. Google OAuth 값(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)도 동일하게 관리하세요.
-
-## 개발 환경 & 실행 방법
-```bash
-# 1. 의존성 설치
-npm install
-
-# 2. 환경 변수 구성 (예시)
-cat <<'EOF' > .dev.vars
-OPEN_AI_API_KEY="sk-..."
-ADMIN_MAIL="admin@example.com"
-ADMIN_PASSWORD_HASH="<SHA256_HEX>" # 또는 ADMIN_PASSWORD 사용
-ADMIN_PASSWORD="<PlainPassword>"
-SESSION_SECRET="<랜덤 32자 이상>"
-ADMIN_SESSION_VERSION="1"
-ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
-ADMIN_RATE_LIMIT_WINDOW_SECONDS="60"
-ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
-# Google OAuth 변수 (현재 Google 로그인 비활성화 상태이므로 입력하지 않아도 됩니다)
-# GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
-# GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
-# GOOGLE_REDIRECT_URI="http://localhost:3000/auth/google/callback"
-MICHINA_COMMUNITY_URL="https://community.example.com"
-EMAIL_FROM_ADDRESS="noreply@example.com"
-EMAIL_FROM_NAME="Elliesbang Image Editor"
-EMAIL_SMTP_HOST="smtp.example.com"
-EMAIL_SMTP_USER="smtp-user"
-EMAIL_SMTP_PASSWORD="smtp-password"
-# RESEND_API_KEY / SENDGRID_API_KEY 중 하나 이상을 설정하면 API 기반 발송을 우선 사용합니다.
-# CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 배포 환경에서 제공하는 KV/데이터 스토리지 바인딩으로 교체 가능
-EOF
-
-# 3. 번들 생성 (로컬에서는 빌드 직후 gh-pages 브랜치로 자동 푸시)
-npm run build
-
-# CI나 원격 환경(Netlify 등)에서 GitHub Pages 푸시를 건너뛰고 싶다면 아래처럼 실행하세요.
-SKIP_GH_PUBLISH=1 npm run build
-
-# 4. 포트 정리 및 개발 서버 실행 (PM2 + Vite dev server)
-fuser -k 3000/tcp 2>/dev/null || true
-pm2 delete webapp 2>/dev/null || true
-pm2 start ecosystem.config.cjs
-
-# 5. 헬스 체크
-curl http://localhost:3000/api/health
+## 문서 구조
 ```
-- `ecosystem.config.cjs`: `npm run dev -- --host 0.0.0.0 --port 3000`
-- 비밀번호 해시 생성 예시: `echo -n 'test1234!' | shasum -a 256 | awk '{print tolower($1)}'`
+/
+├── index.html        # 이미지 편집 UI (루트 기본)
+├── login.html        # 이메일 로그인 & OTP 데모
+├── dashboard.html    # 관리자 대시보드 데모
+├── privacy.html      # 개인정보 처리방침
+├── terms.html        # 이용약관
+├── cookies.html      # 쿠키 정책
+└── static/
+    ├── styles.css    # 공통 스타일
+    ├── app.js        # 공통 유틸, 토스트, 세션/크레딧 관리
+    ├── editor.js     # 업로드·캔버스 파이프라인·ZIP 생성
+    ├── auth.js       # 로그인 페이지 전용 스크립트
+    ├── dashboard.js  # 관리자 페이지 전용 스크립트
+    └── vendor/
+        ├── imagetracer.min.js # PNG → SVG 변환용 경량 버전
+        └── jszip.min.js       # JSZip 호환 경량 빌더(무압축 스토어)
+```
 
-## 테스트/검증 로그
-- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 비활성화 및 이메일 로그인 전용 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋, 상태 배너 CTA 템플릿)
-- 2025-10-04 관리자 로그인 직후 상태 배너 CTA(“관리자 로그인 완료! ...”)·내비 하이라이트·안내 패널 연동 검증(세션 동기화 포함, 자동 이동 제거, 8초 지속·`status--interactive` 적용)
-- `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
-- 관리자 로그인 플로우: 잘못된 해시 입력 시 401 + 지연 응답, 3회 초과 시 429 + `Retry-After`, 성공 시 세션 쿠키(`admin_session`) 발급·만료 8h
-- Google OAuth 코드 플로우: 팝업 거절/네트워크 오류 시 자동 재시도 메시지 노출, 검증 실패 시 명확한 에러 코드(`GOOGLE_EMAIL_NOT_VERIFIED` 등) 반환
-- `/api/admin/challenge/import` → CSV 업로드 후 참가자 수량/총 인원 응답 확인
-- `/api/admin/challenge/backup` + `/api/admin/challenge/backup/snapshot` → 백업 KV 동기화 및 스냅샷 키 생성 확인
-- `/api/challenge/submit` → URL 제출 성공, 15회 이후 자동 완주 → `/api/challenge/certificate` 200 응답 확인
+## GitHub Pages에서 사용하기
+1. 저장소를 GitHub에 푸시하고, Pages 소스를 `main` 브랜치 루트로 지정합니다.
+2. `https://<username>.github.io/<repo>/index.html` 로 접속하면 바로 편집 UI가 표시됩니다.
+3. 로그인/대시보드/법적 문서는 각각 `login.html`, `dashboard.html`, `privacy.html` 등으로 직접 이동해야 합니다.
+4. API 서버가 없으면 모든 fetch 호출은 자동으로 try/catch 처리되어 “데모 모드” 토스트만 띄우고 UI는 정상 동작합니다.
 
-## 미구현/예정 기능
-- 서버리스 SQL/데이터베이스 연동 후 제출 로그·완주 로그 관리
-- 이메일 발송 모니터링/실패 알림(Resend/SendGrid/SMTP) 및 크레딧 영속화
-- 관리자 다계정 지원 및 감사 로그 페이지
-- 챌린지 통계 시각화(그래프, 주차별 히트맵 등)
-- Lighthouse 자동화/접근성 테스트 스위트
+## Netlify + Hono 배포 시 API 연동 방법
+- **OTP 메일 발송**: `/login.html`의 `static/auth.js`에서 `simulateRequest` / `simulateVerify` 부분을 실제 API 호출(fetch)로 교체하고, 성공/실패 시 토스트 처리 로직만 유지합니다.
+- **관리자 세션**: `static/app.js`의 `safeFetch`를 사용해 `/api/auth/admin/*` 엔드포인트와 통신하세요. 세션 쿠키는 `credentials: 'include'`로 자동 첨부됩니다.
+- **챌린지 데이터**: `static/dashboard.js`의 `loadParticipants`와 `runCompletionCheck`에서 `ElliesApp.safeFetch` 호출부를 실제 API 경로로 교체하면 됩니다. 실패 시에는 기존 데모 데이터가 유지되도록 구성되어 있습니다.
+- **환경 변수**: Hono 서버에서 `MICHINA_COMMUNITY_URL`, `ADMIN_SESSION_VERSION` 등 필요한 값을 JSON으로 주입하거나, 빌드시 인라인 스크립트를 통해 `window.MICHINA_COMMUNITY_URL`을 정의하면 헤더 커뮤니티 버튼이 외부 링크로 열립니다.
 
-## 향후 권장 작업
-1. **KV/영속 스토리지 연동**: Netlify Functions, Fauna, Supabase 등과 연결해 `CHALLENGE_KV`/`CHALLENGE_KV_BACKUP` 환경 변수를 실제 저장소로 매핑
-2. **OpenAI API 키 보호**: Netlify 환경 변수 또는 시크릿 매니저에 등록하고 로컬 `.dev.vars`는 개발 전용으로 유지
-3. **UI 개선**: 모바일에서 챌린지 카드 및 수료증 슬라이더 도입, 관리자 표 정렬/필터 추가
-4. **빌드 파이프라인**: GitHub Actions + Netlify CLI 배포 자동화 구성, main 브랜치 → 프로덕션 자동 배포
-5. **로컬 OAuth 리디렉션 추가**: Google Cloud Console에 `http://localhost:3000/auth/google/callback`을 리디렉션 URI로 등록해 개발 테스트 편의 확보
+## 로컬에서 확인하기
+빌드 과정이 필요 없으므로 정적 파일만으로 동작합니다.
+```bash
+# 1. 저장소 클론
+git clone <repo>
+cd <repo>
 
-## 배포 절차
-1. **GitHub 연동**
-   ```bash
-   # GitHub 인증 설정 (최초 1회)
-   # setup_github_environment 도구 호출 후 안내에 따라 인증
+# 2. 로컬 HTTP 서버 실행 (예: Python)
+python3 -m http.server 3000
 
-   git status
-   git add .
-   git commit -m "feat: improve admin challenge workflow"
-   git push origin main
-   ```
-   > 원격 저장소는 사용자 지정 GitHub 리포지토리를 우선 사용합니다.
+# 3. 브라우저에서 열기
+open http://localhost:3000/index.html
+```
 
-2. **Netlify 배포**
-   ```bash
-   # Netlify CLI 로그인 (최초 1회)
-   npx netlify login
+## 주의 사항
+- **자동 리디렉션 금지**: 세션이 있어도 `/index.html`은 항상 편집 UI를 먼저 렌더링하며, 상태 배너에서만 대시보드 이동 버튼을 제공합니다.
+- **로컬 스토리지 초기화**: 테스트 중 세션/크레딧을 초기화하려면 브라우저 개발자 도구에서 `localStorage.clear()`를 실행하세요.
+- **JSZip 빌더**: `static/vendor/jszip.min.js`는 저장-only 형식의 경량 구현입니다. 필요 시 공식 JSZip으로 교체해도 API 호환이 유지되도록 작성했습니다.
 
-   # 사이트 초기화 (최초 1회, 기존 사이트가 있다면 건너뛰기)
-   npx netlify init --manual
-
-   npm run build
-    # 미리보기 배포: npx netlify deploy --dir=dist
-   npx netlify deploy --prod --dir=dist
-   ```
-   - 배포 성공 후 README `URL` 섹션과 Netlify 대시보드에 최종 도메인을 기록
-   - Secrets: `ADMIN_MAIL` (또는 `ADMIN_EMAIL`), `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPEN_AI_API_KEY`(또는 `OPENAI_API_KEY`) 등을 Netlify 환경 변수에 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
-
-## 사용자 가이드 요약
-- **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
-- **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
-- **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
-- **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Netlify 환경 변수로만 관리하고 프론트엔드에 노출하지 마세요.
-
-## URL & 배포 상태
-- **Production**: https://<your-site>.netlify.app (Netlify 배포 후 업데이트)
-- **Latest Preview**: Netlify CLI 미리보기 배포 URL 또는 브랜치 배포 URL을 배포 후 기록하세요.
-- **GitHub**: https://github.com/elliesbang/Easy-Image-Editer
-
-## 라이선스 & 고지
-- 원본 저장소 [`elliesbang/Easy-Image-Editer`](https://github.com/elliesbang/Easy-Image-Editer)의 라이선스 정책을 준수합니다.
-
-_Last updated: 2025-10-04 (Google 로그인 비활성화 및 이메일 전용 인증 UX · 관리자 로그인 자동 이동 제거 + 배너 CTA 복수 선택 안내(대시보드 이동/새 탭) · 네비 하이라이트 · OpenAI Responses API 타임아웃/요청 ID 보강 · Blob 기반 리사이즈 알파 유지)_
+## 라이선스
+프로젝트는 저장소의 라이선스 정책을 따릅니다. (별도 라이선스가 지정되지 않았다면 사내 용도로만 사용해 주세요.)
