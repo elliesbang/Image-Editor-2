@@ -6,15 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "postbuild": "node scripts/deploy-gh-pages.mjs",
-    "preview": "vite preview",
-    "deploy:gh": "node scripts/deploy-gh-pages.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
-    "hono": "^4.5.2",
-    "vite": "^6.3.6"
+    "openai": "^4.57.0"
   },
   "devDependencies": {
-    "@hono/vite-dev-server": "^0.18.2"
+    "vite": "^6.3.6"
   }
 }
