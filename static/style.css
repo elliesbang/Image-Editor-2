@@ -1147,18 +1147,6 @@ main.page {
   gap: 24px;
 }
 
-.hero__badge {
-  padding: 8px 18px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(59, 130, 246, 0.18));
-  border: 1px solid rgba(139, 92, 246, 0.32);
-  font-size: 0.85rem;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  font-weight: 600;
-  color: var(--heading);
-}
-
 .hero__heading {
   max-width: 720px;
   font-size: clamp(2.5rem, 4.2vw, 3.4rem);
