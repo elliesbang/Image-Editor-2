@@ -20,6 +20,7 @@ const CREDIT_COSTS = {
   downloadAll: 2,
   analysis: 1,
 }
+const COMMUNITY_ROLE_STORAGE_KEY = 'role'
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const GOOGLE_SIGNIN_TEXT = {
@@ -1525,6 +1526,28 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
   }
   state.user.totalUsed = 0
   refreshAccessStates()
+}
+
+function applyCommunityRoleFromStorage() {
+  if (state.user.isLoggedIn || state.admin.isLoggedIn) {
+    return false
+  }
+
+  try {
+    const storedRole = window.localStorage?.getItem(COMMUNITY_ROLE_STORAGE_KEY)
+    if (storedRole === 'michina') {
+      state.user.isLoggedIn = true
+      state.user.plan = 'michina'
+      state.user.name = state.user.name || '미치나 커뮤니티 멤버'
+      state.user.credits = Math.max(state.user.credits, MICHINA_INITIAL_CREDITS, FREEMIUM_INITIAL_CREDITS)
+      state.user.totalUsed = 0
+      return true
+    }
+  } catch (error) {
+    console.error('미치나 커뮤니티 역할 정보를 불러오는 데 실패했습니다.', error)
+  }
+
+  return false
 }
 
 async function handleLogout() {
@@ -6015,6 +6038,22 @@ function attachEventListeners() {
     trigger.addEventListener('click', () => elements.fileInput?.click())
   })
 
+  if (elements.communityLink instanceof HTMLElement) {
+    elements.communityLink.addEventListener('click', (event) => {
+      event.preventDefault()
+      const targetUrl = '/?view=community'
+      try {
+        const popup = window.open(targetUrl, '_blank', 'noopener')
+        if (!popup || popup.closed) {
+          window.location.href = targetUrl
+        }
+      } catch (error) {
+        console.error('커뮤니티 대시보드를 새 창으로 여는 데 실패했습니다.', error)
+        window.location.href = targetUrl
+      }
+    })
+  }
+
   if (elements.headerAuthButton instanceof HTMLButtonElement) {
     elements.headerAuthButton.addEventListener('click', () => {
       const action = elements.headerAuthButton.dataset.action
@@ -6293,11 +6332,38 @@ function init() {
   runtime.allowViewBypass = allowBypass
   state.view = initialView
 
-  if (elements.communityLink instanceof HTMLAnchorElement) {
-    const configuredUrl = typeof config.communityUrl === 'string' ? config.communityUrl.trim() : ''
-    if (configuredUrl) {
-      elements.communityLink.href = configuredUrl
+  if (initialView === 'community') {
+    if (document.body) {
+      document.body.dataset.activeView = 'community'
     }
+
+    import('./community-dashboard.js')
+      .then((module) => {
+        if (typeof module.bootstrapCommunityDashboard === 'function') {
+          module.bootstrapCommunityDashboard()
+        } else {
+          console.warn('커뮤니티 대시보드 모듈에서 bootstrapCommunityDashboard 함수를 찾을 수 없습니다.')
+        }
+      })
+      .catch((error) => {
+        console.error('미치나 커뮤니티 대시보드를 불러오지 못했습니다.', error)
+        const root = document.getElementById('community-dashboard-root')
+        if (root instanceof HTMLElement) {
+          root.innerHTML =
+            '<div class="flex min-h-screen items-center justify-center bg-slate-950 p-8 text-center text-lg font-semibold text-white/80">커뮤니티 대시보드를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</div>'
+        }
+        window.alert('커뮤니티 대시보드를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
+      })
+
+    return
+  }
+
+  const unlockedViaCommunity = applyCommunityRoleFromStorage()
+
+  if (elements.communityLink instanceof HTMLAnchorElement) {
+    const configuredUrl = '/?view=community'
+    elements.communityLink.href = configuredUrl
+    elements.communityLink.rel = 'noopener'
   }
 
   if (runtime.allowViewBypass) {
@@ -6321,6 +6387,10 @@ function init() {
   renderResults()
   displayAnalysisFor(null)
   refreshAccessStates()
+
+  if (unlockedViaCommunity) {
+    setStatus('미치나 커뮤니티 수료 이력이 확인되어 모든 기능이 해금되었습니다.', 'success', 5200)
+  }
 
   syncAdminSession().finally(() => {
     if (runtime.initialView === 'admin' && !state.admin.isLoggedIn) {

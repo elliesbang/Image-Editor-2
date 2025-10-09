@@ -102,6 +102,70 @@ const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
 const ADMIN_LOGIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL ?? ''
 
+function renderCommunityDashboardPage() {
+  const appConfig = JSON.stringify(
+    {
+      initialView: 'community',
+      communityUrl: '/?view=community',
+    },
+    null,
+    2,
+  ).replace(/</g, '\\u003c')
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charSet="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta
+      name="description"
+      content="3주(15일) 동안 진행되는 미치나 커뮤니티 미션을 관리하고 완주하면 Ellie Image Editor의 모든 편집 기능을 해금하세요."
+    />
+    <title>미치나 커뮤니티 대시보드</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.3.0/fonts/remixicon.css" />
+    <script>
+      window.tailwind = window.tailwind || {}
+      window.tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              michina: '#34d399',
+            },
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
+            },
+          },
+        },
+        darkMode: 'class',
+      }
+    </script>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
+    <style>
+      body {
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background-color: #020617;
+      }
+    </style>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <div id="community-dashboard-root" class="min-h-screen">
+      <noscript class="flex min-h-screen items-center justify-center bg-slate-950 p-8 text-center text-lg font-semibold text-white/80">
+        미치나 커뮤니티 대시보드를 이용하려면 자바스크립트를 활성화해주세요.
+      </noscript>
+    </div>
+    <script type="application/json" data-role="app-config">${appConfig}</script>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>`
+}
+
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
 const rateLimitMemoryStore = new Map<string, RateLimitRecord>()
@@ -1898,6 +1962,13 @@ app.post('/api/analyze', async (c) => {
 })
 
 app.get('/', (c) => {
+  const viewParam = (c.req.query('view') || '').trim().toLowerCase()
+  if (viewParam === 'community') {
+    const response = c.html(renderCommunityDashboardPage())
+    response.headers.set('Cache-Control', 'no-store, max-age=0')
+    return response
+  }
+
   const currentYear = new Date().getFullYear()
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
