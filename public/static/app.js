@@ -6595,6 +6595,34 @@ function clearResultsSelection() {
   updateOperationAvailability()
 }
 
+function sanitizeSVG(svgText) {
+  return svgText
+    .replace(/stroke="[^"]*"/g, '')
+    .replace(/stroke-width="[^"]*"/g, '')
+    .replace(/stroke-linecap="[^"]*"/g, '')
+    .replace(/stroke-linejoin="[^"]*"/g, '')
+    .replace(/<g>\s*<\/g>/g, '')
+}
+
+async function createSanitizedSvgBlob(blob) {
+  const originalText = await blob.text()
+  const cleanedSVG = sanitizeSVG(originalText)
+  return new Blob([cleanedSVG], { type: 'image/svg+xml' })
+}
+
+async function resolveDownloadBlob(result) {
+  if (result?.type !== 'image/svg+xml') {
+    return result.blob
+  }
+
+  try {
+    return await createSanitizedSvgBlob(result.blob)
+  } catch (error) {
+    console.error('SVG 정리 중 오류가 발생했습니다.', error)
+    return result.blob
+  }
+}
+
 async function downloadResults(ids, mode = 'selected') {
   const targets = ids.map((id) => state.results.find((result) => result.id === id)).filter(Boolean)
   if (targets.length === 0) {
@@ -6612,7 +6640,8 @@ async function downloadResults(ids, mode = 'selected') {
   try {
     if (targets.length === 1) {
       const [result] = targets
-      const directUrl = URL.createObjectURL(result.blob)
+      const downloadBlob = await resolveDownloadBlob(result)
+      const directUrl = URL.createObjectURL(downloadBlob)
       const link = document.createElement('a')
       link.href = directUrl
       link.download = result.name
@@ -6628,7 +6657,9 @@ async function downloadResults(ids, mode = 'selected') {
     const zip = new window.JSZip()
     for (const result of targets) {
       // eslint-disable-next-line no-await-in-loop
-      const arrayBuffer = await result.blob.arrayBuffer()
+      const downloadBlob = await resolveDownloadBlob(result)
+      // eslint-disable-next-line no-await-in-loop
+      const arrayBuffer = await downloadBlob.arrayBuffer()
       zip.file(result.name, arrayBuffer)
     }
     const zipBlob = await zip.generateAsync({ type: 'blob' })
