@@ -675,6 +675,17 @@ main.page {
   box-shadow: 0 18px 44px rgba(124, 58, 237, 0.36);
 }
 
+.btn--brand {
+  background: linear-gradient(135deg, #ffd331 0%, #ffbe2e 100%);
+  color: #1f1a05;
+  box-shadow: 0 14px 36px rgba(255, 211, 49, 0.35);
+}
+
+.btn--brand:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 44px rgba(255, 211, 49, 0.45);
+}
+
 .btn--ghost {
   background: transparent;
   border: 1px solid rgba(139, 92, 246, 0.3);
@@ -1924,6 +1935,262 @@ body.is-modal-open {
 
 .login-modal__form[data-state='idle'] .login-modal__code-group {
   display: none;
+}
+
+.upgrade-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  z-index: 1500;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition), transform var(--transition);
+}
+
+.upgrade-modal.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.upgrade-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(12px);
+}
+
+.upgrade-modal__dialog {
+  position: relative;
+  width: min(960px, calc(100% - 24px));
+  max-height: calc(100vh - 96px);
+  overflow: hidden;
+  background: #f5eee9;
+  border-radius: 28px;
+  padding: 36px 36px 28px;
+  box-shadow: 0 32px 80px rgba(15, 23, 42, 0.45);
+  color: #1f2937;
+  border: 1px solid rgba(255, 211, 49, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.upgrade-modal__close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+
+.upgrade-modal__close:hover,
+.upgrade-modal__close:focus {
+  background: rgba(255, 211, 49, 0.65);
+  transform: rotate(90deg);
+  color: #1f1a05;
+}
+
+.upgrade-modal__header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+
+.upgrade-modal__eyebrow {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #f59e0b;
+}
+
+.upgrade-modal__title {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.upgrade-modal__subtitle {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #475569;
+}
+
+.upgrade-modal__content {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.upgrade-modal__plans {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.upgrade-plan-card {
+  position: relative;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 24px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 260px;
+  box-shadow: 0 20px 46px rgba(15, 23, 42, 0.08);
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+}
+
+.upgrade-plan-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 26px 56px rgba(15, 23, 42, 0.12);
+}
+
+.upgrade-plan-card[data-state='active'] {
+  border-color: rgba(255, 211, 49, 0.85);
+  background: #fff6d0;
+  box-shadow: 0 26px 60px rgba(255, 211, 49, 0.32);
+}
+
+.upgrade-plan-card__name {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.upgrade-plan-card__summary {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.upgrade-plan-card__price {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #b45309;
+}
+
+.upgrade-plan-card__price span {
+  font-size: 0.88rem;
+  color: #6b7280;
+  margin-left: 6px;
+}
+
+.upgrade-plan-card__features {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.upgrade-plan-card__features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.upgrade-plan-card__features li::before {
+  content: '\2022';
+  color: #f59e0b;
+  font-weight: 700;
+  margin-top: -1px;
+}
+
+.upgrade-plan-card__footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.upgrade-plan-card__button {
+  width: 100%;
+  justify-content: center;
+}
+
+.upgrade-plan-card__button[disabled] {
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.55);
+  box-shadow: none;
+}
+
+.upgrade-plan-card__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(255, 211, 49, 0.25);
+  color: #b45309;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.upgrade-plan-card__note {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #6b7280;
+  text-align: center;
+}
+
+.upgrade-modal__notice {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #6b7280;
+  background: rgba(255, 211, 49, 0.22);
+  border-radius: 16px;
+  padding: 12px 16px;
+}
+
+@media (max-width: 960px) {
+  .upgrade-modal {
+    padding: 20px;
+  }
+
+  .upgrade-modal__dialog {
+    padding: 28px 24px 24px;
+    max-height: calc(100vh - 64px);
+  }
+
+  .upgrade-modal__plans {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .upgrade-modal__dialog {
+    padding: 24px 20px 20px;
+  }
+
+  .upgrade-modal__close {
+    top: 16px;
+    right: 16px;
+  }
+
+  .upgrade-modal__plans {
+    grid-template-columns: 1fr;
+  }
 }
 
 .admin-modal {

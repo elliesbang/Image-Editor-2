@@ -12,6 +12,51 @@ const IMAGE_TRACER_RETRY_JITTER = 500
 const SVGO_BROWSER_SRC = 'https://cdn.jsdelivr.net/npm/svgo@3.3.2/dist/svgo.browser.js'
 const FREEMIUM_INITIAL_CREDITS = 30
 const MICHINA_INITIAL_CREDITS = 10000
+const USER_PLAN_STORAGE_KEY = 'userPlanSelection'
+const MICHINA_APPROVED_STORAGE_KEY = 'michinaApprovedEmails'
+const SUBSCRIPTION_PLANS = Object.freeze({
+  free: { name: 'Free', price: 0, uploadLimit: 3, auto: false },
+  basic: { name: 'Basic', price: 9900, uploadLimit: 10, auto: false },
+  standard: { name: 'Standard', price: 19900, uploadLimit: 20, auto: false },
+  premium: { name: 'Premium', price: 39900, uploadLimit: 50, auto: false },
+  michina: { name: 'Michina', price: 0, uploadLimit: 50, auto: true },
+})
+const SUBSCRIPTION_PLAN_ORDER = Object.freeze(['free', 'basic', 'standard', 'premium', 'michina'])
+const SUBSCRIPTION_PLAN_SUMMARY = Object.freeze({
+  free: '입문자를 위한 기본 편집 체험 플랜',
+  basic: '소규모 작업을 위한 월 10장 업로드 플랜',
+  standard: '팀을 위한 자동 최적화와 향상된 한도를 제공',
+  premium: '전문가용 고급 편집과 우선 지원 제공',
+  michina: '미치나 챌린지 완주자를 위한 전용 혜택',
+})
+
+const SUBSCRIPTION_PLAN_FEATURES = Object.freeze({
+  free: [
+    '월 최대 3장 업로드',
+    '기본 편집 도구 체험',
+    '키워드 분석 1회 체험 제공',
+  ],
+  basic: [
+    '월 최대 10장 업로드',
+    'PNG → SVG 변환 5회 포함',
+    '키워드 분석 5회 제공',
+  ],
+  standard: [
+    '월 최대 20장 업로드',
+    '자동 최적화 · 배치 변환 지원',
+    '키워드 분석 15회 제공',
+  ],
+  premium: [
+    '월 최대 50장 업로드',
+    '우선 처리 + SVG 결과 무제한 다운로드',
+    '키워드 분석 50회 제공',
+  ],
+  michina: [
+    '챌린지 참가자 전용 무제한 업로드',
+    '이미지 편집 전체 기능 해금',
+    '관리자 승인 · 종료 시 자동 전환',
+  ],
+})
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
 const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
 const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
@@ -112,6 +157,8 @@ const state = {
     plan: 'public',
     credits: 0,
     totalUsed: 0,
+    subscriptionPlan: 'free',
+    subscriptionAuto: false,
   },
   admin: {
     isLoggedIn: false,
@@ -161,6 +208,10 @@ const runtime = {
     sessionId: null,
     channel: null,
   },
+  subscription: {
+    approvedMichinaEmails: new Set(),
+    initialized: false,
+  },
 }
 
 let googleSdkPromise = null
@@ -174,15 +225,22 @@ function hasUnlimitedAccess() {
 
 function formatCreditsValue(value) {
   if (hasUnlimitedAccess()) return '∞'
+  if (state.user.plan === 'michina') return '∞'
   const numeric = typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
   return numeric.toLocaleString('ko-KR')
 }
 
 function getPlanLabel() {
   if (state.admin.isLoggedIn) return '관리자 모드'
-  if (state.user.plan === 'michina') return '미치나 플랜'
-  if (state.user.plan === 'freemium') return 'Freemium'
-  return '게스트'
+  if (state.user.plan === 'michina' || state.user.subscriptionPlan === 'michina') return '미치나 플랜'
+  if (state.user.isLoggedIn) {
+    const active = SUBSCRIPTION_PLANS[state.user.subscriptionPlan]
+    if (active) {
+      return `${active.name} 플랜`
+    }
+    if (state.user.plan === 'freemium') return 'Freemium'
+  }
+  return '게스트 모드'
 }
 
 function getAppConfig() {
@@ -457,6 +515,10 @@ const elements = {
   creditLabel: document.querySelector('[data-role="credit-label"]'),
   creditCount: document.querySelector('[data-role="credit-count"]'),
   headerAuthButton: document.querySelector('[data-role="header-auth"]'),
+  headerUpgradeButton: document.querySelector('[data-role="header-upgrade"]'),
+  upgradeModal: document.querySelector('[data-role="upgrade-modal"]'),
+  upgradeModalDialog: document.querySelector('[data-role="upgrade-modal-dialog"]'),
+  upgradePlanList: document.querySelector('[data-role="upgrade-plan-list"]'),
   stageIndicator: document.querySelector('[data-role="stage-indicator"]'),
   stageItems: document.querySelectorAll('[data-role="stage-indicator"] .stage__item'),
   stageMessage: document.querySelector('[data-role="stage-message"]'),
@@ -477,6 +539,339 @@ function uuid() {
 
 function generateAdminSessionId() {
   return uuid()
+}
+
+function normalizeEmail(value) {
+  if (typeof value !== 'string') return ''
+  return value.trim().toLowerCase()
+}
+
+function formatPlanPrice(value) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '무료'
+  }
+  return `₩${Math.round(value).toLocaleString('ko-KR')}`
+}
+
+function loadStoredUserPlan(email = '') {
+  try {
+    const storage = window.localStorage
+    if (!storage) {
+      return { plan: 'free', auto: false, email: '' }
+    }
+    const raw = storage.getItem(USER_PLAN_STORAGE_KEY)
+    if (!raw) {
+      return { plan: 'free', auto: false, email: '' }
+    }
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return { plan: 'free', auto: false, email: '' }
+    }
+    const storedEmail = normalizeEmail(parsed.email)
+    const requestedEmail = normalizeEmail(email)
+    if (requestedEmail && storedEmail && storedEmail !== requestedEmail) {
+      return { plan: 'free', auto: false, email: storedEmail }
+    }
+    let planKey = typeof parsed.plan === 'string' && SUBSCRIPTION_PLANS[parsed.plan] ? parsed.plan : 'free'
+    const auto = Boolean(parsed.auto)
+    if (planKey === 'michina' && !auto) {
+      planKey = 'free'
+    }
+    return { plan: planKey, auto, email: storedEmail }
+  } catch (error) {
+    console.warn('구독 플랜 정보를 불러오는 중 오류가 발생했습니다.', error)
+    return { plan: 'free', auto: false, email: '' }
+  }
+}
+
+function persistSubscriptionState(planKey, { auto = false, email = '' } = {}) {
+  try {
+    const storage = window.localStorage
+    if (!storage) return
+    const payload = {
+      plan: SUBSCRIPTION_PLANS[planKey] ? planKey : 'free',
+      auto: Boolean(auto),
+      email: normalizeEmail(email),
+      updatedAt: new Date().toISOString(),
+    }
+    storage.setItem(USER_PLAN_STORAGE_KEY, JSON.stringify(payload))
+  } catch (error) {
+    console.warn('구독 플랜 정보를 저장하지 못했습니다.', error)
+  }
+}
+
+function loadApprovedMichinaEmails() {
+  try {
+    const storage = window.localStorage
+    if (!storage) return new Set()
+    const raw = storage.getItem(MICHINA_APPROVED_STORAGE_KEY)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.map((value) => normalizeEmail(value)).filter(Boolean))
+    }
+    if (typeof parsed === 'string') {
+      const normalized = normalizeEmail(parsed)
+      return normalized ? new Set([normalized]) : new Set()
+    }
+  } catch (error) {
+    console.warn('미치나 승인 목록을 불러오는 중 오류가 발생했습니다.', error)
+  }
+  return new Set()
+}
+
+function isEmailApprovedForMichina(email) {
+  const normalized = normalizeEmail(email)
+  if (!normalized) {
+    return false
+  }
+  const approved = loadApprovedMichinaEmails()
+  if (approved.has(normalized)) {
+    return true
+  }
+  const profileEmail = normalizeEmail(state.challenge.profile?.email)
+  if (
+    profileEmail &&
+    profileEmail === normalized &&
+    state.challenge.profile?.plan === 'michina' &&
+    !state.challenge.profile?.expired
+  ) {
+    return true
+  }
+  return false
+}
+
+function renderUpgradePlans() {
+  const container = elements.upgradePlanList
+  if (!(container instanceof HTMLElement)) {
+    return
+  }
+  container.innerHTML = ''
+  const activePlan = state.user.subscriptionPlan || 'free'
+  SUBSCRIPTION_PLAN_ORDER.forEach((planKey) => {
+    const plan = SUBSCRIPTION_PLANS[planKey]
+    if (!plan) return
+
+    const card = document.createElement('article')
+    card.className = 'upgrade-plan-card'
+    if (activePlan === planKey) {
+      card.dataset.state = 'active'
+    }
+
+    const name = document.createElement('h3')
+    name.className = 'upgrade-plan-card__name'
+    name.textContent = plan.name
+    card.appendChild(name)
+
+    const price = document.createElement('p')
+    price.className = 'upgrade-plan-card__price'
+    const priceLabel = formatPlanPrice(plan.price)
+    price.innerHTML = `${priceLabel}<span>/월</span>`
+    card.appendChild(price)
+
+    const summary = document.createElement('p')
+    summary.className = 'upgrade-plan-card__summary'
+    summary.textContent = SUBSCRIPTION_PLAN_SUMMARY[planKey] || ''
+    card.appendChild(summary)
+
+    const features = document.createElement('ul')
+    features.className = 'upgrade-plan-card__features'
+    const planFeatures = SUBSCRIPTION_PLAN_FEATURES[planKey] || []
+    planFeatures.forEach((feature) => {
+      const item = document.createElement('li')
+      item.textContent = feature
+      features.appendChild(item)
+    })
+    card.appendChild(features)
+
+    const footer = document.createElement('div')
+    footer.className = 'upgrade-plan-card__footer'
+
+    if (planKey === 'michina') {
+      const badge = document.createElement('span')
+      badge.className = 'upgrade-plan-card__badge'
+      badge.textContent = '관리자 승인 전용'
+      footer.appendChild(badge)
+
+      if (activePlan === 'michina') {
+        const note = document.createElement('p')
+        note.className = 'upgrade-plan-card__note'
+        note.textContent = state.user.subscriptionAuto
+          ? '관리자 승인으로 적용된 플랜입니다.'
+          : '현재 플랜입니다.'
+        footer.appendChild(note)
+      }
+    } else {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'btn btn--brand btn--sm upgrade-plan-card__button'
+      button.dataset.plan = planKey
+      if (activePlan === planKey) {
+        button.textContent = '현재 플랜'
+        button.disabled = true
+      } else {
+        button.textContent = '업그레이드'
+      }
+      footer.appendChild(button)
+    }
+
+    card.appendChild(footer)
+    container.appendChild(card)
+  })
+}
+
+function setSubscriptionPlan(planKey, options = {}) {
+  const { auto = false, skipStore = false, email, skipRefresh = false } = options || {}
+  const normalizedPlan = SUBSCRIPTION_PLANS[planKey] ? planKey : 'free'
+  const normalizedAuto = Boolean(auto)
+  const previousPlan = state.user.subscriptionPlan
+  const previousAuto = state.user.subscriptionAuto
+
+  state.user.subscriptionPlan = normalizedPlan
+  state.user.subscriptionAuto = normalizedAuto
+
+  const storeEmail = typeof email === 'string' ? email : state.user.email
+  if (!skipStore) {
+    const normalizedStoreEmail = normalizeEmail(storeEmail)
+    if (normalizedStoreEmail) {
+      persistSubscriptionState(normalizedPlan, { auto: normalizedAuto, email: normalizedStoreEmail })
+    }
+  }
+
+  if (normalizedPlan === 'michina' && !state.admin.isLoggedIn) {
+    state.user.plan = 'michina'
+    state.user.credits = Number.MAX_SAFE_INTEGER
+  } else if (normalizedPlan !== 'michina' && state.user.plan === 'michina' && !state.admin.isLoggedIn) {
+    state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
+    if (state.user.isLoggedIn) {
+      state.user.credits = Math.max(state.user.credits, FREEMIUM_INITIAL_CREDITS)
+    } else {
+      state.user.credits = 0
+    }
+  }
+
+  const changed = previousPlan !== normalizedPlan || previousAuto !== normalizedAuto
+
+  if (!skipRefresh) {
+    if (changed) {
+      refreshAccessStates()
+    } else {
+      updateHeaderState()
+    }
+  }
+
+  renderUpgradePlans()
+  return normalizedPlan
+}
+
+function initializeSubscriptionState() {
+  const stored = loadStoredUserPlan('')
+  state.user.subscriptionPlan = stored.plan
+  state.user.subscriptionAuto = Boolean(stored.auto && stored.plan === 'michina')
+  runtime.subscription.approvedMichinaEmails = loadApprovedMichinaEmails()
+  runtime.subscription.initialized = true
+  renderUpgradePlans()
+}
+
+function applySubscriptionForEmail(email, initialPlan = 'freemium') {
+  const normalizedEmail = normalizeEmail(email)
+  if (state.admin.isLoggedIn) {
+    setSubscriptionPlan('michina', { auto: true, email: normalizedEmail, skipRefresh: true })
+    return 'michina'
+  }
+  if (initialPlan === 'michina') {
+    setSubscriptionPlan('michina', { auto: true, email: normalizedEmail, skipRefresh: true })
+    return 'michina'
+  }
+  if (isEmailApprovedForMichina(normalizedEmail)) {
+    setSubscriptionPlan('michina', { auto: true, email: normalizedEmail, skipRefresh: true })
+    return 'michina'
+  }
+  const stored = loadStoredUserPlan(normalizedEmail)
+  let planKey = stored.plan
+  if (!SUBSCRIPTION_PLANS[planKey] || planKey === 'michina') {
+    planKey = 'free'
+  }
+  setSubscriptionPlan(planKey, { auto: false, email: normalizedEmail, skipRefresh: true })
+  return planKey
+}
+
+function applyChallengeSubscriptionState(profile) {
+  if (state.admin.isLoggedIn || !state.user.isLoggedIn) {
+    return
+  }
+  if (profile && profile.plan === 'michina' && !profile.expired) {
+    setSubscriptionPlan('michina', { auto: true, email: state.user.email })
+  } else if (state.user.subscriptionPlan === 'michina') {
+    setSubscriptionPlan('free', { auto: false, email: state.user.email })
+  }
+}
+
+function syncBodyModalState() {
+  const loginActive = elements.loginModal?.classList.contains('is-active')
+  const adminActive = elements.adminModal?.classList.contains('is-active')
+  const upgradeActive = elements.upgradeModal?.classList.contains('is-active')
+  if (loginActive || adminActive || upgradeActive) {
+    document.body.classList.add('is-modal-open')
+  } else {
+    document.body.classList.remove('is-modal-open')
+  }
+}
+
+function openUpgradeModal() {
+  if (!(elements.upgradeModal instanceof HTMLElement)) {
+    return
+  }
+  renderUpgradePlans()
+  elements.upgradeModal.classList.add('is-active')
+  elements.upgradeModal.setAttribute('aria-hidden', 'false')
+  syncBodyModalState()
+  const focusTarget =
+    elements.upgradeModalDialog?.querySelector('.upgrade-plan-card__button:not([disabled])') ||
+    elements.upgradeModalDialog
+  if (focusTarget instanceof HTMLElement) {
+    window.requestAnimationFrame(() => focusTarget.focus())
+  }
+}
+
+function closeUpgradeModal() {
+  if (!(elements.upgradeModal instanceof HTMLElement)) {
+    return
+  }
+  elements.upgradeModal.classList.remove('is-active')
+  elements.upgradeModal.setAttribute('aria-hidden', 'true')
+  syncBodyModalState()
+}
+
+function handlePlanUpgrade(planKey) {
+  const plan = SUBSCRIPTION_PLANS[planKey]
+  if (!plan) {
+    return
+  }
+  if (planKey === 'michina') {
+    setStatus('미치나 플랜은 관리자 승인 전용입니다.', 'info')
+    return
+  }
+  if (state.admin.isLoggedIn) {
+    setStatus('관리자 모드에서는 구독 플랜을 변경할 수 없습니다.', 'info')
+    closeUpgradeModal()
+    return
+  }
+  if (!state.user.isLoggedIn) {
+    closeUpgradeModal()
+    setStatus('로그인 후 플랜을 변경할 수 있습니다.', 'warning')
+    openLoginModal()
+    return
+  }
+  if (state.user.subscriptionPlan === planKey && !state.user.subscriptionAuto) {
+    setStatus(`${plan.name} 플랜이 이미 활성화되어 있습니다.`, 'info')
+    closeUpgradeModal()
+    return
+  }
+  setSubscriptionPlan(planKey, { auto: false, email: state.user.email })
+  closeUpgradeModal()
+  window.alert('결제가 완료되었습니다!')
+  setStatus(`${plan.name} 플랜으로 전환되었습니다.`, 'success')
 }
 
 function getStoredAdminSession() {
@@ -1184,7 +1579,8 @@ function updateHeaderState() {
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const creditsNumeric = Math.max(0, state.user.credits)
   const isAdmin = state.admin.isLoggedIn
-  const isMichina = state.user.plan === 'michina' && !isAdmin
+  const isMichina = (state.user.plan === 'michina' || state.user.subscriptionPlan === 'michina') && !isAdmin
+  const subscriptionPlan = SUBSCRIPTION_PLANS[state.user.subscriptionPlan]
   const formattedCredits = formatCreditsValue(state.user.credits)
 
   if (elements.creditDisplay instanceof HTMLElement) {
@@ -1208,6 +1604,8 @@ function updateHeaderState() {
       elements.creditLabel.textContent = '관리자 모드 · 무제한 이용'
     } else if (isMichina) {
       elements.creditLabel.textContent = '미치나 플랜 · 잔여 크레딧'
+    } else if (subscriptionPlan) {
+      elements.creditLabel.textContent = `${subscriptionPlan.name} 플랜 · 잔여 크레딧`
     } else {
       elements.creditLabel.textContent = 'Freemium · 잔여 크레딧'
     }
@@ -1730,6 +2128,7 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
     state.user.credits = Math.max(state.user.credits, credits)
   }
   state.user.totalUsed = 0
+  applySubscriptionForEmail(state.user.email, plan)
   refreshAccessStates()
 }
 
@@ -1746,6 +2145,7 @@ function applyCommunityRoleFromStorage() {
       state.user.name = state.user.name || '미치나 커뮤니티 멤버'
       state.user.credits = Math.max(state.user.credits, MICHINA_INITIAL_CREDITS, FREEMIUM_INITIAL_CREDITS)
       state.user.totalUsed = 0
+      setSubscriptionPlan('michina', { auto: true, skipRefresh: true })
       return true
     }
   } catch (error) {
@@ -1773,6 +2173,9 @@ async function handleLogout() {
   state.user.plan = 'public'
   state.user.credits = 0
   state.user.totalUsed = 0
+  state.user.subscriptionPlan = 'free'
+  state.user.subscriptionAuto = false
+  persistSubscriptionState('free', { auto: false, email: '' })
   state.challenge.profile = null
   state.challenge.certificate = null
   hasShownAdminDashboardPrompt = false
@@ -1781,6 +2184,7 @@ async function handleLogout() {
   setView('home', { force: true })
   refreshAccessStates()
   renderChallengeDashboard()
+  renderUpgradePlans()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
   resetLoginFlow()
   clearAdminCooldown()
@@ -1866,7 +2270,7 @@ function openAdminModal() {
 
   elements.adminModal.classList.add('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'false')
-  document.body.classList.add('is-modal-open')
+  syncBodyModalState()
 
   window.requestAnimationFrame(() => {
     if (isAdmin) {
@@ -1889,7 +2293,7 @@ function closeAdminModal() {
   if (!(elements.adminModal instanceof HTMLElement)) return
   elements.adminModal.classList.remove('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'true')
-  document.body.classList.remove('is-modal-open')
+  syncBodyModalState()
 }
 
 function revokeAdminSessionState() {
@@ -2904,6 +3308,7 @@ async function syncChallengeProfile(explicitEmail) {
           state.user.name = payload.participant.name
         }
       }
+      applyChallengeSubscriptionState(payload.participant)
       renderChallengeDashboard()
       refreshAccessStates()
       if (payload.participant.completed) {
@@ -2915,10 +3320,7 @@ async function syncChallengeProfile(explicitEmail) {
     }
     state.challenge.profile = null
     state.challenge.certificate = null
-    if (state.user.plan === 'michina' && state.user.plan !== 'admin') {
-      state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
-      refreshAccessStates()
-    }
+    applyChallengeSubscriptionState(null)
     renderChallengeDashboard()
     return null
   } catch (error) {
@@ -3235,7 +3637,7 @@ function openLoginModal() {
   resetLoginFlow()
   elements.loginModal.classList.add('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'false')
-  document.body.classList.add('is-modal-open')
+  syncBodyModalState()
   if (ENABLE_GOOGLE_LOGIN) {
     prefetchGoogleClient().catch((error) => {
       console.warn('Google 로그인 초기화 중 오류', error)
@@ -3252,7 +3654,7 @@ function closeLoginModal() {
   if (!elements.loginModal) return
   elements.loginModal.classList.remove('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'true')
-  document.body.classList.remove('is-modal-open')
+  syncBodyModalState()
   resetLoginFlow()
 }
 
@@ -3616,6 +4018,9 @@ function handleGlobalKeydown(event) {
   }
   if (elements.adminModal?.classList.contains('is-active')) {
     closeAdminModal()
+  }
+  if (elements.upgradeModal?.classList.contains('is-active')) {
+    closeUpgradeModal()
   }
 }
 
@@ -6408,6 +6813,33 @@ function attachEventListeners() {
     elements.loginEmailForm.addEventListener('submit', handleEmailLogin)
   }
 
+  if (elements.headerUpgradeButton instanceof HTMLButtonElement) {
+    elements.headerUpgradeButton.addEventListener('click', () => {
+      openUpgradeModal()
+    })
+  }
+
+  if (elements.upgradeModal instanceof HTMLElement) {
+    elements.upgradeModal.addEventListener('click', (event) => {
+      const target = event.target
+      if (!(target instanceof HTMLElement)) {
+        return
+      }
+      if (target.dataset.action === 'close-upgrade') {
+        closeUpgradeModal()
+      }
+    })
+  }
+
+  if (elements.upgradePlanList instanceof HTMLElement) {
+    elements.upgradePlanList.addEventListener('click', (event) => {
+      const target = event.target
+      if (target instanceof HTMLButtonElement && target.dataset.plan) {
+        handlePlanUpgrade(target.dataset.plan)
+      }
+    })
+  }
+
   if (elements.adminLoginForm instanceof HTMLFormElement) {
     elements.adminLoginForm.addEventListener('submit', handleAdminLogin)
   }
@@ -6570,6 +7002,7 @@ function init() {
   runtime.allowViewBypass = allowBypass
   state.view = initialView
 
+  initializeSubscriptionState()
   initializeAdminAuthSync()
 
   if (initialView === 'community') {

@@ -2014,6 +2014,9 @@ app.get('/', (c) => {
           <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
             로그인
           </button>
+          <button class="btn btn--brand btn--sm" type="button" data-role="header-upgrade">
+            업그레이드
+          </button>
         </div>
       </header>
 
@@ -2151,6 +2154,46 @@ app.get('/', (c) => {
               이메일 주소를 입력하면 인증 코드를 보내드립니다.
             </p>
           </form>
+        </div>
+      </div>
+
+      <div class="upgrade-modal" data-role="upgrade-modal" aria-hidden="true">
+        <div
+          class="upgrade-modal__backdrop"
+          data-role="upgrade-modal-backdrop"
+          data-action="close-upgrade"
+          aria-hidden="true"
+        ></div>
+        <div
+          class="upgrade-modal__dialog"
+          data-role="upgrade-modal-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="upgrade-modal-title"
+          tabIndex={-1}
+        >
+          <button
+            class="upgrade-modal__close"
+            type="button"
+            data-role="upgrade-modal-close"
+            data-action="close-upgrade"
+            aria-label="업그레이드 창 닫기"
+          >
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
+          <header class="upgrade-modal__header">
+            <p class="upgrade-modal__eyebrow">플랜 선택</p>
+            <h2 class="upgrade-modal__title" id="upgrade-modal-title">Ellie's Bang 구독 플랜</h2>
+            <p class="upgrade-modal__subtitle">
+              엘리의방 브랜드 컬러로 구성된 플랜에서 업로드 한도와 자동 전환 옵션을 확인하세요.
+            </p>
+          </header>
+          <div class="upgrade-modal__content">
+            <div class="upgrade-modal__plans" data-role="upgrade-plan-list"></div>
+          </div>
+          <p class="upgrade-modal__notice">
+            미치나 플랜은 관리자 승인 전용이며 챌린지 종료 시 자동으로 Free 플랜으로 전환됩니다.
+          </p>
         </div>
       </div>
 
