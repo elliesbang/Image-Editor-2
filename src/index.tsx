@@ -2445,6 +2445,10 @@ app.get('/', (c) => {
                   <option value="5">5색</option>
                   <option value="6" selected>6색</option>
                 </select>
+                <label class="results-toolbar__toggle" for="smartCropToggle">
+                  <input id="smartCropToggle" type="checkbox" checked />
+                  <span>Smart Crop</span>
+                </label>
               </div>
               <div class="results-toolbar__actions">
                 <button class="btn btn--ghost" type="button" data-result-operation="svg">PNG → SVG 변환</button>
@@ -2452,6 +2456,16 @@ app.get('/', (c) => {
                 <button class="btn btn--primary" type="button" data-result-download="all">전체 다운로드</button>
               </div>
             </div>
+            <div class="svg-progress" data-role="svg-progress" role="status" aria-live="polite" hidden>
+              <div class="svg-progress__bar">
+                <div class="svg-progress__bar-fill" data-role="svg-progress-bar"></div>
+              </div>
+              <p class="svg-progress__message" data-role="svg-progress-message">Preparing SVG conversion…</p>
+              <p class="svg-progress__subtext" data-role="svg-progress-subtext"></p>
+            </div>
+            <p class="svg-progress__notice" data-role="svg-stroke-notice" hidden>
+              Some strokes were adjusted or removed for compatibility.
+            </p>
             <div class="gate results-gate" data-role="results-gate" data-state="locked">
               <i class="ri-lock-2-line results-gate__icon" aria-hidden="true"></i>
               <div class="results-gate__body">

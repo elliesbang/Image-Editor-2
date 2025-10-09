@@ -1,15 +1,10 @@
 const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
-const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
-const IMAGE_TRACER_SOURCES = [
-  IMAGETRACER_SRC,
-  'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
-  'https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
-]
-const IMAGE_TRACER_MAX_RETRIES = 3
-const IMAGE_TRACER_RETRY_DELAY = 900
-const IMAGE_TRACER_RETRY_JITTER = 500
+const ENGINE_IMPORT_PATH = '/engine.js'
+const ENGINE_MAX_ATTEMPTS = 3
+const ENGINE_RETRY_INTERVAL = 3000
 const SVGO_BROWSER_SRC = 'https://cdn.jsdelivr.net/npm/svgo@3.3.2/dist/svgo.browser.js'
+const SVG_NS = 'http://www.w3.org/2000/svg'
 const FREEMIUM_INITIAL_CREDITS = 30
 const MICHINA_INITIAL_CREDITS = 10000
 const USER_PLAN_STORAGE_KEY = 'userPlanSelection'
@@ -73,6 +68,7 @@ const CREDIT_COSTS = {
   analysis: 1,
 }
 const COMMUNITY_ROLE_STORAGE_KEY = 'role'
+const SMART_CROP_STORAGE_KEY = 'easy-image-editor:smart-crop'
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const GOOGLE_SIGNIN_TEXT = {
@@ -153,6 +149,9 @@ const state = {
   activeTarget: null,
   processing: false,
   analysis: new Map(),
+  preferences: {
+    smartCrop: true,
+  },
   user: {
     isLoggedIn: false,
     name: '',
@@ -189,6 +188,9 @@ const runtime = {
   config: null,
   initialView: 'home',
   allowViewBypass: false,
+  engine: {
+    controller: null,
+  },
   google: {
     codeClient: null,
     deferred: null,
@@ -215,6 +217,318 @@ const runtime = {
     approvedMichinaEmails: new Set(),
     initialized: false,
   },
+}
+
+const engineState = {
+  status: 'idle',
+  attempts: 0,
+  promise: null,
+  module: null,
+  version: null,
+  instance: null,
+  error: null,
+}
+
+function applySmartCropPreference(enabled) {
+  const resolved = Boolean(enabled)
+  state.preferences.smartCrop = resolved
+  if (elements.smartCropToggle instanceof HTMLInputElement) {
+    elements.smartCropToggle.checked = resolved
+  }
+}
+
+function loadSmartCropPreference() {
+  try {
+    const storage = window.localStorage
+    if (!storage) return null
+    const raw = storage.getItem(SMART_CROP_STORAGE_KEY)
+    if (raw === null) return null
+    if (raw === 'true') return true
+    if (raw === 'false') return false
+  } catch (error) {
+    console.warn('스마트 크롭 설정을 불러오지 못했습니다.', error)
+  }
+  return null
+}
+
+function setSmartCropPreference(enabled) {
+  applySmartCropPreference(enabled)
+  try {
+    const storage = window.localStorage
+    if (!storage) return
+    storage.setItem(SMART_CROP_STORAGE_KEY, state.preferences.smartCrop ? 'true' : 'false')
+  } catch (error) {
+    console.warn('스마트 크롭 설정을 저장하지 못했습니다.', error)
+  }
+}
+
+function isSmartCropEnabled() {
+  return Boolean(state.preferences.smartCrop)
+}
+
+function initializeSmartCropPreference() {
+  const stored = loadSmartCropPreference()
+  if (stored === null) {
+    applySmartCropPreference(true)
+    return
+  }
+  applySmartCropPreference(stored)
+}
+
+function resolveEngineVersionParam() {
+  if (engineState.version) {
+    return engineState.version
+  }
+
+  const candidates = []
+  if (typeof window !== 'undefined') {
+    candidates.push(window.__ENGINE_VERSION__)
+    candidates.push(window.__APP_VERSION__)
+    candidates.push(window.__BUILD_ID__)
+    candidates.push(window.__BUILD_TIMESTAMP__)
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      engineState.version = candidate.trim()
+      return engineState.version
+    }
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      engineState.version = String(candidate)
+      return engineState.version
+    }
+  }
+
+  engineState.version = String(Date.now())
+  return engineState.version
+}
+
+function getEngineInstance() {
+  if (engineState.instance && typeof engineState.instance.imagedataToSVG === 'function') {
+    return engineState.instance
+  }
+
+  if (
+    typeof window !== 'undefined' &&
+    window.ImageTracer &&
+    typeof window.ImageTracer.imagedataToSVG === 'function'
+  ) {
+    engineState.instance = window.ImageTracer
+    return engineState.instance
+  }
+
+  return null
+}
+
+function isEngineReady() {
+  return engineState.status === 'ready' && !!getEngineInstance()
+}
+
+function setEngineReady(module, instance) {
+  const resolvedInstance = instance || getEngineInstance()
+  if (!resolvedInstance || typeof resolvedInstance.imagedataToSVG !== 'function') {
+    throw new Error('SVG 변환 엔진을 초기화하지 못했습니다.')
+  }
+
+  engineState.instance = resolvedInstance
+  if (module) {
+    engineState.module = module
+  }
+  engineState.status = 'ready'
+  engineState.error = null
+  return engineState.instance
+}
+
+function normalizeEngineError(error) {
+  if (error instanceof Error) {
+    return error
+  }
+
+  if (typeof error === 'string') {
+    return new Error(error)
+  }
+
+  try {
+    return new Error(JSON.stringify(error))
+  } catch (serializationError) {
+    return new Error('알 수 없는 엔진 오류가 발생했습니다.')
+  }
+}
+
+export function loadEngine(options = {}) {
+  const { signal } = options || {}
+
+  if (isEngineReady() && engineState.promise) {
+    return engineState.promise
+  }
+
+  if (isEngineReady()) {
+    return Promise.resolve(engineState.module)
+  }
+
+  if (engineState.promise) {
+    if (typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal) {
+      const handleAbort = () => {
+        if (engineState.status !== 'ready') {
+          engineState.status = 'failed'
+          engineState.error = new Error('엔진 로딩이 중단되었습니다.')
+        }
+      }
+      if (signal.aborted) {
+        handleAbort()
+        return Promise.reject(new DOMException('Aborted', 'AbortError'))
+      }
+      signal.addEventListener('abort', handleAbort, { once: true })
+      engineState.promise.finally(() => {
+        signal.removeEventListener('abort', handleAbort)
+      })
+    }
+    return engineState.promise
+  }
+
+  const abortState = { aborted: false }
+  const handleAbort = () => {
+    abortState.aborted = true
+  }
+
+  if (typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal) {
+    if (signal.aborted) {
+      handleAbort()
+      return Promise.reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', handleAbort, { once: true })
+  }
+
+  engineState.status = 'loading'
+  engineState.attempts = 0
+  const version = resolveEngineVersionParam()
+
+  const attemptLoad = async () => {
+    let lastError = null
+
+    while (engineState.attempts < ENGINE_MAX_ATTEMPTS && !abortState.aborted) {
+      engineState.attempts += 1
+
+      try {
+        const module = await import(`${ENGINE_IMPORT_PATH}?v=${version}`)
+
+        if (abortState.aborted) {
+          throw new Error('Engine load aborted')
+        }
+
+        let engineInstance = null
+
+        if (module && typeof module.bootstrapEngine === 'function') {
+          engineInstance = await module.bootstrapEngine()
+        } else if (module && typeof module.initialize === 'function') {
+          engineInstance = await module.initialize()
+        } else if (module && typeof module.default === 'function') {
+          engineInstance = await module.default()
+        }
+
+        if (module && typeof module.getEngine === 'function' && !engineInstance) {
+          engineInstance = await module.getEngine()
+        }
+
+        const readyInstance = setEngineReady(module, engineInstance)
+        if (!readyInstance || typeof readyInstance.imagedataToSVG !== 'function') {
+          throw new Error('SVG 변환 엔진을 불러오지 못했습니다.')
+        }
+
+        engineState.promise = Promise.resolve(module)
+        return module
+      } catch (error) {
+        const normalized = normalizeEngineError(error)
+        lastError = normalized
+        engineState.error = normalized
+
+        if (abortState.aborted) {
+          break
+        }
+
+        if (engineState.attempts >= ENGINE_MAX_ATTEMPTS) {
+          engineState.status = 'failed'
+          throw normalized
+        }
+
+        await wait(ENGINE_RETRY_INTERVAL)
+      }
+    }
+
+    if (abortState.aborted) {
+      const abortError = new Error('Engine load aborted')
+      engineState.error = abortError
+      throw abortError
+    }
+
+    throw lastError || new Error('엔진을 불러오지 못했습니다.')
+  }
+
+  const loadPromise = attemptLoad()
+    .catch((error) => {
+      if (engineState.status !== 'failed' && !abortState.aborted) {
+        engineState.status = 'failed'
+      }
+      return Promise.reject(error)
+    })
+    .finally(() => {
+      if (typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal) {
+        signal.removeEventListener('abort', handleAbort)
+      }
+
+      if (!isEngineReady()) {
+        engineState.promise = null
+      }
+    })
+
+  engineState.promise = loadPromise
+  return loadPromise
+}
+
+export function useEngineLoader(effectHook) {
+  const hook =
+    typeof effectHook === 'function'
+      ? effectHook
+      : typeof React !== 'undefined' && typeof React.useEffect === 'function'
+        ? React.useEffect
+        : null
+
+  if (!hook) {
+    return
+  }
+
+  hook(() => {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const signal = controller ? controller.signal : undefined
+
+    loadEngine({ signal }).catch((error) => {
+      if (signal?.aborted) {
+        return
+      }
+      console.error('엔진 초기화 중 오류가 발생했습니다.', error)
+    })
+
+    return () => {
+      if (controller && !controller.signal.aborted) {
+        controller.abort()
+      }
+    }
+  }, [])
+}
+
+function assertEngineReady() {
+  if (isEngineReady()) {
+    return true
+  }
+
+  if (engineState.status === 'failed') {
+    const detail = engineState.error?.message ? ` (${engineState.error.message})` : ''
+    setStatus(`SVG 변환 엔진을 불러오지 못했습니다.${detail}`, 'danger')
+  } else {
+    setStatus('엔진 초기화 중입니다. 잠시 후 다시 시도해주세요.', 'info')
+  }
+
+  return false
 }
 
 let googleSdkPromise = null
@@ -444,6 +758,12 @@ const elements = {
   resultDownloadButtons: document.querySelectorAll('[data-result-download]'),
   svgButton: document.querySelector('[data-result-operation="svg"]'),
   svgColorSelect: document.querySelector('#svgColorCount'),
+  smartCropToggle: document.querySelector('#smartCropToggle'),
+  svgProgress: document.querySelector('[data-role="svg-progress"]'),
+  svgProgressBar: document.querySelector('[data-role="svg-progress-bar"]'),
+  svgProgressMessage: document.querySelector('[data-role="svg-progress-message"]'),
+  svgProgressSubtext: document.querySelector('[data-role="svg-progress-subtext"]'),
+  svgStrokeNotice: document.querySelector('[data-role="svg-stroke-notice"]'),
   uploadSelectAll: document.querySelector('[data-action="upload-select-all"]'),
   uploadClear: document.querySelector('[data-action="upload-clear"]'),
   uploadDeleteSelected: document.querySelector('[data-action="upload-delete-selected"]'),
@@ -532,9 +852,8 @@ const elements = {
 }
 
 let statusTimer = null
-let imageTracerReadyPromise = null
-let hasAnnouncedClientSvgFallback = false
 let svgOptimizerReadyPromise = null
+let svgStrokeNoticeTimer = null
 
 function uuid() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random()}`
@@ -4165,79 +4484,6 @@ function waitForCondition(condition, timeout = 10000, interval = 60) {
   })
 }
 
-async function loadImageTracerWithRetry(attempt = 1) {
-  const sourceIndex = Math.min(attempt - 1, IMAGE_TRACER_SOURCES.length - 1)
-  const scriptSrc = IMAGE_TRACER_SOURCES[sourceIndex] || IMAGETRACER_SRC
-
-  try {
-    delete window.ImageTracer
-  } catch (error) {
-    console.warn('ImageTracer 전역 초기화 실패', error)
-  }
-
-  removeScriptElement('imagetracer')
-  const script = ensureScriptElement(scriptSrc, 'imagetracer')
-  if (!script) {
-    throw new Error('SVG 변환 도구 스크립트를 초기화하지 못했습니다.')
-  }
-
-  return new Promise((resolve, reject) => {
-    const onScriptError = (event) => {
-      script.removeEventListener('error', onScriptError)
-      reject(new Error(`SVG 변환 도구를 불러오는 중 오류가 발생했습니다. (${event?.type || 'error'})`))
-    }
-
-    script.addEventListener('error', onScriptError, { once: true })
-
-    waitForCondition(
-      () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
-      12000,
-      80,
-    )
-      .then(() => {
-        script.removeEventListener('error', onScriptError)
-        resolve(true)
-      })
-      .catch((error) => {
-        script.removeEventListener('error', onScriptError)
-        reject(error instanceof Error ? error : new Error(String(error)))
-      })
-  })
-}
-
-function ensureImageTracerReady() {
-  if (window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function') {
-    return Promise.resolve(true)
-  }
-
-  if (!imageTracerReadyPromise) {
-    imageTracerReadyPromise = (async () => {
-      for (let attempt = 1; attempt <= IMAGE_TRACER_MAX_RETRIES; attempt += 1) {
-        try {
-          await loadImageTracerWithRetry(attempt)
-          return true
-        } catch (error) {
-          console.error(`ImageTracer load attempt ${attempt} failed`, error)
-          if (!hasAnnouncedClientSvgFallback) {
-            setStatus('클라이언트 변환 모드로 전환되었습니다. 브라우저에서 엔진을 다시 불러오는 중입니다.', 'info', 0)
-            hasAnnouncedClientSvgFallback = true
-          }
-          if (attempt >= IMAGE_TRACER_MAX_RETRIES) {
-            throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
-          }
-          await wait(IMAGE_TRACER_RETRY_DELAY * attempt, IMAGE_TRACER_RETRY_JITTER)
-        }
-      }
-      throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
-    })().catch((error) => {
-      imageTracerReadyPromise = null
-      throw error
-    })
-  }
-
-  return imageTracerReadyPromise
-}
-
 function ensureSvgOptimizerReady() {
   if (window.SVGO?.optimize || window.svgo?.optimize) {
     return Promise.resolve(true)
@@ -4325,19 +4571,556 @@ async function resolveDataUrlForTarget(target) {
   return ensureDataUrl(target.item.objectUrl)
 }
 
-async function convertTargetToSvg(target, desiredColors) {
-  await ensureImageTracerReady()
+const SVG_CONVERSION_PROGRESS_STEPS = Object.freeze([
+  { key: 'upload', label: 'Uploading image...', fraction: 0.12 },
+  { key: 'analyze', label: 'Analyzing pixels...', fraction: 0.36 },
+  { key: 'vectorize', label: 'Vectorizing shapes...', fraction: 0.72 },
+  { key: 'render', label: 'Rendering SVG...', fraction: 0.92 },
+])
+const SVG_PROGRESS_LONG_WAIT_MS = 5500
+const SVG_PROGRESS_HIDE_DELAY_MS = 900
+const SVG_STROKE_NOTICE_HIDE_MS = 6000
+const SKIP_STROKE_ATTRIBUTES = new Set([
+  'stroke',
+  'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-miterlimit',
+  'stroke-dasharray',
+  'stroke-dashoffset',
+  'stroke-opacity',
+  'vector-effect',
+])
+const SKIP_GEOMETRY_ATTRIBUTES = new Set([
+  'x',
+  'y',
+  'width',
+  'height',
+  'r',
+  'rx',
+  'ry',
+  'cx',
+  'cy',
+  'x1',
+  'y1',
+  'x2',
+  'y2',
+  'points',
+  'd',
+])
 
-  if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
-    return { success: false, message: 'SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.' }
+function createSvgConversionProgress(totalTargets = 1) {
+  const total = Math.max(1, Number.isFinite(totalTargets) ? Math.max(1, Math.floor(totalTargets)) : 1)
+  const stepMap = new Map(SVG_CONVERSION_PROGRESS_STEPS.map((step) => [step.key, step]))
+  const root = elements.svgProgress instanceof HTMLElement ? elements.svgProgress : null
+  const bar = elements.svgProgressBar instanceof HTMLElement ? elements.svgProgressBar : null
+  const message = elements.svgProgressMessage instanceof HTMLElement ? elements.svgProgressMessage : null
+  const subtext = elements.svgProgressSubtext instanceof HTMLElement ? elements.svgProgressSubtext : null
+  const state = {
+    total,
+    currentFraction: 0,
+    hideTimer: null,
+    longWaitTimer: null,
+  }
+
+  const resetLongWait = () => {
+    if (state.longWaitTimer) {
+      window.clearTimeout(state.longWaitTimer)
+      state.longWaitTimer = null
+    }
+    if (subtext) {
+      subtext.textContent = ''
+    }
+  }
+
+  const scheduleLongWait = () => {
+    resetLongWait()
+    if (!subtext) return
+    state.longWaitTimer = window.setTimeout(() => {
+      subtext.textContent = 'Still working... please wait.'
+    }, SVG_PROGRESS_LONG_WAIT_MS)
+  }
+
+  const ensureVisible = () => {
+    if (!root) return false
+    if (state.hideTimer) {
+      window.clearTimeout(state.hideTimer)
+      state.hideTimer = null
+    }
+    root.removeAttribute('hidden')
+    root.classList.add('is-visible')
+    root.classList.remove('is-complete', 'is-error')
+    return true
+  }
+
+  const hideSoon = (delay = SVG_PROGRESS_HIDE_DELAY_MS) => {
+    if (!root) return
+    if (state.hideTimer) {
+      window.clearTimeout(state.hideTimer)
+    }
+    state.hideTimer = window.setTimeout(() => {
+      root.classList.remove('is-visible', 'is-complete', 'is-error')
+      root.setAttribute('hidden', '')
+      if (bar) {
+        bar.style.width = '0%'
+      }
+    }, delay)
+  }
+
+  const setBarFraction = (fraction) => {
+    if (!bar) return
+    const bounded = Math.min(1, Math.max(state.currentFraction, fraction))
+    state.currentFraction = bounded
+    bar.style.width = `${Math.round(bounded * 100)}%`
+  }
+
+  return {
+    start() {
+      if (!root || !bar || !message) return
+      ensureVisible()
+      bar.style.width = '0%'
+      message.textContent = 'Preparing SVG conversion…'
+      scheduleLongWait()
+    },
+    step(key, itemIndex = 0) {
+      if (!root || !bar || !message) return
+      const step = stepMap.get(key)
+      if (!step) return
+      ensureVisible()
+      const normalizedIndex = Math.min(total - 1, Math.max(0, itemIndex))
+      const fraction = (normalizedIndex + step.fraction) / total
+      setBarFraction(fraction)
+      message.textContent = step.label
+      scheduleLongWait()
+    },
+    finish() {
+      if (!root || !bar || !message) return
+      ensureVisible()
+      resetLongWait()
+      setBarFraction(1)
+      root.classList.add('is-complete')
+      message.textContent = 'Done!'
+      hideSoon(SVG_PROGRESS_HIDE_DELAY_MS)
+    },
+    fail() {
+      if (!root || !bar || !message) return
+      ensureVisible()
+      resetLongWait()
+      setBarFraction(1)
+      root.classList.add('is-error')
+      root.classList.remove('is-complete')
+      message.textContent = 'SVG conversion failed. Please try again later.'
+      hideSoon(SVG_PROGRESS_HIDE_DELAY_MS * 2)
+    },
+    stop() {
+      if (!root || !bar) return
+      resetLongWait()
+      hideSoon(0)
+    },
+  }
+}
+
+function hideSvgStrokeNotice() {
+  if (svgStrokeNoticeTimer) {
+    window.clearTimeout(svgStrokeNoticeTimer)
+    svgStrokeNoticeTimer = null
+  }
+  if (elements.svgStrokeNotice instanceof HTMLElement) {
+    elements.svgStrokeNotice.classList.remove('is-visible')
+    elements.svgStrokeNotice.setAttribute('hidden', '')
+  }
+}
+
+function showSvgStrokeNotice() {
+  if (!(elements.svgStrokeNotice instanceof HTMLElement)) {
+    return
+  }
+  elements.svgStrokeNotice.removeAttribute('hidden')
+  elements.svgStrokeNotice.classList.add('is-visible')
+  if (svgStrokeNoticeTimer) {
+    window.clearTimeout(svgStrokeNoticeTimer)
+  }
+  svgStrokeNoticeTimer = window.setTimeout(() => {
+    if (elements.svgStrokeNotice instanceof HTMLElement) {
+      elements.svgStrokeNotice.classList.remove('is-visible')
+      elements.svgStrokeNotice.setAttribute('hidden', '')
+    }
+    svgStrokeNoticeTimer = null
+  }, SVG_STROKE_NOTICE_HIDE_MS)
+}
+
+function copyAppearanceAttributes(source, target) {
+  if (!(source instanceof Element) || !(target instanceof Element)) return
+  const attributes = Array.from(source.attributes)
+  for (const attr of attributes) {
+    const name = attr.name
+    if (SKIP_STROKE_ATTRIBUTES.has(name) || SKIP_GEOMETRY_ATTRIBUTES.has(name) || name === 'fill') {
+      continue
+    }
+    if (name === 'style') {
+      const normalized = attr.value
+        .split(';')
+        .map((part) => part.trim())
+        .filter((part) => part && !/^stroke/i.test(part))
+        .join('; ')
+      if (normalized) {
+        target.setAttribute(name, normalized)
+      }
+      continue
+    }
+    target.setAttribute(name, attr.value)
+  }
+  const strokeOpacity = source.getAttribute('stroke-opacity')
+  if (strokeOpacity && !target.hasAttribute('fill-opacity')) {
+    target.setAttribute('fill-opacity', strokeOpacity)
+  }
+}
+
+function cleanupSvgNodeAttributes(node) {
+  if (!(node instanceof Element)) return
+  const attributes = Array.from(node.attributes)
+  for (const attr of attributes) {
+    const name = attr.name
+    if (name === 'style') {
+      const normalized = attr.value
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join('; ')
+      if (normalized) {
+        node.setAttribute(name, normalized)
+      } else {
+        node.removeAttribute(name)
+      }
+      continue
+    }
+    if (name === 'transform') {
+      const normalized = attr.value.trim().replace(/\s+/g, ' ')
+      if (normalized) {
+        node.setAttribute(name, normalized)
+      } else {
+        node.removeAttribute(name)
+      }
+      continue
+    }
+    if (attr.value === '') {
+      node.removeAttribute(name)
+    }
+  }
+  if (!node.hasAttribute('stroke') || node.getAttribute('stroke') === 'none') {
+    node.removeAttribute('stroke')
+    node.removeAttribute('stroke-width')
+    node.removeAttribute('stroke-linecap')
+    node.removeAttribute('stroke-linejoin')
+    node.removeAttribute('stroke-miterlimit')
+    node.removeAttribute('stroke-dasharray')
+    node.removeAttribute('stroke-dashoffset')
+    node.removeAttribute('stroke-opacity')
+    node.removeAttribute('vector-effect')
+  }
+}
+
+function rectPath(x, y, width, height) {
+  const x2 = x + width
+  const y2 = y + height
+  return `M ${x} ${y} H ${x2} V ${y2} H ${x} Z`
+}
+
+function circlePath(cx, cy, radius) {
+  const r = Math.max(0, radius)
+  if (!Number.isFinite(r) || r <= 0) {
+    return ''
+  }
+  return `M ${cx + r} ${cy} A ${r} ${r} 0 1 0 ${cx - r} ${cy} A ${r} ${r} 0 1 0 ${cx + r} ${cy} Z`
+}
+
+function ellipsePath(cx, cy, rx, ry) {
+  const resolvedRx = Math.max(0, rx)
+  const resolvedRy = Math.max(0, ry)
+  if (!Number.isFinite(resolvedRx) || !Number.isFinite(resolvedRy) || resolvedRx <= 0 || resolvedRy <= 0) {
+    return ''
+  }
+  return `M ${cx + resolvedRx} ${cy} A ${resolvedRx} ${resolvedRy} 0 1 0 ${cx - resolvedRx} ${cy} A ${resolvedRx} ${resolvedRy} 0 1 0 ${cx + resolvedRx} ${cy} Z`
+}
+
+function buildRectStrokePath(element, strokeWidth, strokeColor, doc) {
+  const x = Number.parseFloat(element.getAttribute('x') || '0')
+  const y = Number.parseFloat(element.getAttribute('y') || '0')
+  const width = Number.parseFloat(element.getAttribute('width') || '0')
+  const height = Number.parseFloat(element.getAttribute('height') || '0')
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null
+  }
+  const half = strokeWidth / 2
+  const outer = rectPath(x - half, y - half, width + strokeWidth, height + strokeWidth)
+  const innerWidth = Math.max(0, width - strokeWidth)
+  const innerHeight = Math.max(0, height - strokeWidth)
+  const path = doc.createElementNS(SVG_NS, 'path')
+  let d = outer
+  if (innerWidth > 0 && innerHeight > 0) {
+    const inner = rectPath(x + half, y + half, innerWidth, innerHeight)
+    d = `${outer} ${inner}`
+    path.setAttribute('fill-rule', 'evenodd')
+  }
+  path.setAttribute('d', d)
+  path.setAttribute('fill', strokeColor)
+  copyAppearanceAttributes(element, path)
+  return path
+}
+
+function buildCircleStrokePath(element, strokeWidth, strokeColor, doc) {
+  const cx = Number.parseFloat(element.getAttribute('cx') || '0')
+  const cy = Number.parseFloat(element.getAttribute('cy') || '0')
+  const radius = Number.parseFloat(element.getAttribute('r') || '0')
+  if (!Number.isFinite(radius) || radius <= 0) {
+    return null
+  }
+  const half = strokeWidth / 2
+  const outer = circlePath(cx, cy, radius + half)
+  const innerRadius = Math.max(0, radius - half)
+  const path = doc.createElementNS(SVG_NS, 'path')
+  let d = outer
+  if (innerRadius > 0) {
+    const inner = circlePath(cx, cy, innerRadius)
+    d = `${outer} ${inner}`
+    path.setAttribute('fill-rule', 'evenodd')
+  }
+  path.setAttribute('d', d)
+  path.setAttribute('fill', strokeColor)
+  copyAppearanceAttributes(element, path)
+  return path
+}
+
+function buildEllipseStrokePath(element, strokeWidth, strokeColor, doc) {
+  const cx = Number.parseFloat(element.getAttribute('cx') || '0')
+  const cy = Number.parseFloat(element.getAttribute('cy') || '0')
+  const rx = Number.parseFloat(element.getAttribute('rx') || '0')
+  const ry = Number.parseFloat(element.getAttribute('ry') || '0')
+  if (!Number.isFinite(rx) || !Number.isFinite(ry) || rx <= 0 || ry <= 0) {
+    return null
+  }
+  const half = strokeWidth / 2
+  const outer = ellipsePath(cx, cy, rx + half, ry + half)
+  const innerRx = Math.max(0, rx - half)
+  const innerRy = Math.max(0, ry - half)
+  const path = doc.createElementNS(SVG_NS, 'path')
+  let d = outer
+  if (innerRx > 0 && innerRy > 0) {
+    const inner = ellipsePath(cx, cy, innerRx, innerRy)
+    d = `${outer} ${inner}`
+    path.setAttribute('fill-rule', 'evenodd')
+  }
+  path.setAttribute('d', d)
+  path.setAttribute('fill', strokeColor)
+  copyAppearanceAttributes(element, path)
+  return path
+}
+
+function buildLineStrokePath(element, strokeWidth, strokeColor, doc) {
+  let x1 = Number.parseFloat(element.getAttribute('x1') || '0')
+  let y1 = Number.parseFloat(element.getAttribute('y1') || '0')
+  let x2 = Number.parseFloat(element.getAttribute('x2') || '0')
+  let y2 = Number.parseFloat(element.getAttribute('y2') || '0')
+  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+    return null
+  }
+  const dx = x2 - x1
+  const dy = y2 - y1
+  let length = Math.hypot(dx, dy)
+  if (length === 0) {
+    return null
+  }
+  const half = strokeWidth / 2
+  const cap = (element.getAttribute('stroke-linecap') || '').toLowerCase()
+  if (cap === 'square' || cap === 'round') {
+    const ux = dx / length
+    const uy = dy / length
+    x1 -= ux * half
+    y1 -= uy * half
+    x2 += ux * half
+    y2 += uy * half
+  }
+  const ndx = x2 - x1
+  const ndy = y2 - y1
+  const adjustedLength = Math.hypot(ndx, ndy)
+  if (adjustedLength === 0) {
+    return null
+  }
+  const nx = (-ndy / adjustedLength) * half
+  const ny = (ndx / adjustedLength) * half
+  const outerStartX = x1 + nx
+  const outerStartY = y1 + ny
+  const outerEndX = x2 + nx
+  const outerEndY = y2 + ny
+  const innerEndX = x2 - nx
+  const innerEndY = y2 - ny
+  const innerStartX = x1 - nx
+  const innerStartY = y1 - ny
+  const path = doc.createElementNS(SVG_NS, 'path')
+  if (cap === 'round') {
+    const radius = half
+    path.setAttribute(
+      'd',
+      `M ${outerStartX} ${outerStartY} L ${outerEndX} ${outerEndY} ` +
+        `A ${radius} ${radius} 0 0 1 ${innerEndX} ${innerEndY} L ${innerStartX} ${innerStartY} ` +
+        `A ${radius} ${radius} 0 0 1 ${outerStartX} ${outerStartY} Z`,
+    )
+  } else {
+    path.setAttribute(
+      'd',
+      `M ${outerStartX} ${outerStartY} L ${outerEndX} ${outerEndY} L ${innerEndX} ${innerEndY} L ${innerStartX} ${innerStartY} Z`,
+    )
+  }
+  path.setAttribute('fill', strokeColor)
+  copyAppearanceAttributes(element, path)
+  return path
+}
+
+function convertStrokeElementToFill(element, strokeWidth, strokeColor, doc) {
+  if (!(element instanceof Element) || !doc || !Number.isFinite(strokeWidth) || strokeWidth <= 0) {
+    return null
+  }
+  const tag = element.tagName.toLowerCase()
+  switch (tag) {
+    case 'rect':
+      return buildRectStrokePath(element, strokeWidth, strokeColor, doc)
+    case 'circle':
+      return buildCircleStrokePath(element, strokeWidth, strokeColor, doc)
+    case 'ellipse':
+      return buildEllipseStrokePath(element, strokeWidth, strokeColor, doc)
+    case 'line':
+      return buildLineStrokePath(element, strokeWidth, strokeColor, doc)
+    default:
+      return null
+  }
+}
+
+function processSvgStrokeAttributes(svgString) {
+  if (typeof svgString !== 'string' || svgString.trim() === '') {
+    return { svg: svgString, adjusted: false }
+  }
+  try {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgString, 'image/svg+xml')
+    const parseError = doc.querySelector('parsererror')
+    if (parseError) {
+      return { svg: svgString, adjusted: false }
+    }
+    const svgElement = doc.documentElement
+    if (!(svgElement instanceof Element)) {
+      return { svg: svgString, adjusted: false }
+    }
+    let adjusted = false
+    const stroked = svgElement.querySelectorAll('[stroke]')
+    stroked.forEach((node) => {
+      if (!(node instanceof Element)) return
+      const stroke = node.getAttribute('stroke')
+      if (!stroke || stroke === 'none') {
+        node.removeAttribute('stroke')
+        node.removeAttribute('stroke-width')
+        cleanupSvgNodeAttributes(node)
+        return
+      }
+      const strokeWidth = Number.parseFloat(node.getAttribute('stroke-width') || '1')
+      let replaced = false
+      if (Number.isFinite(strokeWidth) && strokeWidth > 0) {
+        const converted = convertStrokeElementToFill(node, strokeWidth, stroke, doc)
+        if (converted) {
+          const parent = node.parentNode
+          if (parent) {
+            parent.replaceChild(converted, node)
+            cleanupSvgNodeAttributes(converted)
+            adjusted = true
+            replaced = true
+          }
+        }
+      }
+      if (!replaced) {
+        node.setAttribute('fill', stroke)
+        if (node.hasAttribute('stroke-opacity') && !node.hasAttribute('fill-opacity')) {
+          const opacity = node.getAttribute('stroke-opacity')
+          if (opacity) {
+            node.setAttribute('fill-opacity', opacity)
+          }
+        }
+        node.removeAttribute('stroke')
+        node.removeAttribute('stroke-width')
+        node.removeAttribute('stroke-opacity')
+        node.removeAttribute('stroke-linecap')
+        node.removeAttribute('stroke-linejoin')
+        node.removeAttribute('stroke-miterlimit')
+        node.removeAttribute('stroke-dasharray')
+        node.removeAttribute('stroke-dashoffset')
+        node.removeAttribute('vector-effect')
+        cleanupSvgNodeAttributes(node)
+        adjusted = true
+      }
+    })
+
+    cleanupSvgNodeAttributes(svgElement)
+    svgElement.querySelectorAll('*').forEach((node) => cleanupSvgNodeAttributes(node))
+    const serializer = new XMLSerializer()
+    const serialized = serializer.serializeToString(svgElement)
+    return { svg: serialized, adjusted }
+  } catch (error) {
+    console.error('SVG 스트로크 정리 중 오류', error)
+  }
+  return { svg: svgString, adjusted: false }
+}
+
+async function convertTargetToSvg(target, desiredColors, progress, targetIndex = 0) {
+  if (!isEngineReady()) {
+    const detail =
+      engineState.status === 'failed' && engineState.error?.message
+        ? ` (${engineState.error.message})`
+        : ''
+    const message =
+      engineState.status === 'failed'
+        ? `SVG 변환 엔진을 불러오지 못했습니다.${detail}`
+        : '엔진 초기화 중입니다. 잠시 후 다시 시도해주세요.'
+    return { success: false, message }
+  }
+
+  const tracer = getEngineInstance()
+  if (!tracer || typeof tracer.imagedataToSVG !== 'function') {
+    const message =
+      engineState.status === 'failed'
+        ? 'SVG 변환 엔진을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.'
+        : 'SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.'
+    return { success: false, message }
   }
 
   try {
+    progress?.step('upload', targetIndex)
     const dataUrl = await resolveDataUrlForTarget(target)
     const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
-    const width = canvas.width
-    const height = canvas.height
-    const imageData = ctx.getImageData(0, 0, width, height)
+
+    let workingCanvas = canvas
+    let workingCtx = ctx
+    let width = workingCanvas.width
+    let height = workingCanvas.height
+    let imageData = workingCtx.getImageData(0, 0, width, height)
+
+    progress?.step('analyze', targetIndex)
+
+    let smartCropApplied = false
+    if (isSmartCropEnabled()) {
+      const bounds = detectSubjectBounds(imageData, width, height)
+      const coversWholeImage =
+        bounds.left <= 0 &&
+        bounds.top <= 0 &&
+        bounds.right >= width - 1 &&
+        bounds.bottom >= height - 1
+      if (!coversWholeImage) {
+        const cropped = cropCanvas(workingCanvas, workingCtx, bounds)
+        workingCanvas = cropped.canvas
+        workingCtx = cropped.ctx
+        width = workingCanvas.width
+        height = workingCanvas.height
+        imageData = workingCtx.getImageData(0, 0, width, height)
+        smartCropApplied = true
+      }
+    }
 
     const baseColors = Number.isFinite(desiredColors) ? desiredColors : 6
     const clampedColors = Math.max(1, Math.min(6, Math.round(baseColors)))
@@ -4372,10 +5155,20 @@ async function convertTargetToSvg(target, desiredColors) {
     let svgBlob = null
     let sizeOk = false
     let reducedColors = false
+    let strokeAdjusted = false
 
     for (let step = 0; step <= adjustments.length; step += 1) {
-      svgString = window.ImageTracer.imagedataToSVG(imageData, options)
+      if (step === 0) {
+        progress?.step('vectorize', targetIndex)
+      }
+      svgString = tracer.imagedataToSVG(imageData, options)
       svgString = injectViewBoxAttribute(svgString, width, height)
+      const processed = processSvgStrokeAttributes(svgString)
+      svgString = processed.svg
+      if (processed.adjusted) {
+        strokeAdjusted = true
+      }
+      progress?.step('render', targetIndex)
       // eslint-disable-next-line no-await-in-loop
       svgString = await optimizeSvgContent(svgString)
       svgBlob = new Blob([svgString], { type: 'image/svg+xml' })
@@ -4399,6 +5192,9 @@ async function convertTargetToSvg(target, desiredColors) {
 
     const finalColors = Math.max(1, Math.min(6, options.numberofcolors || clampedColors))
     const operations = Array.isArray(target.item.operations) ? [...target.item.operations] : []
+    if (smartCropApplied && !operations.includes('Smart Crop')) {
+      operations.push('Smart Crop')
+    }
     operations.push(`SVG 변환(${finalColors}색)`)
 
     const filenameBase = baseName(target.item.name || 'image')
@@ -4413,6 +5209,7 @@ async function convertTargetToSvg(target, desiredColors) {
       operations,
       colors: finalColors,
       reducedColors,
+      strokesAdjusted: strokeAdjusted,
     }
   } catch (error) {
     console.error('SVG 변환 중 오류', error)
@@ -4450,27 +5247,21 @@ async function convertSelectionsToSvg() {
   setStage('export')
 
   toggleProcessing(true)
-  setStatus('브라우저에서 SVG 변환 엔진을 준비하는 중입니다…', 'info', 0)
-
-  try {
-    await ensureImageTracerReady()
-  } catch (error) {
-    console.error('ImageTracer load error', error)
+  if (!assertEngineReady()) {
     toggleProcessing(false)
-    const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
-    setStatus(`SVG 변환을 준비하는 중 문제가 발생했습니다.${detail} 잠시 후 다시 시도해주세요.`, 'danger')
+    recomputeStage()
     return
   }
 
-  if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
+  const tracer = getEngineInstance()
+  if (!tracer || typeof tracer.imagedataToSVG !== 'function') {
     toggleProcessing(false)
+    recomputeStage()
     setStatus('SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
     return
   }
 
   const colorCount = resolveSvgColorCount()
-
-  setStatus('SVG 변환 중...', 'info', 0)
 
   const conversions = []
   const targets = []
@@ -4491,11 +5282,21 @@ async function convertSelectionsToSvg() {
 
   const failures = []
   const colorAdjustments = []
+  let strokeAdjustmentCount = 0
+
+  const progress = createSvgConversionProgress(targets.length)
+  hideSvgStrokeNotice()
+  if (targets.length > 0) {
+    progress.start()
+  }
+
+  let unexpectedError = null
 
   try {
-    for (const target of targets) {
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index]
       // eslint-disable-next-line no-await-in-loop
-      const conversion = await convertTargetToSvg(target, colorCount)
+      const conversion = await convertTargetToSvg(target, colorCount, progress, index)
       if (!conversion.success || !conversion.blob) {
         console.warn('SVG 변환 실패:', target.item?.name || '(이름 없음)', conversion.message)
         failures.push({
@@ -4520,13 +5321,30 @@ async function convertSelectionsToSvg() {
       if (conversion.reducedColors) {
         colorAdjustments.push(conversion)
       }
+      if (conversion.strokesAdjusted) {
+        strokeAdjustmentCount += 1
+      }
     }
+  } catch (error) {
+    unexpectedError = error instanceof Error ? error : new Error(String(error))
+    console.error('SVG 변환 중 예기치 않은 오류', unexpectedError)
   } finally {
     toggleProcessing(false)
     recomputeStage()
   }
 
+  if (unexpectedError) {
+    if (targets.length > 0) {
+      progress.fail()
+    }
+    setStatus('SVG conversion failed. Please try again later.', 'danger')
+    return
+  }
+
   if (conversions.length > 0) {
+    if (targets.length > 0) {
+      progress.finish()
+    }
     consumeCredits('svg', conversions.length)
     let message = `${conversions.length}개의 이미지를 SVG로 변환했습니다.`
     if (colorAdjustments.length > 0) {
@@ -4538,103 +5356,17 @@ async function convertSelectionsToSvg() {
     } else {
       setStatus(message, 'success')
     }
-  } else if (failures.length > 0) {
-    const firstFailure = failures[0]
-    setStatus(`SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
-  }
-}
-
-async function autoConvertUploadsToSvg(uploads) {
-  if (state.processing) return
-  if (!Array.isArray(uploads) || uploads.length === 0) return
-
-  const pngUploads = uploads.filter((upload) => upload && upload.type === 'image/png')
-  if (pngUploads.length === 0) {
-    return
-  }
-
-  if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-    console.info('자동 SVG 변환은 로그인 후에만 실행됩니다.')
-    return
-  }
-
-  if (!ensureActionAllowed('svg', { count: pngUploads.length, gate: 'results' })) {
-    return
-  }
-
-  setStatus(
-    `브라우저에서 PNG ${pngUploads.length}개를 SVG로 자동 변환하는 중입니다…`,
-    'info',
-    0,
-  )
-  toggleProcessing(true)
-
-  const conversions = []
-  const failures = []
-  let shouldAbort = false
-
-  try {
-    await ensureImageTracerReady()
-    if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
-      throw new Error('SVG 변환 도구를 사용할 수 없습니다.')
-    }
-
-    const colorCount = resolveSvgColorCount()
-
-    for (const upload of pngUploads) {
-      const target = { type: 'upload', item: upload }
-      // eslint-disable-next-line no-await-in-loop
-      const conversion = await convertTargetToSvg(target, colorCount)
-      if (!conversion.success || !conversion.blob) {
-        console.warn('자동 SVG 변환 실패', upload?.name, conversion.message)
-        failures.push({
-          name: upload?.name || '이름 없는 이미지',
-          message: conversion.message || '알 수 없는 이유로 실패했습니다.',
-        })
-        continue
-      }
-
-      const resultPayload = {
-        blob: conversion.blob,
-        width: conversion.width,
-        height: conversion.height,
-        operations: conversion.operations,
-        name: conversion.name,
-        type: 'image/svg+xml',
-      }
-
-      const record = appendResult(upload, resultPayload, { transferSelection: false, selectResult: true })
-      conversions.push({ ...conversion, record })
-    }
-  } catch (error) {
-    console.error('자동 SVG 변환 중 오류', error)
-    shouldAbort = true
-    setStatus('자동 SVG 변환 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-  } finally {
-    toggleProcessing(false)
-    recomputeStage()
-  }
-
-  if (shouldAbort) {
-    return
-  }
-
-  if (conversions.length > 0) {
-    consumeCredits('svg', conversions.length)
-    let message = `업로드한 PNG ${conversions.length}개를 SVG로 자동 변환했습니다.`
-    if (failures.length > 0) {
-      message += ` (${failures.length}개는 변환되지 않았습니다.)`
-      setStatus(message, 'warning')
-    } else {
-      setStatus(message, 'success')
-    }
-    const latest = conversions[0]?.record
-    if (latest?.id) {
-      displayAnalysisFor({ type: 'result', id: latest.id })
+    if (strokeAdjustmentCount > 0) {
+      showSvgStrokeNotice()
     }
   } else if (failures.length > 0) {
-    const firstFailure = failures[0]
-    setStatus(`자동 SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
+    if (targets.length > 0) {
+      progress.fail()
+    }
+    setStatus('SVG conversion failed. Please try again later.', 'danger')
+  } else if (targets.length > 0) {
+    progress.fail()
+    setStatus('SVG conversion failed. Please try again later.', 'danger')
   }
 }
 
@@ -5017,33 +5749,70 @@ function expandBounds(bounds, width, height, padding = 0) {
 }
 
 function detectSubjectBounds(imageData, width, height) {
-  const clone = new ImageData(new Uint8ClampedArray(imageData.data), width, height)
-  applyBackgroundRemoval(clone, width, height)
-  const alphaBounds = findAlphaBounds(clone, width, height, 8)
-  if (alphaBounds) {
-    return expandBounds(alphaBounds, width, height, 1)
+  if (!imageData || width <= 0 || height <= 0) {
+    return {
+      top: 0,
+      left: 0,
+      right: Math.max(0, width - 1),
+      bottom: Math.max(0, height - 1),
+    }
   }
 
-  const broad = findBoundingBox(imageData, width, height, 10, 70)
-  const tighter = findBoundingBox(imageData, width, height, 8, 42)
+  const { data } = imageData
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
 
-  const broadArea = boundsArea(broad)
-  const tightArea = boundsArea(tighter)
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width * 4
+    for (let x = 0; x < width; x += 1) {
+      const index = rowOffset + x * 4
+      const r = data[index]
+      const g = data[index + 1]
+      const b = data[index + 2]
+      const alpha = data[index + 3]
 
-  if (tighter && tightArea > 0 && tightArea <= broadArea * 0.92) {
-    return expandBounds(tighter, width, height, 1)
+      const isOpaque = alpha > 5
+      const isBrightWhite = r > 245 && g > 245 && b > 245
+
+      if (isOpaque && !isBrightWhite) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
   }
 
-  return expandBounds(broad, width, height, 1)
+  if (maxX === -1 || maxY === -1) {
+    return {
+      top: 0,
+      left: 0,
+      right: Math.max(0, width - 1),
+      bottom: Math.max(0, height - 1),
+    }
+  }
+
+  return {
+    top: Math.max(0, minY),
+    left: Math.max(0, minX),
+    right: Math.min(width - 1, maxX),
+    bottom: Math.min(height - 1, maxY),
+  }
 }
 
 function cropCanvas(canvas, ctx, bounds) {
-  const cropWidth = bounds.right - bounds.left + 1
-  const cropHeight = bounds.bottom - bounds.top + 1
+  const left = Math.max(0, Math.min(canvas.width - 1, bounds.left))
+  const top = Math.max(0, Math.min(canvas.height - 1, bounds.top))
+  const right = Math.max(left, Math.min(canvas.width - 1, bounds.right))
+  const bottom = Math.max(top, Math.min(canvas.height - 1, bounds.bottom))
+  const cropWidth = Math.max(1, right - left + 1)
+  const cropHeight = Math.max(1, bottom - top + 1)
   const cropped = createCanvas(cropWidth, cropHeight)
   const croppedCtx = cropped.getContext('2d')
   if (!croppedCtx) throw new Error('크롭 캔버스를 초기화할 수 없습니다.')
-  const imageData = ctx.getImageData(bounds.left, bounds.top, cropWidth, cropHeight)
+  const imageData = ctx.getImageData(left, top, cropWidth, cropHeight)
   croppedCtx.putImageData(imageData, 0, 0)
   return { canvas: cropped, ctx: croppedCtx }
 }
@@ -5969,7 +6738,7 @@ function renderResults() {
             <input type="checkbox" aria-label="결과 선택" data-role="result-checkbox" ${selected ? 'checked' : ''} />
           </label>
           <div class="asset-card__thumb">
-            <img src="${result.objectUrl}" alt="${result.name}" loading="lazy" />
+            <img src="${result.previewDataUrl || result.objectUrl}" alt="${result.name}" loading="lazy" />
           </div>
           <div class="asset-card__meta">
             <span class="asset-card__name" title="${result.name}">${result.name}</span>
@@ -6039,7 +6808,6 @@ async function ingestFiles(fileList) {
       displayAnalysisFor({ type: 'upload', id: newUploads[newUploads.length - 1].id })
       setStatus(`${newUploads.length}개의 이미지를 불러왔어요.${skipped > 0 ? ` (${skipped}개는 제한으로 건너뛰었습니다.)` : ''}`, 'success')
     }
-    await autoConvertUploadsToSvg(newUploads)
   } catch (error) {
     console.error(error)
     setStatus('이미지를 불러오는 중 문제가 발생했습니다.', 'danger')
@@ -6102,6 +6870,7 @@ async function processAutoCrop(upload) {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const bounds = detectSubjectBounds(imageData, canvas.width, canvas.height)
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
+  const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   return {
     blob,
@@ -6109,6 +6878,7 @@ async function processAutoCrop(upload) {
     height: cropped.height,
     operations: ['피사체 크롭'],
     name: `${baseName(upload.name)}__cropped.png`,
+    previewDataUrl,
   }
 }
 
@@ -6123,6 +6893,7 @@ async function processRemoveBackgroundAndCrop(upload) {
   const bounds = expandBounds(alphaBounds ?? fallbackBounds, canvas.width, canvas.height, 1)
 
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
+  const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   return {
     blob,
@@ -6130,6 +6901,7 @@ async function processRemoveBackgroundAndCrop(upload) {
     height: cropped.height,
     operations: ['배경 제거', '피사체 크롭'],
     name: `${baseName(upload.name)}__bg-cropped.png`,
+    previewDataUrl,
   }
 }
 
@@ -6233,6 +7005,7 @@ function findLatestResultForSource(sourceId) {
 function appendResult(upload, result, options = {}) {
   const { transferSelection = true, selectResult = true } = options
   const objectUrl = URL.createObjectURL(result.blob)
+  const previewDataUrl = typeof result.previewDataUrl === 'string' && result.previewDataUrl ? result.previewDataUrl : ''
   const record = {
     id: uuid(),
     sourceId: upload.id,
@@ -6242,6 +7015,7 @@ function appendResult(upload, result, options = {}) {
     size: result.blob.size,
     blob: result.blob,
     objectUrl,
+    previewDataUrl,
     operations: result.operations,
     createdAt: Date.now(),
   }
@@ -6289,6 +7063,10 @@ function replaceResult(existingResult, updatedPayload) {
     size: updatedPayload.blob.size,
     blob: updatedPayload.blob,
     objectUrl,
+    previewDataUrl:
+      typeof updatedPayload.previewDataUrl === 'string' && updatedPayload.previewDataUrl
+        ? updatedPayload.previewDataUrl
+        : previous.previewDataUrl,
     operations: updatedPayload.operations,
     updatedAt: Date.now(),
   }
@@ -6932,6 +7710,12 @@ function attachEventListeners() {
     elements.svgButton.addEventListener('click', convertSelectionsToSvg)
   }
 
+  if (elements.smartCropToggle instanceof HTMLInputElement) {
+    elements.smartCropToggle.addEventListener('change', () => {
+      setSmartCropPreference(elements.smartCropToggle.checked)
+    })
+  }
+
   if (elements.uploadList) {
     elements.uploadList.addEventListener('change', handleUploadListChange)
     elements.uploadList.addEventListener('click', handleUploadListClick)
@@ -7035,6 +7819,38 @@ function init() {
   const allowBypass = initialView !== 'home' && initialView !== 'admin'
   runtime.allowViewBypass = allowBypass
   state.view = initialView
+
+  const engineController = typeof AbortController !== 'undefined' ? new AbortController() : null
+  if (engineController) {
+    runtime.engine.controller = engineController
+  }
+
+  loadEngine({ signal: engineController?.signal })
+    .catch((error) => {
+      if (engineController?.signal?.aborted) {
+        return
+      }
+      console.error('SVG 변환 엔진을 불러오지 못했습니다.', error)
+    })
+    .finally(() => {
+      if (runtime.engine) {
+        runtime.engine.controller = null
+      }
+    })
+
+  if (engineController && typeof window !== 'undefined') {
+    window.addEventListener(
+      'pagehide',
+      () => {
+        if (!engineController.signal.aborted && engineState.status !== 'ready') {
+          engineController.abort()
+        }
+      },
+      { once: true },
+    )
+  }
+
+  initializeSmartCropPreference()
 
   initializeSubscriptionState()
   initializeAdminAuthSync()
