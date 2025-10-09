@@ -4664,6 +4664,10 @@ function createSvgConversionProgress(totalTargets = 1) {
       if (bar) {
         bar.style.width = '0%'
       }
+      if (subtext) {
+        subtext.textContent = ''
+      }
+      state.currentFraction = 0
     }, delay)
   }
 
@@ -4679,6 +4683,7 @@ function createSvgConversionProgress(totalTargets = 1) {
       if (!root || !bar || !message) return
       ensureVisible()
       bar.style.width = '0%'
+      state.currentFraction = 0
       message.textContent = 'Preparing SVG conversion…'
       scheduleLongWait()
     },
