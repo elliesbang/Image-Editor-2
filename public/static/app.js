@@ -23,37 +23,40 @@ const SUBSCRIPTION_PLANS = Object.freeze({
 })
 const SUBSCRIPTION_PLAN_ORDER = Object.freeze(['free', 'basic', 'standard', 'premium', 'michina'])
 const SUBSCRIPTION_PLAN_SUMMARY = Object.freeze({
-  free: '입문자를 위한 기본 편집 체험 플랜',
-  basic: '소규모 작업을 위한 월 10장 업로드 플랜',
-  standard: '팀을 위한 자동 최적화와 향상된 한도를 제공',
-  premium: '전문가용 고급 편집과 우선 지원 제공',
+  free: '입문자를 위한 기본 편집 플랜 (한 번에 최대 3장 업로드)',
+  basic: '작업당 최대 10장 업로드와 확장 도구를 제공',
+  standard: '팀 작업을 위한 20장 동시 업로드와 고급 기능',
+  premium: '전문가용 50장 동시 업로드와 우선 지원',
   michina: '미치나 챌린지 완주자를 위한 전용 혜택',
 })
 
 const SUBSCRIPTION_PLAN_FEATURES = Object.freeze({
   free: [
-    '월 최대 3장 업로드',
+    '한 번에 최대 3장 업로드',
+    '월 30장 다운로드 (1크레딧 = 1장)',
     '기본 편집 도구 체험',
     '키워드 분석 1회 체험 제공',
   ],
   basic: [
-    '월 최대 10장 업로드',
+    '한 번에 최대 10장 업로드',
+    '다운로드 횟수 제한 없음',
     'PNG → SVG 변환 5회 포함',
     '키워드 분석 5회 제공',
   ],
   standard: [
-    '월 최대 20장 업로드',
+    '한 번에 최대 20장 업로드',
+    '다운로드 횟수 제한 없음',
     '자동 최적화 · 배치 변환 지원',
     '키워드 분석 15회 제공',
   ],
   premium: [
-    '월 최대 50장 업로드',
-    '우선 처리 + SVG 결과 무제한 다운로드',
+    '한 번에 최대 50장 업로드',
+    '우선 처리 + 다운로드 무제한',
     '키워드 분석 50회 제공',
   ],
   michina: [
-    '챌린지 참가자 전용 무제한 업로드',
-    '이미지 편집 전체 기능 해금',
+    '한 번에 최대 50장 업로드',
+    '다운로드/편집 기능 무제한',
     '관리자 승인 · 종료 시 자동 전환',
   ],
 })
