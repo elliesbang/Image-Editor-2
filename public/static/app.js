@@ -7330,7 +7330,7 @@ function cleanSvgTree(root) {
   }
 }
 
-function attemptStrokeConversion(element, geometryCtor) {
+function attemptStrokeConversion(element) {
   let adjusted = false
   try {
     const strokeValue = getStyleProperty(element, 'stroke') || element.getAttribute('stroke')
@@ -7341,7 +7341,21 @@ function attemptStrokeConversion(element, geometryCtor) {
     }
 
     let converted = false
-    if (geometryCtor && element instanceof geometryCtor) {
+    const tagName = (element.tagName || '').toLowerCase()
+    const isShapeElement =
+      tagName === 'path' ||
+      tagName === 'rect' ||
+      tagName === 'circle' ||
+      tagName === 'ellipse' ||
+      tagName === 'line' ||
+      tagName === 'polyline' ||
+      tagName === 'polygon'
+    const canApproximate =
+      element &&
+      typeof element.getTotalLength === 'function' &&
+      typeof element.getPointAtLength === 'function'
+
+    if (canApproximate) {
       const strokeWidth = getStrokeWidthValue(element)
       if (Number.isFinite(strokeWidth) && strokeWidth > 0) {
         const outlinePath = approximateStrokeOutlinePath(element, strokeWidth)
@@ -7369,7 +7383,7 @@ function attemptStrokeConversion(element, geometryCtor) {
     }
 
     stripStrokeFromElement(element)
-    if (!element.getAttribute('fill')) {
+    if (isShapeElement && !element.getAttribute('fill')) {
       const fillStyle = getStyleProperty(element, 'fill')
       if (!fillStyle) {
         element.setAttribute('fill', 'none')
@@ -7405,14 +7419,32 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
       throw new Error('Unable to locate a valid SVG root element.')
     }
 
-    const geometryCtor = doc.defaultView?.SVGGeometryElement || window.SVGGeometryElement
-    const strokeNodes = Array.from(svg.querySelectorAll('[stroke]'))
-    for (const node of strokeNodes) {
-      const adjusted = attemptStrokeConversion(node, geometryCtor)
+    const nodesToProcess = new Set()
+    const strokeAttributeNodes = Array.from(svg.querySelectorAll('[stroke]'))
+    strokeAttributeNodes.forEach((node) => nodesToProcess.add(node))
+    const styledNodes = Array.from(svg.querySelectorAll('[style]'))
+    for (const node of styledNodes) {
+      const style = node.getAttribute('style')
+      if (style && /(^|;)\s*stroke\s*:/i.test(style)) {
+        nodesToProcess.add(node)
+      }
+    }
+    for (const node of nodesToProcess) {
+      const adjusted = attemptStrokeConversion(node)
       if (adjusted) {
         strokeAdjusted = true
       }
     }
+
+    const residualStrokeNodes = new Set()
+    Array.from(svg.querySelectorAll('[stroke]')).forEach((node) => residualStrokeNodes.add(node))
+    Array.from(svg.querySelectorAll('[style]')).forEach((node) => {
+      const style = node.getAttribute('style')
+      if (style && /(^|;)\s*stroke\s*:/i.test(style)) {
+        residualStrokeNodes.add(node)
+      }
+    })
+    residualStrokeNodes.forEach((node) => stripStrokeFromElement(node))
 
     cleanSvgTree(svg)
 
@@ -7428,21 +7460,32 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
 }
 
 async function createSanitizedSvgBlob(blob) {
+  if (!(blob instanceof Blob)) {
+    return { blob: new Blob(), strokeAdjusted: false, sanitized: false }
+  }
+
   const originalText = await blob.text()
-  const cleaned = sanitizeSVG(originalText)
-  return new Blob([cleaned.svgText], { type: 'image/svg+xml' })
+  const cleaned = sanitizeSVG(originalText, { trackAdjustments: true })
+  return {
+    blob: new Blob([cleaned.svgText], { type: 'image/svg+xml' }),
+    strokeAdjusted: Boolean(cleaned.strokeAdjusted),
+    sanitized: true,
+  }
 }
 
 async function resolveDownloadBlob(result) {
-  if (result?.type !== 'image/svg+xml') {
-    return result.blob
+  const isSvg = result?.type === 'image/svg+xml'
+  const blob = result?.blob instanceof Blob ? result.blob : null
+
+  if (!isSvg || !blob) {
+    return { blob: blob || new Blob(), strokeAdjusted: false, sanitized: false }
   }
 
   try {
-    return await createSanitizedSvgBlob(result.blob)
+    return await createSanitizedSvgBlob(blob)
   } catch (error) {
     console.error('SVG 정리 중 오류가 발생했습니다.', error)
-    return result.blob
+    return { blob, strokeAdjusted: false, sanitized: false }
   }
 }
 
@@ -7463,7 +7506,7 @@ async function downloadResults(ids, mode = 'selected') {
   try {
     if (targets.length === 1) {
       const [result] = targets
-      const downloadBlob = await resolveDownloadBlob(result)
+      const { blob: downloadBlob, sanitized } = await resolveDownloadBlob(result)
       const directUrl = URL.createObjectURL(downloadBlob)
       const link = document.createElement('a')
       link.href = directUrl
@@ -7473,14 +7516,25 @@ async function downloadResults(ids, mode = 'selected') {
       document.body.removeChild(link)
       URL.revokeObjectURL(directUrl)
       consumeCredits(actionType, targets.length)
-      setStatus(`${result.name} 파일을 다운로드했습니다.`, 'success')
+      const messages = []
+      if (sanitized && result.type === 'image/svg+xml') {
+        messages.push('stroke 변환이 완료되었습니다. 안전하게 저장되었습니다.')
+      }
+      messages.push(`${result.name} 파일을 다운로드했습니다.`)
+      setStatus(messages.join(' '), 'success')
       return
     }
 
     const zip = new window.JSZip()
+    let sanitizedSvgCount = 0
     for (const result of targets) {
       // eslint-disable-next-line no-await-in-loop
-      const downloadBlob = await resolveDownloadBlob(result)
+      const { blob: downloadBlob, sanitized } = await resolveDownloadBlob(result)
+      if (result.type === 'image/svg+xml') {
+        if (sanitized) {
+          sanitizedSvgCount += 1
+        }
+      }
       // eslint-disable-next-line no-await-in-loop
       const arrayBuffer = await downloadBlob.arrayBuffer()
       zip.file(result.name, arrayBuffer)
@@ -7495,7 +7549,12 @@ async function downloadResults(ids, mode = 'selected') {
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
     consumeCredits(actionType, targets.length)
-    setStatus(`${targets.length}개의 결과를 ZIP으로 다운로드했습니다.`, 'success')
+    const messages = []
+    if (sanitizedSvgCount > 0) {
+      messages.push('stroke 변환이 완료되었습니다. 안전하게 저장되었습니다.')
+    }
+    messages.push(`${targets.length}개의 결과를 ZIP으로 다운로드했습니다.`)
+    setStatus(messages.join(' '), 'success')
   } catch (error) {
     console.error(error)
     setStatus('다운로드 중 오류가 발생했습니다.', 'danger')
