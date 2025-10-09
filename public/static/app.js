@@ -462,6 +462,7 @@ const elements = {
 
 let statusTimer = null
 let imageTracerReadyPromise = null
+let hasAnnouncedClientSvgFallback = false
 let svgOptimizerReadyPromise = null
 
 function uuid() {
@@ -3577,6 +3578,10 @@ function ensureImageTracerReady() {
           return true
         } catch (error) {
           console.error(`ImageTracer load attempt ${attempt} failed`, error)
+          if (!hasAnnouncedClientSvgFallback) {
+            setStatus('클라이언트 변환 모드로 전환되었습니다. 브라우저에서 엔진을 다시 불러오는 중입니다.', 'info', 0)
+            hasAnnouncedClientSvgFallback = true
+          }
           if (attempt >= IMAGE_TRACER_MAX_RETRIES) {
             throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
           }
@@ -3684,7 +3689,7 @@ async function convertTargetToSvg(target, desiredColors) {
   await ensureImageTracerReady()
 
   if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
-    return { success: false, message: 'SVG 변환 도구를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.' }
+    return { success: false, message: 'SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.' }
   }
 
   try {
@@ -3813,19 +3818,19 @@ async function convertSelectionsToSvg() {
     console.error('ImageTracer load error', error)
     toggleProcessing(false)
     const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
-    setStatus(`SVG 변환 도구를 준비하지 못했습니다.${detail} 잠시 후 다시 시도해주세요.`, 'danger')
+    setStatus(`SVG 변환을 준비하는 중 문제가 발생했습니다.${detail} 잠시 후 다시 시도해주세요.`, 'danger')
     return
   }
 
   if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
     toggleProcessing(false)
-    setStatus('SVG 변환 도구를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    setStatus('SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
     return
   }
 
   const colorCount = resolveSvgColorCount()
 
-  setStatus('SVG로 변환하는 중입니다…', 'info', 0)
+  setStatus('SVG 변환 중...', 'info', 0)
 
   const conversions = []
   const targets = []
