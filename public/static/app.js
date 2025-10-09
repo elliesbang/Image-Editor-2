@@ -6720,7 +6720,7 @@ function attachEventListeners() {
       event.preventDefault()
       const targetUrl = '/?view=community'
       try {
-        const popup = window.open(targetUrl, '_blank', 'noopener')
+        const popup = window.open(targetUrl, '_blank', 'noopener,noreferrer')
         if (!popup || popup.closed) {
           window.location.href = targetUrl
         }
@@ -7070,7 +7070,7 @@ function init() {
   if (elements.communityLink instanceof HTMLAnchorElement) {
     const configuredUrl = '/?view=community'
     elements.communityLink.href = configuredUrl
-    elements.communityLink.rel = 'noopener'
+    elements.communityLink.rel = 'noopener noreferrer'
   }
 
   if (runtime.allowViewBypass) {
