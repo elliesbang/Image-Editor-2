@@ -4743,110 +4743,6 @@ async function convertSelectionsToSvg() {
   }
 }
 
-async function autoConvertUploadsToSvg(uploads) {
-  if (state.processing) return
-  if (!Array.isArray(uploads) || uploads.length === 0) return
-
-  const pngUploads = uploads.filter((upload) => upload && upload.type === 'image/png')
-  if (pngUploads.length === 0) {
-    return
-  }
-
-  if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-    console.info('자동 SVG 변환은 로그인 후에만 실행됩니다.')
-    return
-  }
-
-  if (!ensureActionAllowed('svg', { count: pngUploads.length, gate: 'results' })) {
-    return
-  }
-
-  toggleProcessing(true)
-
-  if (!assertEngineReady()) {
-    toggleProcessing(false)
-    recomputeStage()
-    return
-  }
-
-  const tracer = getEngineInstance()
-  if (!tracer || typeof tracer.imagedataToSVG !== 'function') {
-    toggleProcessing(false)
-    recomputeStage()
-    setStatus('SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
-    return
-  }
-
-  setStatus(
-    `브라우저에서 PNG ${pngUploads.length}개를 SVG로 자동 변환하는 중입니다…`,
-    'info',
-    0,
-  )
-
-  const conversions = []
-  const failures = []
-  let shouldAbort = false
-
-  try {
-    const colorCount = resolveSvgColorCount()
-
-    for (const upload of pngUploads) {
-      const target = { type: 'upload', item: upload }
-      // eslint-disable-next-line no-await-in-loop
-      const conversion = await convertTargetToSvg(target, colorCount)
-      if (!conversion.success || !conversion.blob) {
-        console.warn('자동 SVG 변환 실패', upload?.name, conversion.message)
-        failures.push({
-          name: upload?.name || '이름 없는 이미지',
-          message: conversion.message || '알 수 없는 이유로 실패했습니다.',
-        })
-        continue
-      }
-
-      const resultPayload = {
-        blob: conversion.blob,
-        width: conversion.width,
-        height: conversion.height,
-        operations: conversion.operations,
-        name: conversion.name,
-        type: 'image/svg+xml',
-      }
-
-      const record = appendResult(upload, resultPayload, { transferSelection: false, selectResult: true })
-      conversions.push({ ...conversion, record })
-    }
-  } catch (error) {
-    console.error('자동 SVG 변환 중 오류', error)
-    shouldAbort = true
-    setStatus('자동 SVG 변환 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-  } finally {
-    toggleProcessing(false)
-    recomputeStage()
-  }
-
-  if (shouldAbort) {
-    return
-  }
-
-  if (conversions.length > 0) {
-    consumeCredits('svg', conversions.length)
-    let message = `업로드한 PNG ${conversions.length}개를 SVG로 자동 변환했습니다.`
-    if (failures.length > 0) {
-      message += ` (${failures.length}개는 변환되지 않았습니다.)`
-      setStatus(message, 'warning')
-    } else {
-      setStatus(message, 'success')
-    }
-    const latest = conversions[0]?.record
-    if (latest?.id) {
-      displayAnalysisFor({ type: 'result', id: latest.id })
-    }
-  } else if (failures.length > 0) {
-    const firstFailure = failures[0]
-    setStatus(`자동 SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
-  }
-}
-
 async function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -6285,7 +6181,6 @@ async function ingestFiles(fileList) {
       displayAnalysisFor({ type: 'upload', id: newUploads[newUploads.length - 1].id })
       setStatus(`${newUploads.length}개의 이미지를 불러왔어요.${skipped > 0 ? ` (${skipped}개는 제한으로 건너뛰었습니다.)` : ''}`, 'success')
     }
-    await autoConvertUploadsToSvg(newUploads)
   } catch (error) {
     console.error(error)
     setStatus('이미지를 불러오는 중 문제가 발생했습니다.', 'danger')
