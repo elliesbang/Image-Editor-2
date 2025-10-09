@@ -1370,24 +1370,22 @@ function showAdminDashboardShortcut(options = {}) {
   openButton.textContent = '대시보드 바로가기'
   openButton.addEventListener('click', () => {
     closeAdminModal()
-    setView('admin')
-    if (elements.adminDashboard instanceof HTMLElement) {
-      elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-    if (elements.adminNavButton instanceof HTMLElement) {
-      elements.adminNavButton.focus()
-    }
+    const dashboardUrl = (() => {
+      try {
+        return new URL('/admin/dashboard', window.location.origin).toString()
+      } catch (error) {
+        return '/admin/dashboard'
+      }
+    })()
+    window.location.href = dashboardUrl
     dismissAdminDashboardPrompt()
     clearAdminNavHighlight()
   })
   actions.appendChild(openButton)
 
-  let adminUrl = '/?view=admin'
+  let adminUrl = '/admin/dashboard'
   try {
-    const url = new URL(window.location.href)
-    url.searchParams.set('view', 'admin')
-    url.hash = ''
-    adminUrl = url.toString()
+    adminUrl = new URL('/admin/dashboard', window.location.origin).toString()
   } catch (error) {
     // ignore URL parse errors
   }
@@ -1874,7 +1872,13 @@ function announceAdminDashboardAccess(options = {}) {
   }
 
   const duration = Number.isFinite(options.duration) ? options.duration : 8000
-  const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
+  const dashboardUrl = (() => {
+    try {
+      return new URL('/admin/dashboard', window.location.origin).toString()
+    } catch (error) {
+      return '/admin/dashboard'
+    }
+  })()
   setStatus({
     html: `
       <span><strong>관리자 로그인 완료!</strong> 대시보드를 현재 페이지에서 열거나 새 탭으로 띄울 수 있습니다.</span>
@@ -1917,14 +1921,17 @@ document.addEventListener('click', (event) => {
   if (action === 'open-admin-dashboard') {
     event.preventDefault()
     const openTarget = origin.dataset.openTarget || 'self'
-    const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
+    const dashboardUrl = (() => {
+      try {
+        return new URL('/admin/dashboard', window.location.origin).toString()
+      } catch (error) {
+        return '/admin/dashboard'
+      }
+    })()
     if (openTarget === 'new') {
       window.open(dashboardUrl, '_blank', 'noopener')
     } else {
-      setView('admin', { force: true })
-      if (elements.adminDashboard instanceof HTMLElement) {
-        elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
+      window.location.href = dashboardUrl
     }
     dismissAdminDashboardPrompt()
     clearAdminNavHighlight()
@@ -2148,6 +2155,7 @@ async function handleAdminLogin(event) {
     applyLoginProfile({ name: '관리자', email: sessionEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
     refreshAccessStates()
     closeAdminModal()
+    window.open('/admin/dashboard', '_blank', 'noopener')
     announceAdminDashboardAccess({ force: true })
     await fetchAdminParticipants()
     updateAdminUI()
@@ -5721,13 +5729,7 @@ function attachEventListeners() {
     elements.adminLoginButton.addEventListener('click', (event) => {
       event.preventDefault()
       if (state.admin.isLoggedIn) {
-        setView('admin')
-        if (elements.adminDashboard instanceof HTMLElement) {
-          elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }
-        if (elements.adminNavButton instanceof HTMLElement) {
-          elements.adminNavButton.focus()
-        }
+        window.open('/admin/dashboard', '_blank', 'noopener')
       } else {
         openAdminModal()
       }

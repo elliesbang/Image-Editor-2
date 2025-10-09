@@ -8,7 +8,7 @@ import { renderer } from './renderer'
 type Bindings = {
   OPENAI_API_KEY?: string
   ADMIN_EMAIL?: string
-  ADMIN_PASSWORD_HASH?: string
+  ADMIN_PASSWORD?: string
   SESSION_SECRET?: string
   ADMIN_SESSION_VERSION?: string
   ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
@@ -59,7 +59,7 @@ type AdminSessionPayload = {
 
 type AdminConfig = {
   email: string
-  passwordHash: string
+  password: string
   sessionSecret: string
   sessionVersion: string
 }
@@ -116,19 +116,6 @@ function isValidEmail(value: unknown): value is string {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
 }
 
-function toHex(buffer: ArrayBuffer) {
-  return Array.from(new Uint8Array(buffer))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-async function sha256(input: string) {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(input)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return toHex(digest)
-}
-
 function parsePositiveInteger(value: string | undefined, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
   const trimmed = (value ?? '').trim()
   const parsed = Number.parseInt(trimmed, 10)
@@ -137,6 +124,21 @@ function parsePositiveInteger(value: string | undefined, fallback: number, min =
     return boundedFallback
   }
   return Math.min(Math.max(parsed, min), max)
+}
+
+function toISOStringIfValid(value: string | undefined) {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return undefined
+  }
+  const parsed = new Date(trimmed)
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined
+  }
+  return parsed.toISOString()
 }
 
 function getFixedWindowBoundaries(now: number, windowSeconds: number) {
@@ -159,11 +161,11 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
     issues.push('ADMIN_EMAIL must be a valid email address')
   }
 
-  const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
-  if (!passwordHashRaw) {
-    issues.push('ADMIN_PASSWORD_HASH is not configured')
-  } else if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-    issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
+  const passwordRaw = env.ADMIN_PASSWORD?.trim() ?? ''
+  if (!passwordRaw) {
+    issues.push('ADMIN_PASSWORD is not configured')
+  } else if (passwordRaw.length < 8) {
+    issues.push('ADMIN_PASSWORD must be at least 8 characters long')
   }
 
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
@@ -187,7 +189,7 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   return {
     config: {
       email: emailRaw,
-      passwordHash: passwordHashRaw,
+      password: passwordRaw,
       sessionSecret: sessionSecretRaw,
       sessionVersion: sessionVersionRaw,
     },
@@ -668,10 +670,16 @@ async function listParticipants(env: Bindings) {
   return participants
 }
 
-async function upsertParticipants(env: Bindings, entries: { email: string; name?: string; endDate?: string }[]) {
+type ParticipantUpsertEntry = {
+  email: string
+  name?: string
+  startDate?: string
+  endDate?: string
+}
+
+async function upsertParticipants(env: Bindings, entries: ParticipantUpsertEntry[]) {
   const now = new Date()
-  const startISO = now.toISOString()
-  const defaultEnd = addBusinessDays(now, CHALLENGE_DURATION_BUSINESS_DAYS).toISOString()
+  const fallbackStartISO = now.toISOString()
 
   for (const entry of entries) {
     const email = entry.email.trim().toLowerCase()
@@ -679,11 +687,39 @@ async function upsertParticipants(env: Bindings, entries: { email: string; name?
       continue
     }
 
+    const resolvedStart = (() => {
+      if (entry.startDate) {
+        const parsed = new Date(entry.startDate)
+        if (!Number.isNaN(parsed.getTime())) {
+          return parsed
+        }
+      }
+      return new Date(fallbackStartISO)
+    })()
+
+    const resolvedEnd = (() => {
+      if (entry.endDate) {
+        const parsed = new Date(entry.endDate)
+        if (!Number.isNaN(parsed.getTime())) {
+          return parsed
+        }
+      }
+      return addBusinessDays(resolvedStart, CHALLENGE_DURATION_BUSINESS_DAYS)
+    })()
+
+    const startISO = resolvedStart.toISOString()
+    const endISO = resolvedEnd.toISOString()
+
     const existing = await getParticipant(env, email)
     if (existing) {
       existing.name = entry.name?.trim() || existing.name
       existing.plan = 'michina'
-      existing.endDate = entry.endDate || existing.endDate
+      if (entry.startDate) {
+        existing.startDate = startISO
+      }
+      if (entry.endDate) {
+        existing.endDate = endISO
+      }
       await saveParticipant(env, existing)
       continue
     }
@@ -693,7 +729,7 @@ async function upsertParticipants(env: Bindings, entries: { email: string; name?
       name: entry.name?.trim() || undefined,
       plan: 'michina',
       startDate: startISO,
-      endDate: entry.endDate || defaultEnd,
+      endDate: endISO,
       createdAt: startISO,
       updatedAt: startISO,
       submissions: {},
@@ -916,8 +952,7 @@ app.post('/api/auth/admin/login', async (c) => {
     return response
   }
 
-  const computedHash = await sha256(password)
-  if (computedHash.toLowerCase() !== adminConfig.passwordHash) {
+  if (password !== adminConfig.password) {
     await new Promise((resolve) => setTimeout(resolve, 350))
     const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
     const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
@@ -1118,7 +1153,8 @@ app.post('/api/admin/challenge/import', async (c) => {
   }
 
   let payload: {
-    participants?: Array<string | { email?: string; name?: string; endDate?: string }>
+    participants?: Array<string | { email?: string; name?: string; startDate?: string; endDate?: string }>
+    startDate?: string
     endDate?: string
   }
   try {
@@ -1127,27 +1163,25 @@ app.post('/api/admin/challenge/import', async (c) => {
     return c.json({ error: 'INVALID_JSON_BODY' }, 400)
   }
 
-  const entries: { email: string; name?: string; endDate?: string }[] = []
-  const overrideEndISO = typeof payload?.endDate === 'string' && !Number.isNaN(Date.parse(payload.endDate))
-    ? new Date(payload.endDate).toISOString()
-    : undefined
+  const entries: ParticipantUpsertEntry[] = []
+  const overrideStartISO = toISOStringIfValid(payload?.startDate)
+  const overrideEndISO = toISOStringIfValid(payload?.endDate)
 
   for (const item of payload?.participants ?? []) {
     if (typeof item === 'string') {
       const email = item.trim().toLowerCase()
       if (isValidEmail(email)) {
-        entries.push({ email, endDate: overrideEndISO })
+        entries.push({ email, startDate: overrideStartISO, endDate: overrideEndISO })
       }
       continue
     }
     if (typeof item === 'object' && item) {
       const email = typeof item.email === 'string' ? item.email.trim().toLowerCase() : ''
       if (!isValidEmail(email)) continue
-      const endDate = typeof item.endDate === 'string' && !Number.isNaN(Date.parse(item.endDate))
-        ? new Date(item.endDate).toISOString()
-        : overrideEndISO
+      const startDate = toISOStringIfValid(item.startDate) ?? overrideStartISO
+      const endDate = toISOStringIfValid(item.endDate) ?? overrideEndISO
       const name = typeof item.name === 'string' ? item.name.trim() : undefined
-      entries.push({ email, name, endDate: endDate })
+      entries.push({ email, name, startDate, endDate })
     }
   }
 
@@ -1294,6 +1328,199 @@ app.post('/api/admin/challenge/backup/snapshot', async (c) => {
   }
 
   return c.json({ ok: true, key: snapshotKey, participantCount: participants.length })
+})
+
+app.get('/admin/dashboard', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    const response = c.redirect('/?view=home', 302)
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() ?? ''
+
+  const response = c.render(
+    <>
+      <main class="admin-dashboard" data-role="admin-dashboard" aria-labelledby="admin-dashboard-title">
+        <header class="admin-dashboard__header">
+          <div class="admin-dashboard__intro">
+            <p class="admin-dashboard__eyebrow">관리자 도구</p>
+            <h1 class="admin-dashboard__title" id="admin-dashboard-title">
+              Ellie Image Editor Dashboard
+            </h1>
+            <p class="admin-dashboard__welcome">{adminEmail}님, 환영합니다.</p>
+          </div>
+          <button class="admin-dashboard__logout" type="button" data-role="dashboard-logout">
+            로그아웃
+          </button>
+        </header>
+
+        <section class="admin-dashboard__section admin-dashboard__section--overview" aria-labelledby="admin-dashboard-overview">
+          <div class="admin-dashboard__section-header">
+            <h2 class="admin-dashboard__section-title" id="admin-dashboard-overview">
+              미치나 운영 핵심 기능
+            </h2>
+            <p class="admin-dashboard__section-subtitle">
+              커뮤니티 운영과 참여자 관리를 위한 핵심 도구를 한 곳에서 확인하세요.
+            </p>
+          </div>
+          <ul class="admin-dashboard__feature-list">
+            <li>미치나 명단 csv 파일 업로드</li>
+            <li>미치나 미션 완료 이름별 현황</li>
+            <li>미치나 시작날짜부터 끝나는 날짜 선택 가능</li>
+            <li>미치나 커뮤니티 접근 가능</li>
+          </ul>
+        </section>
+
+        <section class="admin-dashboard__section" aria-labelledby="admin-dashboard-upload">
+          <div class="admin-dashboard__section-header">
+            <div>
+              <h2 class="admin-dashboard__section-title" id="admin-dashboard-upload">
+                참가자 명단 업로드
+              </h2>
+              <p class="admin-dashboard__section-subtitle">
+                CSV 파일을 업로드하고 미션 기간을 설정해 참가자 정보를 일괄 등록하세요.
+              </p>
+            </div>
+          </div>
+          <form class="admin-dashboard__card" data-role="dashboard-upload-form" aria-describedby="dashboard-upload-hint">
+            <div class="admin-dashboard__field">
+              <label class="admin-dashboard__label" for="dashboardUploadFile">참가자 CSV 파일</label>
+              <input
+                id="dashboardUploadFile"
+                type="file"
+                accept=".csv,text/csv"
+                required
+                data-role="dashboard-upload-file"
+              />
+              <p class="admin-dashboard__hint" id="dashboard-upload-hint">
+                열 순서는 <strong>email,name,endDate</strong> 형식을 권장합니다. 헤더 행은 선택 사항입니다.
+              </p>
+            </div>
+            <div class="admin-dashboard__dates">
+              <div class="admin-dashboard__field">
+                <label class="admin-dashboard__label" for="dashboardStartDate">미션 시작 날짜</label>
+                <input id="dashboardStartDate" type="date" data-role="dashboard-start-date" />
+              </div>
+              <div class="admin-dashboard__field">
+                <label class="admin-dashboard__label" for="dashboardEndDate">미션 종료 날짜</label>
+                <input id="dashboardEndDate" type="date" data-role="dashboard-end-date" />
+              </div>
+            </div>
+            <div class="admin-dashboard__form-actions">
+              <button class="admin-dashboard__primary" type="submit">명단 업로드</button>
+              <button class="admin-dashboard__ghost" type="button" data-role="dashboard-download-template">
+                CSV 템플릿 받기
+              </button>
+            </div>
+          </form>
+          <p class="admin-dashboard__status" data-role="dashboard-upload-status" aria-live="polite" hidden></p>
+        </section>
+
+        <section class="admin-dashboard__section" aria-labelledby="admin-dashboard-stats">
+          <div class="admin-dashboard__section-header admin-dashboard__section-header--inline">
+            <div>
+              <h2 class="admin-dashboard__section-title" id="admin-dashboard-stats">참가자 현황</h2>
+              <p class="admin-dashboard__section-subtitle">현재 등록된 미치나 참가자 상태를 요약해 보여드립니다.</p>
+            </div>
+            <div class="admin-dashboard__section-actions">
+              <button class="admin-dashboard__ghost" type="button" data-role="dashboard-refresh-stats">
+                현황 새로고침
+              </button>
+            </div>
+          </div>
+          <dl class="admin-dashboard__stats">
+            <div class="admin-dashboard__stat">
+              <dt>총 참가자</dt>
+              <dd data-role="dashboard-total-participants">0명</dd>
+            </div>
+            <div class="admin-dashboard__stat">
+              <dt>미션 완료</dt>
+              <dd data-role="dashboard-completed-count">0명</dd>
+            </div>
+            <div class="admin-dashboard__stat">
+              <dt>진행 중</dt>
+              <dd data-role="dashboard-pending-count">0명</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="admin-dashboard__section" aria-labelledby="admin-dashboard-completions">
+          <div class="admin-dashboard__section-header admin-dashboard__section-header--inline">
+            <div>
+              <h2 class="admin-dashboard__section-title" id="admin-dashboard-completions">
+                미션 완료 이름별 현황
+              </h2>
+              <p class="admin-dashboard__section-subtitle">
+                완료한 참가자의 이름과 완료 일자를 확인하고 CSV로 내보낼 수 있습니다.
+              </p>
+            </div>
+            <div class="admin-dashboard__section-actions">
+              <button class="admin-dashboard__ghost" type="button" data-role="dashboard-run-check">
+                완료 상태 갱신
+              </button>
+              <button class="admin-dashboard__ghost" type="button" data-role="dashboard-refresh-completions">
+                목록 새로고침
+              </button>
+              <button class="admin-dashboard__primary" type="button" data-role="dashboard-download-completions">
+                CSV 다운로드
+              </button>
+            </div>
+          </div>
+          <div class="admin-dashboard__table-wrapper">
+            <table class="admin-dashboard__table">
+              <thead>
+                <tr>
+                  <th scope="col">이름</th>
+                  <th scope="col">이메일</th>
+                  <th scope="col">완료 일시</th>
+                  <th scope="col">총 제출 수</th>
+                </tr>
+              </thead>
+              <tbody data-role="dashboard-completions-body"></tbody>
+            </table>
+            <p class="admin-dashboard__empty" data-role="dashboard-completions-empty">
+              아직 완료된 참가자가 없습니다.
+            </p>
+          </div>
+          <p class="admin-dashboard__status" data-role="dashboard-completions-status" aria-live="polite" hidden></p>
+        </section>
+
+        <section class="admin-dashboard__section admin-dashboard__section--community" aria-labelledby="admin-dashboard-community">
+          <div class="admin-dashboard__section-header">
+            <div>
+              <h2 class="admin-dashboard__section-title" id="admin-dashboard-community">
+                미치나 커뮤니티 바로가기
+              </h2>
+              <p class="admin-dashboard__section-subtitle">
+                참여자와 소통하고 진행 상황을 공유하는 커뮤니티 공간으로 이동합니다.
+              </p>
+            </div>
+          </div>
+          {communityUrl ? (
+            <a
+              class="admin-dashboard__community-link"
+              href={communityUrl}
+              target="_blank"
+              rel="noopener"
+              data-role="dashboard-community-link"
+            >
+              미치나 커뮤니티 열기
+            </a>
+          ) : (
+            <p class="admin-dashboard__status admin-dashboard__status--muted">
+              MICHINA_COMMUNITY_URL 환경 변수가 설정되어 있지 않아 커뮤니티 링크를 표시할 수 없습니다.
+            </p>
+          )}
+        </section>
+      </main>
+      <script type="module" src="/static/admin-dashboard.js"></script>
+    </>,
+  )
+
+  response.headers.set('Cache-Control', 'no-store')
+  return response
 })
 
 app.get('/api/challenge/profile', async (c) => {
@@ -2284,7 +2511,9 @@ app.get('/', (c) => {
             <a href="/privacy">개인정보 처리방침</a>
             <a href="/terms">이용약관</a>
             <a href="/cookies">쿠키 정책</a>
-            <a href="/?admin=1" target="_blank" rel="noopener">관리자 전용</a>
+            <button type="button" class="site-footer__link-button" data-role="admin-login">
+              관리자 전용
+            </button>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>

@@ -85,7 +85,7 @@
 | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | Cloudflare Pages Secret 권장 |
 | `ADMIN_EMAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
-| `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수 | `echo -n 'password' | shasum -a 256` |
+| `ADMIN_PASSWORD` | 관리자 비밀번호(평문) | 필수 | 최소 8자 이상 권장 |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |
 | `ADMIN_SESSION_VERSION` | 관리자 세션 버전 문자열 | 선택 (기본 `1`) | 변경 시 기존 쿠키 무효화 |
 | `ADMIN_RATE_LIMIT_MAX_ATTEMPTS` | 관리자 로그인 허용 시도 횟수 | 선택 (기본 `5`) | 1~20 범위 |
@@ -94,7 +94,7 @@
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 클라이언트 ID | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
 | `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 현재 Google 로그인 비활성화(미입력 가능) |
-| `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
+| `MICHINA_COMMUNITY_URL` | 미치나 커뮤니티 이동 URL | 선택 | 미설정 시 기본 커뮤니티 안내 페이지 연결 |
 | `CHALLENGE_KV` | Cloudflare KV 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | Cloudflare KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 
@@ -109,7 +109,7 @@ npm install
 cat <<'EOF' > .dev.vars
 OPENAI_API_KEY="sk-..."
 ADMIN_EMAIL="admin@example.com"
-ADMIN_PASSWORD_HASH="<SHA256_HEX>"
+ADMIN_PASSWORD="<안전한_비밀번호>"
 SESSION_SECRET="<랜덤 32자 이상>"
 ADMIN_SESSION_VERSION="1"
 ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
@@ -136,7 +136,7 @@ curl http://localhost:3000/api/health
 ```
 - `ecosystem.config.cjs`: `wrangler pages dev dist --ip 0.0.0.0 --port 3000`
 - KV 개발용: `wrangler pages dev dist --d1=<name> --local` 형태로 수정 가능
-- 비밀번호 해시 생성 예시: `echo -n 'test1234!' | shasum -a 256 | awk '{print tolower($1)}'`
+- 관리자 비밀번호는 비밀번호 관리자에서 생성한 고유 난수를 사용하고 Cloudflare Secret으로만 저장하세요.
 
 ## 테스트/검증 로그
 - 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, Google 로그인 비활성화 및 이메일 로그인 전용 UX, 커뮤니티 헤더 링크, 관리자 레이트 리밋, 상태 배너 CTA 템플릿)
@@ -190,7 +190,7 @@ curl http://localhost:3000/api/health
    npx wrangler pages deploy dist --project-name <project-name>
    ```
    - 배포 성공 후 README `URL` 섹션과 `meta_info`에 최종 프로젝트명 기록
-   - Secrets: `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+   - Secrets: `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
