@@ -1,6 +1,14 @@
 const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
 const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
+const IMAGE_TRACER_SOURCES = [
+  IMAGETRACER_SRC,
+  'https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
+]
+const IMAGE_TRACER_MAX_RETRIES = 3
+const IMAGE_TRACER_RETRY_DELAY = 900
+const IMAGE_TRACER_RETRY_JITTER = 500
+const SVGO_BROWSER_SRC = 'https://cdn.jsdelivr.net/npm/svgo@3.3.2/dist/svgo.browser.js'
 const FREEMIUM_INITIAL_CREDITS = 30
 const MICHINA_INITIAL_CREDITS = 10000
 const CREDIT_COSTS = {
@@ -377,6 +385,7 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  analysisCopyButton: document.querySelector('[data-action="copy-analysis"]'),
   adminNavButton: document.querySelector('[data-role="admin-nav"]'),
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
   adminModal: document.querySelector('[data-role="admin-modal"]'),
@@ -451,9 +460,17 @@ const elements = {
 
 let statusTimer = null
 let imageTracerReadyPromise = null
+let svgOptimizerReadyPromise = null
 
 function uuid() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random()}`
+}
+
+function wait(ms, jitter = 0) {
+  const delay = Math.max(0, ms + (jitter ? Math.floor(Math.random() * jitter) : 0))
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delay)
+  })
 }
 
 function formatBytes(bytes) {
@@ -864,6 +881,16 @@ function toggleProcessing(isProcessing) {
 
   if (elements.analysisButton instanceof HTMLButtonElement) {
     elements.analysisButton.disabled = isProcessing
+  }
+
+  if (elements.analysisCopyButton instanceof HTMLButtonElement) {
+    if (isProcessing) {
+      elements.analysisCopyButton.disabled = true
+    } else {
+      const target = resolveActiveTarget()
+      const key = getAnalysisKey(target)
+      elements.analysisCopyButton.disabled = !key || !state.analysis.has(key)
+    }
   }
 
   if (elements.svgButton instanceof HTMLButtonElement) {
@@ -3440,6 +3467,13 @@ function ensureScriptElement(src, dataLib) {
   return script
 }
 
+function removeScriptElement(dataLib) {
+  const script = document.querySelector(`script[data-lib="${dataLib}"]`)
+  if (script?.parentElement) {
+    script.parentElement.removeChild(script)
+  }
+}
+
 function waitForCondition(condition, timeout = 10000, interval = 60) {
   return new Promise((resolve, reject) => {
     const start = Date.now()
@@ -3466,37 +3500,101 @@ function waitForCondition(condition, timeout = 10000, interval = 60) {
   })
 }
 
+async function loadImageTracerWithRetry(attempt = 1) {
+  const sourceIndex = Math.min(attempt - 1, IMAGE_TRACER_SOURCES.length - 1)
+  const scriptSrc = IMAGE_TRACER_SOURCES[sourceIndex] || IMAGETRACER_SRC
+
+  try {
+    delete window.ImageTracer
+  } catch (error) {
+    console.warn('ImageTracer 전역 초기화 실패', error)
+  }
+
+  removeScriptElement('imagetracer')
+  const script = ensureScriptElement(scriptSrc, 'imagetracer')
+  if (!script) {
+    throw new Error('SVG 변환 도구 스크립트를 초기화하지 못했습니다.')
+  }
+
+  return new Promise((resolve, reject) => {
+    const onScriptError = (event) => {
+      script.removeEventListener('error', onScriptError)
+      reject(new Error(`SVG 변환 도구를 불러오는 중 오류가 발생했습니다. (${event?.type || 'error'})`))
+    }
+
+    script.addEventListener('error', onScriptError, { once: true })
+
+    waitForCondition(
+      () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
+      12000,
+      80,
+    )
+      .then(() => {
+        script.removeEventListener('error', onScriptError)
+        resolve(true)
+      })
+      .catch((error) => {
+        script.removeEventListener('error', onScriptError)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      })
+  })
+}
+
 function ensureImageTracerReady() {
   if (window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function') {
     return Promise.resolve(true)
   }
 
   if (!imageTracerReadyPromise) {
-    const loadPromise = new Promise((resolve, reject) => {
-      const script = ensureScriptElement(IMAGETRACER_SRC, 'imagetracer')
+    imageTracerReadyPromise = (async () => {
+      for (let attempt = 1; attempt <= IMAGE_TRACER_MAX_RETRIES; attempt += 1) {
+        try {
+          await loadImageTracerWithRetry(attempt)
+          return true
+        } catch (error) {
+          console.error(`ImageTracer load attempt ${attempt} failed`, error)
+          if (attempt >= IMAGE_TRACER_MAX_RETRIES) {
+            throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
+          }
+          await wait(IMAGE_TRACER_RETRY_DELAY * attempt, IMAGE_TRACER_RETRY_JITTER)
+        }
+      }
+      throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
+    })().catch((error) => {
+      imageTracerReadyPromise = null
+      throw error
+    })
+  }
+
+  return imageTracerReadyPromise
+}
+
+function ensureSvgOptimizerReady() {
+  if (window.SVGO?.optimize || window.svgo?.optimize) {
+    return Promise.resolve(true)
+  }
+
+  if (!svgOptimizerReadyPromise) {
+    svgOptimizerReadyPromise = new Promise((resolve, reject) => {
+      const script = ensureScriptElement(SVGO_BROWSER_SRC, 'svg-optimizer')
       if (!script) {
-        reject(new Error('SVG 변환 엔진 스크립트를 초기화하지 못했습니다.'))
+        reject(new Error('SVG 최적화 도구를 불러올 수 없습니다.'))
         return
       }
 
-      const fail = (reason) => {
-        script.removeEventListener('error', onScriptError)
-        if (script.parentElement) {
-          script.parentElement.removeChild(script)
-        }
-        const error = reason instanceof Error ? reason : new Error(String(reason || 'SVG 변환 엔진을 불러오는 중 오류가 발생했습니다.'))
-        reject(error)
-      }
-
       const onScriptError = (event) => {
-        fail(new Error(`SVG 변환 엔진을 불러오는 중 네트워크 오류가 발생했습니다. (${event?.type || 'error'})`))
+        script.removeEventListener('error', onScriptError)
+        reject(new Error(`SVG 최적화 도구 로딩 중 오류가 발생했습니다. (${event?.type || 'error'})`))
       }
 
       script.addEventListener('error', onScriptError, { once: true })
 
       waitForCondition(
-        () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
-        12000,
+        () => {
+          const optimizer = window.SVGO || window.svgo
+          return optimizer && typeof optimizer.optimize === 'function'
+        },
+        6000,
         80,
       )
         .then(() => {
@@ -3504,17 +3602,43 @@ function ensureImageTracerReady() {
           resolve(true)
         })
         .catch((error) => {
-          fail(error)
+          script.removeEventListener('error', onScriptError)
+          reject(error instanceof Error ? error : new Error(String(error)))
         })
-    })
-
-    imageTracerReadyPromise = loadPromise.catch((error) => {
-      imageTracerReadyPromise = null
+    }).catch((error) => {
+      svgOptimizerReadyPromise = null
       throw error
     })
   }
 
-  return imageTracerReadyPromise
+  return svgOptimizerReadyPromise
+}
+
+async function optimizeSvgContent(svgString) {
+  if (typeof svgString !== 'string' || svgString.length === 0) {
+    return svgString
+  }
+
+  try {
+    await ensureSvgOptimizerReady()
+  } catch (error) {
+    console.warn('SVG 최적화 도구 준비 실패', error)
+    return svgString
+  }
+
+  try {
+    const optimizer = window.SVGO || window.svgo
+    if (optimizer && typeof optimizer.optimize === 'function') {
+      const result = await optimizer.optimize(svgString, { multipass: true })
+      if (result && typeof result.data === 'string' && result.data.length > 0) {
+        return result.data
+      }
+    }
+  } catch (error) {
+    console.warn('SVG 최적화 중 오류', error)
+  }
+
+  return svgString
 }
 
 async function resolveDataUrlForTarget(target) {
@@ -3536,7 +3660,7 @@ async function convertTargetToSvg(target, desiredColors) {
   await ensureImageTracerReady()
 
   if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
-    return { success: false, message: 'SVG 변환 엔진을 불러오지 못했습니다.' }
+    return { success: false, message: 'SVG 변환 도구를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.' }
   }
 
   try {
@@ -3580,6 +3704,8 @@ async function convertTargetToSvg(target, desiredColors) {
     for (let step = 0; step <= adjustments.length; step += 1) {
       svgString = window.ImageTracer.imagedataToSVG(imageData, options)
       svgString = injectViewBoxAttribute(svgString, width, height)
+      // eslint-disable-next-line no-await-in-loop
+      svgString = await optimizeSvgContent(svgString)
       svgBlob = new Blob([svgString], { type: 'image/svg+xml' })
       if (svgBlob.size <= MAX_SVG_BYTES) {
         sizeOk = true
@@ -3618,8 +3744,19 @@ async function convertTargetToSvg(target, desiredColors) {
     }
   } catch (error) {
     console.error('SVG 변환 중 오류', error)
-    return { success: false, message: 'SVG 변환 과정에서 오류가 발생했습니다.' }
+    return { success: false, message: '이미지를 벡터로 변환하는 중 문제가 발생했습니다.' }
   }
+}
+
+function resolveSvgColorCount() {
+  let colorCount = 4
+  if (elements.svgColorSelect instanceof HTMLSelectElement) {
+    const parsed = parseInt(elements.svgColorSelect.value, 10)
+    if (!Number.isNaN(parsed)) {
+      colorCount = parsed
+    }
+  }
+  return colorCount
 }
 
 async function convertSelectionsToSvg() {
@@ -3649,23 +3786,17 @@ async function convertSelectionsToSvg() {
     console.error('ImageTracer load error', error)
     toggleProcessing(false)
     const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
-    setStatus(`SVG 변환 엔진을 불러오는 중 문제가 발생했습니다.${detail} 새로고침 후 다시 시도해주세요.`, 'danger')
+    setStatus(`SVG 변환 도구를 준비하지 못했습니다.${detail} 잠시 후 다시 시도해주세요.`, 'danger')
     return
   }
 
   if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
     toggleProcessing(false)
-    setStatus('SVG 변환 엔진을 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.', 'danger')
+    setStatus('SVG 변환 도구를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
     return
   }
 
-  let colorCount = 4
-  if (elements.svgColorSelect instanceof HTMLSelectElement) {
-    const parsed = parseInt(elements.svgColorSelect.value, 10)
-    if (!Number.isNaN(parsed)) {
-      colorCount = parsed
-    }
-  }
+  const colorCount = resolveSvgColorCount()
 
   setStatus('SVG로 변환하는 중입니다…', 'info', 0)
 
@@ -3738,6 +3869,96 @@ async function convertSelectionsToSvg() {
   } else if (failures.length > 0) {
     const firstFailure = failures[0]
     setStatus(`SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
+  }
+}
+
+async function autoConvertUploadsToSvg(uploads) {
+  if (state.processing) return
+  if (!Array.isArray(uploads) || uploads.length === 0) return
+
+  const pngUploads = uploads.filter((upload) => upload && upload.type === 'image/png')
+  if (pngUploads.length === 0) {
+    return
+  }
+
+  if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
+    console.info('자동 SVG 변환은 로그인 후에만 실행됩니다.')
+    return
+  }
+
+  if (!ensureActionAllowed('svg', { count: pngUploads.length, gate: 'results' })) {
+    return
+  }
+
+  setStatus(`${pngUploads.length}개의 PNG를 SVG로 자동 변환하는 중입니다…`, 'info', 0)
+  toggleProcessing(true)
+
+  const conversions = []
+  const failures = []
+  let shouldAbort = false
+
+  try {
+    await ensureImageTracerReady()
+    if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
+      throw new Error('SVG 변환 도구를 사용할 수 없습니다.')
+    }
+
+    const colorCount = resolveSvgColorCount()
+
+    for (const upload of pngUploads) {
+      const target = { type: 'upload', item: upload }
+      // eslint-disable-next-line no-await-in-loop
+      const conversion = await convertTargetToSvg(target, colorCount)
+      if (!conversion.success || !conversion.blob) {
+        console.warn('자동 SVG 변환 실패', upload?.name, conversion.message)
+        failures.push({
+          name: upload?.name || '이름 없는 이미지',
+          message: conversion.message || '알 수 없는 이유로 실패했습니다.',
+        })
+        continue
+      }
+
+      const resultPayload = {
+        blob: conversion.blob,
+        width: conversion.width,
+        height: conversion.height,
+        operations: conversion.operations,
+        name: conversion.name,
+        type: 'image/svg+xml',
+      }
+
+      const record = appendResult(upload, resultPayload, { transferSelection: false, selectResult: true })
+      conversions.push({ ...conversion, record })
+    }
+  } catch (error) {
+    console.error('자동 SVG 변환 중 오류', error)
+    shouldAbort = true
+    setStatus('자동 SVG 변환 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  } finally {
+    toggleProcessing(false)
+    recomputeStage()
+  }
+
+  if (shouldAbort) {
+    return
+  }
+
+  if (conversions.length > 0) {
+    consumeCredits('svg', conversions.length)
+    let message = `업로드한 PNG ${conversions.length}개를 SVG로 자동 변환했습니다.`
+    if (failures.length > 0) {
+      message += ` (${failures.length}개는 변환되지 않았습니다.)`
+      setStatus(message, 'warning')
+    } else {
+      setStatus(message, 'success')
+    }
+    const latest = conversions[0]?.record
+    if (latest?.id) {
+      displayAnalysisFor({ type: 'result', id: latest.id })
+    }
+  } else if (failures.length > 0) {
+    const firstFailure = failures[0]
+    setStatus(`자동 SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
   }
 }
 
@@ -4250,8 +4471,12 @@ function displayAnalysisFor(target) {
   state.activeTarget = normalizedTarget
 
   const button = elements.analysisButton instanceof HTMLButtonElement ? elements.analysisButton : null
+  const copyButton = elements.analysisCopyButton instanceof HTMLButtonElement ? elements.analysisCopyButton : null
   if (button) {
     button.disabled = state.processing || !normalizedTarget
+  }
+  if (copyButton) {
+    copyButton.disabled = true
   }
 
   const resetView = (hintText) => {
@@ -4293,6 +4518,9 @@ function displayAnalysisFor(target) {
   elements.analysisHeadline.textContent = data.title || ''
   elements.analysisKeywords.innerHTML = data.keywords.map((keyword) => `<li>${keyword}</li>`).join('')
   elements.analysisSummary.textContent = data.summary
+  if (copyButton) {
+    copyButton.disabled = state.processing
+  }
 }
 
 function rgbToHsl(r, g, b) {
@@ -4929,9 +5157,6 @@ async function analyzeCurrentImage() {
 
     const statusHeadline = analysis.title || analysis.keywords.slice(0, 3).join(', ')
     if (usedFallback) {
-      const baseMessage = statusHeadline
-        ? `로컬 분석으로 키워드 생성: ${statusHeadline}`
-        : '로컬 분석으로 키워드를 생성했습니다.'
       let reasonMessage = ''
       if (fallbackReason) {
         if (fallbackReason.includes('OPENAI_API_KEY_NOT_CONFIGURED')) {
@@ -4940,7 +5165,7 @@ async function analyzeCurrentImage() {
           reasonMessage = ` (사유: ${fallbackReason})`
         }
       }
-      setStatus(`${baseMessage}${reasonMessage}`, 'danger')
+      setStatus(`키워드 분석 기능이 일시적으로 중단되었습니다. 로컬 분석 결과를 대신 제공했습니다.${reasonMessage}`, 'warning')
     } else {
       const successMessage = statusHeadline
         ? `OpenAI 키워드 분석 완료: ${statusHeadline}`
@@ -4949,7 +5174,68 @@ async function analyzeCurrentImage() {
     }
   } catch (error) {
     console.error(error)
-    setStatus('이미지 분석 중 오류가 발생했습니다.', 'danger')
+    setStatus('키워드 분석 기능이 일시적으로 중단되었습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  }
+}
+
+async function copyAnalysisToClipboard() {
+  const target = resolveActiveTarget()
+  if (!target) {
+    setStatus('복사할 분석 결과가 없습니다.', 'danger')
+    return
+  }
+
+  const key = getAnalysisKey(target)
+  if (!key || !state.analysis.has(key)) {
+    setStatus('먼저 키워드 분석을 실행해주세요.', 'danger')
+    return
+  }
+
+  const data = state.analysis.get(key)
+  if (!data) {
+    setStatus('복사할 분석 결과가 없습니다.', 'danger')
+    return
+  }
+
+  const lines = []
+  if (data.title) {
+    lines.push(`# ${data.title}`)
+  }
+  if (data.summary) {
+    if (lines.length > 0) lines.push('')
+    lines.push(data.summary)
+  }
+  if (Array.isArray(data.keywords) && data.keywords.length > 0) {
+    lines.push('')
+    lines.push('키워드 25개:')
+    data.keywords.forEach((keyword, index) => {
+      lines.push(`${index + 1}. ${keyword}`)
+    })
+  }
+
+  const text = lines.join('\n')
+
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'absolute'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const successful = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (!successful) {
+        throw new Error('execCommand copy failed')
+      }
+    }
+    setStatus('키워드와 제목을 클립보드에 복사했습니다.', 'success')
+  } catch (error) {
+    console.error('analysis copy error', error)
+    setStatus('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해주세요.', 'danger')
   }
 }
 
@@ -5077,6 +5363,7 @@ async function ingestFiles(fileList) {
       displayAnalysisFor({ type: 'upload', id: newUploads[newUploads.length - 1].id })
       setStatus(`${newUploads.length}개의 이미지를 불러왔어요.${skipped > 0 ? ` (${skipped}개는 제한으로 건너뛰었습니다.)` : ''}`, 'success')
     }
+    await autoConvertUploadsToSvg(newUploads)
   } catch (error) {
     console.error(error)
     setStatus('이미지를 불러오는 중 문제가 발생했습니다.', 'danger')
@@ -5720,16 +6007,18 @@ function attachEventListeners() {
   if (elements.adminLoginButton instanceof HTMLElement) {
     elements.adminLoginButton.addEventListener('click', (event) => {
       event.preventDefault()
-      if (state.admin.isLoggedIn) {
-        setView('admin')
-        if (elements.adminDashboard instanceof HTMLElement) {
-          elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      const loginUrl = (() => {
+        try {
+          return new URL('/login.html', window.location.origin).toString()
+        } catch (error) {
+          console.warn('관리자 로그인 경로 계산 실패', error)
+          return '/login.html'
         }
-        if (elements.adminNavButton instanceof HTMLElement) {
-          elements.adminNavButton.focus()
-        }
-      } else {
-        openAdminModal()
+      })()
+
+      const popup = window.open(loginUrl, '_blank', 'noopener')
+      if (!popup || popup.closed) {
+        window.location.href = loginUrl
       }
     })
   }
@@ -5851,6 +6140,10 @@ function attachEventListeners() {
 
   if (elements.analysisButton instanceof HTMLButtonElement) {
     elements.analysisButton.addEventListener('click', analyzeCurrentImage)
+  }
+
+  if (elements.analysisCopyButton instanceof HTMLButtonElement) {
+    elements.analysisCopyButton.addEventListener('click', copyAnalysisToClipboard)
   }
 
   if (elements.resizeInput instanceof HTMLInputElement) {

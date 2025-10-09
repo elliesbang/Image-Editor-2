@@ -100,6 +100,7 @@ const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
+const ADMIN_LOGIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL ?? ''
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
@@ -2258,9 +2259,14 @@ app.get('/', (c) => {
             <section class="analysis" data-role="analysis-panel">
               <div class="analysis__header">
                 <span class="analysis__title">키워드 분석</span>
-                <button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">
-                  분석 실행
-                </button>
+                <div class="analysis__actions">
+                  <button class="btn btn--ghost btn--sm" type="button" data-action="analyze-current">
+                    분석 실행
+                  </button>
+                  <button class="btn btn--subtle btn--sm" type="button" data-action="copy-analysis">
+                    키워드 복사
+                  </button>
+                </div>
               </div>
               <p class="analysis__meta" data-role="analysis-meta" aria-live="polite"></p>
               <p class="analysis__hint" data-role="analysis-hint">분석할 결과 이미지를 선택하고 “분석 실행” 버튼을 눌러보세요.</p>
@@ -2560,6 +2566,529 @@ app.get('/cookies', (c) => {
       </footer>
     </main>
   )
+})
+
+app.get('/login.html', (c) => {
+  const loginPage = `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ellie Image Editor 관리자 로그인</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: linear-gradient(180deg, #f5f3ff 0%, #ffffff 55%, #f9fafb 100%);
+        color: #111827;
+      }
+
+      header,
+      footer {
+        padding: 2.5rem 3rem;
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(12px);
+      }
+
+      header {
+        border-bottom: 1px solid rgba(99, 102, 241, 0.12);
+      }
+
+      footer {
+        border-top: 1px solid rgba(99, 102, 241, 0.12);
+        font-size: 0.85rem;
+        color: #6b7280;
+        text-align: center;
+      }
+
+      main {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 3rem 1.5rem 4rem;
+      }
+
+      .login-card {
+        width: min(480px, 100%);
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 1.75rem;
+        padding: 2.5rem 2.25rem;
+        box-shadow: 0 35px 80px -45px rgba(79, 70, 229, 0.35);
+        border: 1px solid rgba(99, 102, 241, 0.16);
+        display: flex;
+        flex-direction: column;
+        gap: 1.75rem;
+      }
+
+      .login-card__title {
+        margin: 0;
+        font-size: 1.6rem;
+        color: #312e81;
+        letter-spacing: -0.01em;
+      }
+
+      .login-card__description {
+        margin: 0.25rem 0 0;
+        color: #4b5563;
+        font-size: 0.96rem;
+        line-height: 1.6;
+      }
+
+      .login-card__form {
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+
+      .login-card__field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .login-card__label {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #4338ca;
+      }
+
+      .login-card__input {
+        width: 100%;
+        border-radius: 0.9rem;
+        border: 1px solid rgba(99, 102, 241, 0.28);
+        padding: 0.95rem 1.1rem;
+        font-size: 0.98rem;
+        transition: border 0.2s ease, box-shadow 0.2s ease;
+        outline: none;
+        background: rgba(255, 255, 255, 0.92);
+      }
+
+      .login-card__input:focus {
+        border-color: rgba(79, 70, 229, 0.6);
+        box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.14);
+      }
+
+      .login-card__submit {
+        border: none;
+        border-radius: 999px;
+        padding: 0.95rem 1.25rem;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #fff;
+        background: linear-gradient(135deg, #7c3aed 0%, #6366f1 50%, #4f46e5 100%);
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .login-card__submit:hover,
+      .login-card__submit:focus-visible {
+        transform: translateY(-1px);
+        box-shadow: 0 18px 30px -20px rgba(79, 70, 229, 0.6);
+      }
+
+      .login-card__status {
+        min-height: 1.5rem;
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.4;
+        color: #4b5563;
+      }
+
+      .login-card__status[data-tone='info'] {
+        color: #4338ca;
+      }
+
+      .login-card__status[data-tone='success'] {
+        color: #047857;
+      }
+
+      .login-card__status[data-tone='warning'] {
+        color: #b45309;
+      }
+
+      .login-card__status[data-tone='danger'] {
+        color: #dc2626;
+      }
+
+      .login-meta {
+        font-size: 0.88rem;
+        color: #6b7280;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .login-meta strong {
+        color: #4338ca;
+      }
+
+      @media (max-width: 640px) {
+        header,
+        footer {
+          padding: 1.75rem 1.5rem;
+        }
+
+        .login-card {
+          padding: 2.15rem 1.75rem;
+          border-radius: 1.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body class="admin-login-page">
+    <header>
+      <h1 style="margin:0;font-size:1.3rem;font-weight:600;color:#312e81;">Ellie Image Editor 관리자 센터</h1>
+    </header>
+    <main>
+      <section class="login-card" aria-labelledby="admin-login-title">
+        <div>
+          <h2 class="login-card__title" id="admin-login-title">관리자 로그인</h2>
+          <p class="login-card__description">등록된 관리자 이메일과 비밀번호를 입력해 대시보드를 열어주세요.</p>
+        </div>
+        <form class="login-card__form" data-role="admin-login-form" data-state="idle">
+          <div class="login-card__field">
+            <label class="login-card__label" for="adminLoginEmail">이메일</label>
+            <input
+              id="adminLoginEmail"
+              class="login-card__input"
+              type="email"
+              name="email"
+              placeholder="ellie@elliesbang.kr"
+              autocomplete="email"
+              required
+              data-role="admin-login-email"
+            />
+          </div>
+          <div class="login-card__field">
+            <label class="login-card__label" for="adminLoginPassword">비밀번호</label>
+            <input
+              id="adminLoginPassword"
+              class="login-card__input"
+              type="password"
+              name="password"
+              placeholder="비밀번호를 입력하세요"
+              autocomplete="current-password"
+              required
+              data-role="admin-login-password"
+            />
+          </div>
+          <button class="login-card__submit" type="submit">대시보드 열기</button>
+        </form>
+        <p class="login-card__status" data-role="admin-login-status" aria-live="polite"></p>
+        <div class="login-meta">
+          <span><strong>보안 안내:</strong> 관리자 인증 정보는 Cloudflare Pages 환경변수로 관리됩니다.</span>
+          <span>오류가 반복되면 서비스 운영자에게 문의해주세요.</span>
+        </div>
+      </section>
+    </main>
+    <footer>
+      <small>&copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.</small>
+    </footer>
+    <script type="module">
+      const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
+      const DASHBOARD_URL = new URL('/dashboard.html', window.location.origin).toString();
+
+      const form = document.querySelector('[data-role="admin-login-form"]');
+      const emailInput = document.querySelector('[data-role="admin-login-email"]');
+      const passwordInput = document.querySelector('[data-role="admin-login-password"]');
+      const statusElement = document.querySelector('[data-role="admin-login-status"]');
+
+      if (emailInput instanceof HTMLInputElement && ADMIN_EMAIL) {
+        emailInput.placeholder = ADMIN_EMAIL;
+      }
+
+      function focusEmail() {
+        if (emailInput instanceof HTMLInputElement) {
+          emailInput.focus();
+        }
+      }
+
+      function setStatus(message, tone = 'info') {
+        if (!(statusElement instanceof HTMLElement)) {
+          return;
+        }
+        statusElement.textContent = message;
+        statusElement.dataset.tone = message ? tone : '';
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', focusEmail, { once: true });
+      } else {
+        focusEmail();
+      }
+
+      if (form instanceof HTMLFormElement &&
+          emailInput instanceof HTMLInputElement &&
+          passwordInput instanceof HTMLInputElement) {
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+
+          const email = emailInput.value.trim().toLowerCase();
+          const password = passwordInput.value;
+
+          if (!email || !password) {
+            window.alert('이메일과 비밀번호를 입력해 주세요.');
+            return;
+          }
+
+          const submitButton = form.querySelector('button[type="submit"]');
+          if (submitButton instanceof HTMLButtonElement) {
+            submitButton.disabled = true;
+          }
+          form.dataset.state = 'loading';
+          setStatus('관리자 자격을 확인하는 중입니다…', 'info');
+
+          fetch('/api/auth/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ email, password }),
+          })
+            .then(async (response) => {
+              if (response.ok) {
+                setStatus('인증이 완료되었습니다. 잠시 후 대시보드가 열립니다.', 'success');
+                const popup = window.open(DASHBOARD_URL, '_blank', 'noopener');
+                if (!popup || popup.closed) {
+                  window.location.href = DASHBOARD_URL;
+                }
+                form.reset();
+                focusEmail();
+                window.setTimeout(() => setStatus('', ''), 3000);
+                return;
+              }
+
+              if (response.status === 401) {
+                window.alert('관리자 자격이 올바르지 않습니다.');
+                setStatus('이메일 또는 비밀번호가 올바르지 않습니다.', 'danger');
+                passwordInput.value = '';
+                passwordInput.focus();
+                return;
+              }
+
+              if (response.status === 429) {
+                const detail = await response.json().catch(() => ({}));
+                const retryAfter = Number(detail?.retryAfter ?? 0);
+                const seconds = Number.isFinite(retryAfter) ? Math.max(1, Math.ceil(retryAfter)) : 0;
+                const message = seconds
+                  ? '로그인 시도가 많아 잠시 후 다시 시도해주세요. (약 ' + seconds + '초 후 가능)'
+                  : '로그인 시도가 많아 잠시 후 다시 시도해주세요.';
+                setStatus(message, 'warning');
+                return;
+              }
+
+              if (response.status === 500) {
+                setStatus('관리자 인증 구성이 완료되지 않았습니다. 운영자에게 문의해주세요.', 'danger');
+                return;
+              }
+
+              setStatus('로그인 중 오류(' + response.status + ')가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+            })
+            .catch((error) => {
+              console.error('[admin-login] Unexpected error', error);
+              setStatus('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+            })
+            .finally(() => {
+              if (submitButton instanceof HTMLButtonElement) {
+                submitButton.disabled = false;
+              }
+              form.dataset.state = 'idle';
+            });
+        });
+      }
+    </script>
+  </body>
+</html>`
+
+  const response = c.html(loginPage)
+  response.headers.set('Cache-Control', 'no-store')
+  return response
+})
+
+app.get('/dashboard.html', (c) => {
+  const dashboardPage = `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ellie Image Editor Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: linear-gradient(180deg, #eef2ff 0%, #ffffff 45%, #f5f3ff 100%);
+        color: #111827;
+      }
+
+      header,
+      footer {
+        padding: 2rem 3rem;
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(12px);
+      }
+
+      header {
+        border-bottom: 1px solid rgba(79, 70, 229, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      footer {
+        border-top: 1px solid rgba(79, 70, 229, 0.12);
+        text-align: center;
+        font-size: 0.85rem;
+        color: #6b7280;
+      }
+
+      main {
+        flex: 1;
+        padding: 3rem clamp(1.5rem, 4vw, 4rem);
+        display: grid;
+        gap: 2.5rem;
+      }
+
+      .dashboard-title {
+        margin: 0;
+        font-size: clamp(1.8rem, 2.3vw, 2.4rem);
+        color: #312e81;
+        letter-spacing: -0.01em;
+      }
+
+      .dashboard-subtitle {
+        margin: 0.45rem 0 0;
+        font-size: clamp(1rem, 1.3vw, 1.1rem);
+        color: #4b5563;
+      }
+
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.5rem;
+      }
+
+      .dashboard-card {
+        border-radius: 1.25rem;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid rgba(79, 70, 229, 0.14);
+        box-shadow: 0 24px 40px -30px rgba(79, 70, 229, 0.45);
+        padding: 1.75rem 1.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+      }
+
+      .dashboard-card__title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: #4338ca;
+      }
+
+      .dashboard-card__body {
+        margin: 0;
+        color: #4b5563;
+        line-height: 1.6;
+        font-size: 0.95rem;
+      }
+
+      .dashboard-card__cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        padding: 0.65rem 1.1rem;
+        border-radius: 999px;
+        font-size: 0.92rem;
+        font-weight: 600;
+        color: #fff;
+        background: linear-gradient(135deg, #7c3aed 0%, #6366f1 100%);
+        text-decoration: none;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .dashboard-card__cta:hover,
+      .dashboard-card__cta:focus-visible {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 28px -18px rgba(79, 70, 229, 0.55);
+      }
+
+      @media (max-width: 720px) {
+        header,
+        footer {
+          padding: 1.75rem 1.5rem;
+        }
+
+        main {
+          padding: 2.25rem 1.5rem 3rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1 class="dashboard-title">Ellie Image Editor Dashboard</h1>
+        <p class="dashboard-subtitle">관리자 전용 대시보드 영역입니다.</p>
+      </div>
+      <a class="dashboard-card__cta" href="/" target="_blank" rel="noopener">사이트로 돌아가기</a>
+    </header>
+    <main>
+      <section class="card-grid" aria-label="관리자 기능">
+        <article class="dashboard-card">
+          <h2 class="dashboard-card__title">미치나 명단 업로드</h2>
+          <p class="dashboard-card__body">최신 참가자 CSV 파일을 업로드해 챌린지 데이터를 업데이트하세요.</p>
+        </article>
+        <article class="dashboard-card">
+          <h2 class="dashboard-card__title">미션 완료 현황</h2>
+          <p class="dashboard-card__body">참여자별 미션 완료 상태를 확인하고 리포트를 다운로드할 수 있습니다.</p>
+        </article>
+        <article class="dashboard-card">
+          <h2 class="dashboard-card__title">기간 설정</h2>
+          <p class="dashboard-card__body">챌린지 시작일과 종료일을 선택해 진행 상황을 추적하세요.</p>
+        </article>
+        <article class="dashboard-card">
+          <h2 class="dashboard-card__title">커뮤니티 바로가기</h2>
+          <p class="dashboard-card__body">미치나 커뮤니티를 열어 참여자와 소통하세요.</p>
+        </article>
+      </section>
+    </main>
+    <footer>
+      <small>&copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.</small>
+    </footer>
+  </body>
+</html>`
+
+  const response = c.html(dashboardPage)
+  response.headers.set('Cache-Control', 'no-store')
+  return response
 })
 
 app.get('/api/health', (c) => c.json({ status: 'ok' }))
