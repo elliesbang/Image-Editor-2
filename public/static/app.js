@@ -214,6 +214,59 @@ const runtime = {
   },
 }
 
+const workingOutputState = {
+  image: null,
+  imageObjectUrl: '',
+  result: null,
+  name: '',
+}
+
+function revokeWorkingImageObjectUrl() {
+  if (workingOutputState.imageObjectUrl) {
+    try {
+      URL.revokeObjectURL(workingOutputState.imageObjectUrl)
+    } catch (error) {
+      console.warn('임시 이미지 URL을 해제하는 중 오류가 발생했습니다.', error)
+    }
+    workingOutputState.imageObjectUrl = ''
+  }
+}
+
+function setImage(image) {
+  revokeWorkingImageObjectUrl()
+  if (!image) {
+    workingOutputState.image = null
+    workingOutputState.name = ''
+    return
+  }
+
+  if (!(image instanceof Blob)) {
+    console.warn('setImage에는 File 또는 Blob 객체만 전달할 수 있습니다.')
+    return
+  }
+
+  workingOutputState.image = image
+  workingOutputState.name = image instanceof File && typeof image.name === 'string' ? image.name : ''
+
+  try {
+    workingOutputState.imageObjectUrl = URL.createObjectURL(image)
+  } catch (error) {
+    workingOutputState.imageObjectUrl = ''
+  }
+}
+
+function setResult(result) {
+  workingOutputState.result = result || null
+}
+
+function getCurrentImage() {
+  return workingOutputState.image
+}
+
+function getCurrentResult() {
+  return workingOutputState.result
+}
+
 const engineState = {
   status: 'idle',
   attempts: 0,
@@ -1384,6 +1437,18 @@ function formatBytes(bytes) {
 
 function baseName(filename) {
   return filename.replace(/\.[^/.]+$/, '')
+}
+
+function mergeOperations(previous = [], ...labels) {
+  const history = Array.isArray(previous) ? [...previous] : []
+  for (const label of labels) {
+    if (!label) continue
+    if (history[history.length - 1] === label) {
+      continue
+    }
+    history.push(label)
+  }
+  return history
 }
 
 function setStatus(message, tone = 'info', duration = 3200) {
@@ -4052,7 +4117,7 @@ function updateOperationAvailability() {
     if (operation === 'resize') {
       button.disabled = isProcessing || !hasResizeSelection || !resizeValue
     } else {
-      button.disabled = isProcessing || !hasUploadSelection
+      button.disabled = isProcessing || (!hasUploadSelection && !hasResultSelection)
     }
   })
 
@@ -5154,6 +5219,96 @@ async function canvasFromBlob(blob) {
   }
 }
 
+function createFileFromBlob(blob, filename) {
+  if (!(blob instanceof Blob)) {
+    return null
+  }
+  try {
+    return new File([blob], filename, { type: blob.type || 'image/png' })
+  } catch (error) {
+    return blob
+  }
+}
+
+function dataUrlToFile(dataUrl, filename, fallbackType = 'image/png') {
+  if (typeof dataUrl !== 'string') {
+    throw new Error('dataURL 문자열이 필요합니다.')
+  }
+  const parts = dataUrl.split(',')
+  if (parts.length < 2) {
+    throw new Error('올바른 dataURL 형식이 아닙니다.')
+  }
+  const header = parts[0] || ''
+  const body = parts.slice(1).join(',')
+  const isBase64 = header.includes(';base64')
+  const mimeMatch = header.match(/data:([^;]+)/)
+  const mimeType = mimeMatch ? mimeMatch[1] : fallbackType
+  const binaryString = isBase64 ? atob(body) : decodeURIComponent(body)
+  const buffer = new Uint8Array(binaryString.length)
+  for (let i = 0; i < binaryString.length; i += 1) {
+    buffer[i] = binaryString.charCodeAt(i)
+  }
+  const blob = new Blob([buffer], { type: mimeType || fallbackType })
+  try {
+    return new File([blob], filename, { type: mimeType || fallbackType })
+  } catch (error) {
+    return blob
+  }
+}
+
+async function resolveProcessingSource(source) {
+  if (!source) {
+    throw new Error('처리할 이미지가 필요합니다.')
+  }
+
+  let name = 'image.png'
+  let blob = null
+  let dataUrl = null
+
+  if (source instanceof File) {
+    name = source.name || name
+    blob = source
+  } else if (source instanceof Blob) {
+    blob = source
+  } else if (typeof source === 'string') {
+    if (source.startsWith('data:') || source.startsWith('blob:')) {
+      dataUrl = source
+    } else {
+      dataUrl = await ensureDataUrl(source)
+    }
+  } else if (typeof source === 'object') {
+    if (typeof source.name === 'string' && source.name.trim()) {
+      name = source.name.trim()
+    } else if (typeof source.originalName === 'string' && source.originalName.trim()) {
+      name = source.originalName.trim()
+    }
+
+    if (source.file instanceof File) {
+      blob = source.file
+    } else if (source.blob instanceof Blob) {
+      blob = source.blob
+    } else if (typeof source.dataUrl === 'string' && source.dataUrl) {
+      dataUrl = source.dataUrl
+    } else if (typeof source.objectUrl === 'string' && source.objectUrl) {
+      dataUrl = source.objectUrl
+    }
+  }
+
+  if (!blob && !dataUrl) {
+    throw new Error('처리 가능한 이미지 소스를 찾지 못했습니다.')
+  }
+
+  const context = blob ? await canvasFromBlob(blob) : await canvasFromDataUrl(dataUrl)
+  return {
+    ...context,
+    name,
+    width: context.canvas.width,
+    height: context.canvas.height,
+    sourceBlob: blob || null,
+    sourceDataUrl: blob ? null : dataUrl,
+  }
+}
+
 function sampleBackgroundColor(imageData, width, height) {
   const { data } = imageData
   const sampleSize = Math.max(1, Math.floor(Math.max(width, height) * 0.05))
@@ -5443,6 +5598,84 @@ function expandBounds(bounds, width, height, padding = 0) {
   }
 }
 
+function refineBoundsFromMask(mask, width, height, bounds) {
+  if (!bounds) {
+    return { top: 0, left: 0, right: width - 1, bottom: height - 1 }
+  }
+
+  let { top, left, right, bottom } = bounds
+
+  const minRowCoverage = Math.max(1, Math.floor((right - left + 1) * 0.015))
+  const minColumnCoverage = Math.max(1, Math.floor((bottom - top + 1) * 0.015))
+
+  let refinedTop = top
+  for (let y = top; y <= bottom; y += 1) {
+    let count = 0
+    for (let x = left; x <= right; x += 1) {
+      if (mask[y * width + x]) {
+        count += 1
+        if (count >= minRowCoverage) break
+      }
+    }
+    if (count >= minRowCoverage) {
+      refinedTop = y
+      break
+    }
+  }
+
+  let refinedBottom = bottom
+  for (let y = bottom; y >= refinedTop; y -= 1) {
+    let count = 0
+    for (let x = left; x <= right; x += 1) {
+      if (mask[y * width + x]) {
+        count += 1
+        if (count >= minRowCoverage) break
+      }
+    }
+    if (count >= minRowCoverage) {
+      refinedBottom = y
+      break
+    }
+  }
+
+  let refinedLeft = left
+  for (let x = left; x <= right; x += 1) {
+    let count = 0
+    for (let y = refinedTop; y <= refinedBottom; y += 1) {
+      if (mask[y * width + x]) {
+        count += 1
+        if (count >= minColumnCoverage) break
+      }
+    }
+    if (count >= minColumnCoverage) {
+      refinedLeft = x
+      break
+    }
+  }
+
+  let refinedRight = right
+  for (let x = right; x >= refinedLeft; x -= 1) {
+    let count = 0
+    for (let y = refinedTop; y <= refinedBottom; y += 1) {
+      if (mask[y * width + x]) {
+        count += 1
+        if (count >= minColumnCoverage) break
+      }
+    }
+    if (count >= minColumnCoverage) {
+      refinedRight = x
+      break
+    }
+  }
+
+  return {
+    top: Math.max(0, Math.min(height - 1, refinedTop)),
+    left: Math.max(0, Math.min(width - 1, refinedLeft)),
+    right: Math.max(0, Math.min(width - 1, refinedRight)),
+    bottom: Math.max(0, Math.min(height - 1, refinedBottom)),
+  }
+}
+
 function detectSubjectBounds(imageData, width, height) {
   if (!imageData || width <= 0 || height <= 0) {
     return {
@@ -5454,69 +5687,160 @@ function detectSubjectBounds(imageData, width, height) {
   }
 
   const { data } = imageData
+  const stats = analyzeBackground(imageData, width, height)
+  const backgroundLuma = 0.2126 * stats.meanColor.r + 0.7152 * stats.meanColor.g + 0.0722 * stats.meanColor.b
+  const mask = new Uint8Array(width * height)
 
-  const computeBounds = (includePixel) => {
-    let minX = width
-    let minY = height
-    let maxX = -1
-    let maxY = -1
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
 
-    for (let y = 0; y < height; y += 1) {
-      const rowOffset = y * width * 4
-      for (let x = 0; x < width; x += 1) {
-        const index = rowOffset + x * 4
-        const r = data[index]
-        const g = data[index + 1]
-        const b = data[index + 2]
-        const alpha = data[index + 3]
+  const baseColorThresholdSq = Math.max(stats.toleranceSq * 0.6, 1200)
+  const relaxedColorThresholdSq = Math.max(stats.relaxedToleranceSq * 0.45, baseColorThresholdSq * 0.85)
+  const luminanceThreshold = Math.max(12, stats.tolerance * 0.32)
+  const gradientThreshold = Math.max(18, stats.tolerance * 0.4)
+  const diagonalGradientThreshold = gradientThreshold * 1.15
+  const rowStride = width * 4
 
-        if (!includePixel(r, g, b, alpha)) {
-          continue
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * rowStride
+    for (let x = 0; x < width; x += 1) {
+      const index = rowOffset + x * 4
+      const r = data[index]
+      const g = data[index + 1]
+      const b = data[index + 2]
+      const alpha = data[index + 3]
+      const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      const colorDiffSq = colorDistanceSq(r, g, b, stats.meanColor)
+      const luminanceDiff = Math.abs(luminance - backgroundLuma)
+
+      let maxGradient = 0
+
+      if (x + 1 < width) {
+        const neighborIndex = index + 4
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma))
+      }
+
+      if (x > 0) {
+        const neighborIndex = index - 4
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma))
+      }
+
+      if (y + 1 < height) {
+        const neighborIndex = index + rowStride
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma))
+      }
+
+      if (y > 0) {
+        const neighborIndex = index - rowStride
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma))
+      }
+
+      if (x > 0 && y + 1 < height) {
+        const neighborIndex = index + rowStride - 4
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma) * 0.9)
+      }
+
+      if (x + 1 < width && y + 1 < height) {
+        const neighborIndex = index + rowStride + 4
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma) * 0.9)
+      }
+
+      if (x > 0 && y > 0) {
+        const neighborIndex = index - rowStride - 4
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma) * 0.9)
+      }
+
+      if (x + 1 < width && y > 0) {
+        const neighborIndex = index - rowStride + 4
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        maxGradient = Math.max(maxGradient, Math.abs(luminance - neighborLuma) * 0.9)
+      }
+
+      const hasTransparency = alpha < 245
+      let isForeground = false
+
+      if (colorDiffSq > baseColorThresholdSq) {
+        isForeground = true
+      } else if (colorDiffSq > relaxedColorThresholdSq && maxGradient > gradientThreshold) {
+        isForeground = true
+      } else if (luminanceDiff > luminanceThreshold && maxGradient > gradientThreshold) {
+        isForeground = true
+      } else if (maxGradient > diagonalGradientThreshold && luminanceDiff > luminanceThreshold * 0.6) {
+        isForeground = true
+      } else if (hasTransparency && alpha > 8) {
+        if (colorDiffSq > relaxedColorThresholdSq * 0.6 || maxGradient > gradientThreshold * 0.75) {
+          isForeground = true
         }
+      }
 
+      if (isForeground) {
+        const maskIndex = y * width + x
+        mask[maskIndex] = 1
         if (x < minX) minX = x
         if (x > maxX) maxX = x
         if (y < minY) minY = y
         if (y > maxY) maxY = y
       }
     }
+  }
 
-    if (maxX === -1 || maxY === -1) {
-      return null
+  if (maxX === -1 || maxY === -1) {
+    const fallback = findBoundingBox(imageData, width, height, 235, Math.sqrt(baseColorThresholdSq))
+    if (fallback) {
+      const fallbackPadding = Math.round(Math.max(width, height) * 0.02)
+      return expandBounds(fallback, width, height, fallbackPadding)
     }
-
     return {
-      top: Math.max(0, minY),
-      left: Math.max(0, minX),
-      right: Math.min(width - 1, maxX),
-      bottom: Math.min(height - 1, maxY),
+      top: 0,
+      left: 0,
+      right: Math.max(0, width - 1),
+      bottom: Math.max(0, height - 1),
     }
   }
 
-  const primaryBounds = computeBounds((r, g, b, alpha) => {
-    const isOpaque = alpha > 5
-    if (!isOpaque) {
-      return false
-    }
-    const isBrightWhite = r > 245 && g > 245 && b > 245
-    return !isBrightWhite
-  })
-
-  if (primaryBounds) {
-    return primaryBounds
+  const initialBounds = {
+    top: Math.max(0, minY),
+    left: Math.max(0, minX),
+    right: Math.min(width - 1, maxX),
+    bottom: Math.min(height - 1, maxY),
   }
 
-  const fallbackBounds = computeBounds((r, g, b, alpha) => alpha > 5)
-  if (fallbackBounds) {
-    return fallbackBounds
-  }
-
-  return {
-    top: 0,
-    left: 0,
-    right: Math.max(0, width - 1),
-    bottom: Math.max(0, height - 1),
-  }
+  const refined = refineBoundsFromMask(mask, width, height, initialBounds)
+  const padding = Math.max(2, Math.round(Math.min(width, height) * 0.015))
+  return expandBounds(refined, width, height, padding)
 }
 
 function cropCanvas(canvas, ctx, bounds) {
@@ -6567,40 +6891,50 @@ function deleteResults(ids) {
   setStatus(`${ids.length}개의 처리 결과를 삭제했습니다.`, 'info')
 }
 
-async function processRemoveBackground(upload) {
-  const { canvas, ctx } = await canvasFromDataUrl(upload.dataUrl)
+async function processRemoveBackground(source, previousOperations = []) {
+  const { canvas, ctx, name } = await resolveProcessingSource(source)
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   applyBackgroundRemoval(imageData, canvas.width, canvas.height)
   ctx.putImageData(imageData, 0, 0)
   const blob = await canvasToBlob(canvas, 'image/png', 0.95)
-  return {
+  const operations = mergeOperations(previousOperations, '배경 제거')
+  const result = {
     blob,
     width: canvas.width,
     height: canvas.height,
-    operations: ['배경 제거'],
-    name: `${baseName(upload.name)}__bg-removed.png`,
+    operations,
+    name: `${baseName(name)}__bg-removed.png`,
   }
+  setResult(result)
+  const outputFile = createFileFromBlob(blob, result.name) || blob
+  setImage(outputFile)
+  return result
 }
 
-async function processAutoCrop(upload) {
-  const { canvas, ctx } = await canvasFromDataUrl(upload.dataUrl)
+async function processAutoCrop(source, previousOperations = []) {
+  const { canvas, ctx, name } = await resolveProcessingSource(source)
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const bounds = detectSubjectBounds(imageData, canvas.width, canvas.height)
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
   const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
-  return {
+  const operations = mergeOperations(previousOperations, '피사체 크롭')
+  const result = {
     blob,
     width: cropped.width,
     height: cropped.height,
-    operations: ['피사체 크롭'],
-    name: `${baseName(upload.name)}__cropped.png`,
+    operations,
+    name: `${baseName(name)}__cropped.png`,
     previewDataUrl,
   }
+  setResult(result)
+  const outputFile = createFileFromBlob(blob, result.name) || blob
+  setImage(outputFile)
+  return result
 }
 
-async function processRemoveBackgroundAndCrop(upload) {
-  const { canvas, ctx } = await canvasFromDataUrl(upload.dataUrl)
+async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
+  const { canvas, ctx, name } = await resolveProcessingSource(source)
   let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
   ctx.putImageData(imageData, 0, 0)
@@ -6612,29 +6946,39 @@ async function processRemoveBackgroundAndCrop(upload) {
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
   const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
-  return {
+  const operations = mergeOperations(previousOperations, '배경 제거', '피사체 크롭')
+  const result = {
     blob,
     width: cropped.width,
     height: cropped.height,
-    operations: ['배경 제거', '피사체 크롭'],
-    name: `${baseName(upload.name)}__bg-cropped.png`,
+    operations,
+    name: `${baseName(name)}__bg-cropped.png`,
     previewDataUrl,
   }
+  setResult(result)
+  const outputFile = createFileFromBlob(blob, result.name) || blob
+  setImage(outputFile)
+  return result
 }
 
-async function processDenoise(upload) {
-  const { canvas, ctx } = await canvasFromDataUrl(upload.dataUrl)
+async function processDenoise(source, previousOperations = []) {
+  const { canvas, ctx, name } = await resolveProcessingSource(source)
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   applyBoxBlur(imageData, canvas.width, canvas.height)
   ctx.putImageData(imageData, 0, 0)
   const blob = await canvasToBlob(canvas, 'image/png', 0.95)
-  return {
+  const operations = mergeOperations(previousOperations, '노이즈 제거')
+  const result = {
     blob,
     width: canvas.width,
     height: canvas.height,
-    operations: ['노이즈 제거'],
-    name: `${baseName(upload.name)}__denoised.png`,
+    operations,
+    name: `${baseName(name)}__denoised.png`,
   }
+  setResult(result)
+  const outputFile = createFileFromBlob(blob, result.name) || blob
+  setImage(outputFile)
+  return result
 }
 
 async function processResize(upload, targetWidth, previousOperations = []) {
@@ -6807,12 +7151,12 @@ async function runOperation(operation) {
       setStatus('리사이즈할 업로드 또는 결과 이미지를 선택해주세요.', 'danger')
       return
     }
-  } else if (uploadIds.length === 0) {
-    setStatus('먼저 처리할 업로드 이미지를 선택해주세요.', 'danger')
+  } else if (uploadIds.length === 0 && resultIds.length === 0) {
+    setStatus('먼저 처리할 업로드 또는 결과 이미지를 선택해주세요.', 'danger')
     return
   }
 
-  const targetCount = operation === 'resize' ? uploadIds.length + resultIds.length : uploadIds.length
+  const targetCount = uploadIds.length + resultIds.length
   if (!ensureActionAllowed(operation === 'resize' ? 'resize' : 'operation', { count: Math.max(1, targetCount), gate: 'operations' })) {
     return
   }
@@ -6925,15 +7269,62 @@ async function runOperation(operation) {
         toggleProcessing(false)
         return
       }
+
+      const targets = []
+
       for (const uploadId of uploadIds) {
         const upload = state.uploads.find((item) => item.id === uploadId)
         if (!upload) continue
-        // eslint-disable-next-line no-await-in-loop
-        const result = await handler(upload)
-        if (result && result.blob) {
-          processedCount += 1
+        targets.push({ type: 'upload', payload: upload })
+      }
+
+      for (const resultId of resultIds) {
+        const result = state.results.find((item) => item.id === resultId)
+        if (!result) continue
+        targets.push({ type: 'result', payload: result })
+      }
+
+      if (targets.length === 0) {
+        setStatus('먼저 처리할 업로드 또는 결과 이미지를 선택해주세요.', 'danger')
+        toggleProcessing(false)
+        return
+      }
+
+      for (const target of targets) {
+        if (target.type === 'upload') {
+          const upload = target.payload
+          // eslint-disable-next-line no-await-in-loop
+          const result = await handler(upload, [])
+          if (result && result.blob) {
+            processedCount += 1
+            appendResult(upload, result)
+          }
+        } else {
+          const resultItem = target.payload
+          if (!resultItem) {
+            // eslint-disable-next-line no-continue
+            continue
+          }
+
+          const pseudoUpload = {
+            id: resultItem.id,
+            name: resultItem.name,
+            size: resultItem.size,
+            type: resultItem.blob?.type || 'image/png',
+            dataUrl: resultItem.previewDataUrl || resultItem.objectUrl,
+            objectUrl: resultItem.objectUrl,
+            blob: resultItem.blob,
+            width: resultItem.width,
+            height: resultItem.height,
+          }
+          const previousOps = Array.isArray(resultItem.operations) ? [...resultItem.operations] : []
+          // eslint-disable-next-line no-await-in-loop
+          const updated = await handler(pseudoUpload, previousOps)
+          if (updated && updated.blob) {
+            processedCount += 1
+            replaceResult(resultItem, updated)
+          }
         }
-        appendResult(upload, result)
       }
     }
 
