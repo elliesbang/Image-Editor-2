@@ -56,7 +56,7 @@
 | GET | `/privacy`, `/terms`, `/cookies` | 법적 고지 페이지 | - |
 | GET | `/static/*` | 정적 자산(app.js, styles.css 등) | - |
 | GET | `/api/health` | 상태 점검 JSON `{ "status": "ok" }` | - |
-| POST | `/api/analyze` | OpenAI GPT-4o-mini 기반 키워드/제목 분석 (data URL 입력) | Server-side API key |
+| POST | `/functions/analyze-keywords` | Cloudflare Function에서 OpenAI GPT-4o-mini 기반 키워드/제목 분석 (data URL 입력) | Cloudflare Pages 환경변수 |
 | POST | `/api/auth/google` | Google OAuth 코드 ↔ ID 토큰 교환 및 프로필 반환 | Google OAuth 코드 |
 | GET | `/api/auth/session` | 관리자 세션 상태 확인 | 세션 쿠키 |
 | POST | `/api/auth/admin/login` | 관리자 로그인 (body: `{ email, password }`) | 세션 쿠키 발급 |
@@ -77,13 +77,13 @@
 - **Cloudflare KV (선택)**: `CHALLENGE_KV` 바인딩 시 참가자 레코드/제출 로그를 글로벌 분산 키-값 저장소에 영속화
 - **백업 KV (선택)**: `CHALLENGE_KV_BACKUP` 바인딩 시 기본 KV와 동기화, 스냅샷 백업 키(`backup:snapshot:*`) 저장
 - **In-memory fallback**: 로컬 개발 또는 KV 미바인딩 시 Map 기반 임시 저장 (기본/백업 각각 유지), 재시작 시 데이터 초기화
-- **OpenAI API**: `POST /api/analyze`에서 Responses API(gpt-4o-mini + JSON Schema `response_format`, 25초 타임아웃, `x-request-id` 전달) 호출, 이미지 data URL을 `input_image`로 전달해 25개 키워드/제목/요약을 구조화 수신, 서버 측 키워드 정규화·보강(문자열 응답/중복 제거, 25개 보장), 실패 시 상세 코드와 함께 로컬 캔버스 분석으로 자동 대체
+- **OpenAI API**: `POST /functions/analyze-keywords` Cloudflare Function이 chat completions(gpt-4o-mini + JSON Schema `response_format`, 25초 타임아웃)을 호출, 이미지 data URL을 `input_image`로 전달해 25개 키워드/제목/요약을 구조화 수신, 서버 측 키워드 정규화·보강(문자열 응답/중복 제거, 25개 보장), 실패 시 로컬 캔버스 분석으로 자동 대체하며 사용자에게 "API 키가 감지되지 않음" 문구 안내
 - **수료증 생성**: 프론트엔드 html2canvas(1.4.1)로 DOM → PNG 렌더, 배경색 #fef568 강제 지정
 
 ## 환경 변수 & 시크릿
 | 변수 | 용도 | 필수 여부 | 비고 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | `/api/analyze` OpenAI Responses API 키 | 선택 (미설정 시 오류 응답) | Cloudflare Pages Secret 권장 |
+| `OPENAI_API_KEY` | `/functions/analyze-keywords` Cloudflare Function에서 사용하는 OpenAI API 키 | 선택 (미설정 시 오류 응답) | Cloudflare Pages Secret 권장 |
 | `ADMIN_EMAIL` | 관리자 로그인 이메일(소문자) | 필수 | 예: `admin@example.com` |
 | `ADMIN_PASSWORD_HASH` | 관리자 비밀번호 SHA-256 해시(소문자 hex) | 필수 | `echo -n 'password' | shasum -a 256` |
 | `SESSION_SECRET` | 관리자 JWT 서명 시크릿 | 필수 | 최소 32자 이상 권장 |

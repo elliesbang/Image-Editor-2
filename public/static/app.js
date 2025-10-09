@@ -5136,7 +5136,7 @@ async function analyzeCurrentImage() {
 
     let fallbackReason = ''
     try {
-      const response = await fetch('/api/analyze', {
+      const response = await fetch('/functions/analyze-keywords', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5146,7 +5146,13 @@ async function analyzeCurrentImage() {
 
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
-        const reason = typeof detail?.error === 'string' && detail.error ? detail.error : `OpenAI API 오류(${response.status})`
+        const reasonMessage =
+          typeof detail?.message === 'string' && detail.message
+            ? detail.message
+            : typeof detail?.error === 'string' && detail.error
+              ? detail.error
+              : `OpenAI API 오류(${response.status})`
+        const reason = reasonMessage || `OpenAI API 오류(${response.status})`
         throw new Error(reason)
       }
 
@@ -5173,7 +5179,7 @@ async function analyzeCurrentImage() {
       analysis = {
         ...fallbackAnalysis,
         provider: 'local',
-        reason: 'API 키 인증 오류 또는 연결 실패',
+        reason: 'API 키가 감지되지 않음',
       }
       usedFallback = true
     }
@@ -5187,15 +5193,10 @@ async function analyzeCurrentImage() {
 
     const statusHeadline = analysis.title || analysis.keywords.slice(0, 3).join(', ')
     if (usedFallback) {
-      let reasonMessage = ''
       if (fallbackReason) {
-        if (fallbackReason.includes('OPENAI_API_KEY_NOT_CONFIGURED')) {
-          reasonMessage = ' (OpenAI API 키가 설정되지 않았습니다.)'
-        } else {
-          reasonMessage = ` (사유: ${fallbackReason})`
-        }
+        console.warn('OpenAI 분석 실패 사유:', fallbackReason)
       }
-      setStatus(`키워드 분석 기능이 일시적으로 중단되었습니다. 로컬 분석 결과를 대신 제공했습니다.${reasonMessage}`, 'warning')
+      setStatus('API 키가 감지되지 않음. 로컬 분석 결과를 대신 제공했습니다.', 'warning')
     } else {
       const successMessage = statusHeadline
         ? `OpenAI 키워드 분석 완료: ${statusHeadline}`
