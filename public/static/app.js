@@ -1,14 +1,8 @@
 const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
-const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
-const IMAGE_TRACER_SOURCES = [
-  IMAGETRACER_SRC,
-  'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
-  'https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
-]
-const IMAGE_TRACER_MAX_RETRIES = 3
-const IMAGE_TRACER_RETRY_DELAY = 900
-const IMAGE_TRACER_RETRY_JITTER = 500
+const ENGINE_IMPORT_PATH = '/engine.js'
+const ENGINE_MAX_ATTEMPTS = 3
+const ENGINE_RETRY_INTERVAL = 3000
 const SVGO_BROWSER_SRC = 'https://cdn.jsdelivr.net/npm/svgo@3.3.2/dist/svgo.browser.js'
 const FREEMIUM_INITIAL_CREDITS = 30
 const MICHINA_INITIAL_CREDITS = 10000
@@ -189,6 +183,9 @@ const runtime = {
   config: null,
   initialView: 'home',
   allowViewBypass: false,
+  engine: {
+    controller: null,
+  },
   google: {
     codeClient: null,
     deferred: null,
@@ -215,6 +212,272 @@ const runtime = {
     approvedMichinaEmails: new Set(),
     initialized: false,
   },
+}
+
+const engineState = {
+  status: 'idle',
+  attempts: 0,
+  promise: null,
+  module: null,
+  version: null,
+  instance: null,
+  error: null,
+}
+
+function resolveEngineVersionParam() {
+  if (engineState.version) {
+    return engineState.version
+  }
+
+  const candidates = []
+  if (typeof window !== 'undefined') {
+    candidates.push(window.__ENGINE_VERSION__)
+    candidates.push(window.__APP_VERSION__)
+    candidates.push(window.__BUILD_ID__)
+    candidates.push(window.__BUILD_TIMESTAMP__)
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      engineState.version = candidate.trim()
+      return engineState.version
+    }
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      engineState.version = String(candidate)
+      return engineState.version
+    }
+  }
+
+  engineState.version = String(Date.now())
+  return engineState.version
+}
+
+function getEngineInstance() {
+  if (engineState.instance && typeof engineState.instance.imagedataToSVG === 'function') {
+    return engineState.instance
+  }
+
+  if (
+    typeof window !== 'undefined' &&
+    window.ImageTracer &&
+    typeof window.ImageTracer.imagedataToSVG === 'function'
+  ) {
+    engineState.instance = window.ImageTracer
+    return engineState.instance
+  }
+
+  return null
+}
+
+function isEngineReady() {
+  return engineState.status === 'ready' && !!getEngineInstance()
+}
+
+function setEngineReady(module, instance) {
+  const resolvedInstance = instance || getEngineInstance()
+  if (!resolvedInstance || typeof resolvedInstance.imagedataToSVG !== 'function') {
+    throw new Error('SVG 변환 엔진을 초기화하지 못했습니다.')
+  }
+
+  engineState.instance = resolvedInstance
+  if (module) {
+    engineState.module = module
+  }
+  engineState.status = 'ready'
+  engineState.error = null
+  return engineState.instance
+}
+
+function normalizeEngineError(error) {
+  if (error instanceof Error) {
+    return error
+  }
+
+  if (typeof error === 'string') {
+    return new Error(error)
+  }
+
+  try {
+    return new Error(JSON.stringify(error))
+  } catch (serializationError) {
+    return new Error('알 수 없는 엔진 오류가 발생했습니다.')
+  }
+}
+
+export function loadEngine(options = {}) {
+  const { signal } = options || {}
+
+  if (isEngineReady() && engineState.promise) {
+    return engineState.promise
+  }
+
+  if (isEngineReady()) {
+    return Promise.resolve(engineState.module)
+  }
+
+  if (engineState.promise) {
+    if (typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal) {
+      const handleAbort = () => {
+        if (engineState.status !== 'ready') {
+          engineState.status = 'failed'
+          engineState.error = new Error('엔진 로딩이 중단되었습니다.')
+        }
+      }
+      if (signal.aborted) {
+        handleAbort()
+        return Promise.reject(new DOMException('Aborted', 'AbortError'))
+      }
+      signal.addEventListener('abort', handleAbort, { once: true })
+      engineState.promise.finally(() => {
+        signal.removeEventListener('abort', handleAbort)
+      })
+    }
+    return engineState.promise
+  }
+
+  const abortState = { aborted: false }
+  const handleAbort = () => {
+    abortState.aborted = true
+  }
+
+  if (typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal) {
+    if (signal.aborted) {
+      handleAbort()
+      return Promise.reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', handleAbort, { once: true })
+  }
+
+  engineState.status = 'loading'
+  engineState.attempts = 0
+  const version = resolveEngineVersionParam()
+
+  const attemptLoad = async () => {
+    let lastError = null
+
+    while (engineState.attempts < ENGINE_MAX_ATTEMPTS && !abortState.aborted) {
+      engineState.attempts += 1
+
+      try {
+        const module = await import(`${ENGINE_IMPORT_PATH}?v=${version}`)
+
+        if (abortState.aborted) {
+          throw new Error('Engine load aborted')
+        }
+
+        let engineInstance = null
+
+        if (module && typeof module.bootstrapEngine === 'function') {
+          engineInstance = await module.bootstrapEngine()
+        } else if (module && typeof module.initialize === 'function') {
+          engineInstance = await module.initialize()
+        } else if (module && typeof module.default === 'function') {
+          engineInstance = await module.default()
+        }
+
+        if (module && typeof module.getEngine === 'function' && !engineInstance) {
+          engineInstance = await module.getEngine()
+        }
+
+        const readyInstance = setEngineReady(module, engineInstance)
+        if (!readyInstance || typeof readyInstance.imagedataToSVG !== 'function') {
+          throw new Error('SVG 변환 엔진을 불러오지 못했습니다.')
+        }
+
+        engineState.promise = Promise.resolve(module)
+        return module
+      } catch (error) {
+        const normalized = normalizeEngineError(error)
+        lastError = normalized
+        engineState.error = normalized
+
+        if (abortState.aborted) {
+          break
+        }
+
+        if (engineState.attempts >= ENGINE_MAX_ATTEMPTS) {
+          engineState.status = 'failed'
+          throw normalized
+        }
+
+        await wait(ENGINE_RETRY_INTERVAL)
+      }
+    }
+
+    if (abortState.aborted) {
+      const abortError = new Error('Engine load aborted')
+      engineState.error = abortError
+      throw abortError
+    }
+
+    throw lastError || new Error('엔진을 불러오지 못했습니다.')
+  }
+
+  const loadPromise = attemptLoad()
+    .catch((error) => {
+      if (engineState.status !== 'failed' && !abortState.aborted) {
+        engineState.status = 'failed'
+      }
+      return Promise.reject(error)
+    })
+    .finally(() => {
+      if (typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal) {
+        signal.removeEventListener('abort', handleAbort)
+      }
+
+      if (!isEngineReady()) {
+        engineState.promise = null
+      }
+    })
+
+  engineState.promise = loadPromise
+  return loadPromise
+}
+
+export function useEngineLoader(effectHook) {
+  const hook =
+    typeof effectHook === 'function'
+      ? effectHook
+      : typeof React !== 'undefined' && typeof React.useEffect === 'function'
+        ? React.useEffect
+        : null
+
+  if (!hook) {
+    return
+  }
+
+  hook(() => {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const signal = controller ? controller.signal : undefined
+
+    loadEngine({ signal }).catch((error) => {
+      if (signal?.aborted) {
+        return
+      }
+      console.error('엔진 초기화 중 오류가 발생했습니다.', error)
+    })
+
+    return () => {
+      if (controller && !controller.signal.aborted) {
+        controller.abort()
+      }
+    }
+  }, [])
+}
+
+function assertEngineReady() {
+  if (isEngineReady()) {
+    return true
+  }
+
+  if (engineState.status === 'failed') {
+    const detail = engineState.error?.message ? ` (${engineState.error.message})` : ''
+    setStatus(`SVG 변환 엔진을 불러오지 못했습니다.${detail}`, 'danger')
+  } else {
+    setStatus('엔진 초기화 중입니다. 잠시 후 다시 시도해주세요.', 'info')
+  }
+
+  return false
 }
 
 let googleSdkPromise = null
@@ -532,8 +795,6 @@ const elements = {
 }
 
 let statusTimer = null
-let imageTracerReadyPromise = null
-let hasAnnouncedClientSvgFallback = false
 let svgOptimizerReadyPromise = null
 
 function uuid() {
@@ -4165,79 +4426,6 @@ function waitForCondition(condition, timeout = 10000, interval = 60) {
   })
 }
 
-async function loadImageTracerWithRetry(attempt = 1) {
-  const sourceIndex = Math.min(attempt - 1, IMAGE_TRACER_SOURCES.length - 1)
-  const scriptSrc = IMAGE_TRACER_SOURCES[sourceIndex] || IMAGETRACER_SRC
-
-  try {
-    delete window.ImageTracer
-  } catch (error) {
-    console.warn('ImageTracer 전역 초기화 실패', error)
-  }
-
-  removeScriptElement('imagetracer')
-  const script = ensureScriptElement(scriptSrc, 'imagetracer')
-  if (!script) {
-    throw new Error('SVG 변환 도구 스크립트를 초기화하지 못했습니다.')
-  }
-
-  return new Promise((resolve, reject) => {
-    const onScriptError = (event) => {
-      script.removeEventListener('error', onScriptError)
-      reject(new Error(`SVG 변환 도구를 불러오는 중 오류가 발생했습니다. (${event?.type || 'error'})`))
-    }
-
-    script.addEventListener('error', onScriptError, { once: true })
-
-    waitForCondition(
-      () => window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function',
-      12000,
-      80,
-    )
-      .then(() => {
-        script.removeEventListener('error', onScriptError)
-        resolve(true)
-      })
-      .catch((error) => {
-        script.removeEventListener('error', onScriptError)
-        reject(error instanceof Error ? error : new Error(String(error)))
-      })
-  })
-}
-
-function ensureImageTracerReady() {
-  if (window.ImageTracer && typeof window.ImageTracer.imagedataToSVG === 'function') {
-    return Promise.resolve(true)
-  }
-
-  if (!imageTracerReadyPromise) {
-    imageTracerReadyPromise = (async () => {
-      for (let attempt = 1; attempt <= IMAGE_TRACER_MAX_RETRIES; attempt += 1) {
-        try {
-          await loadImageTracerWithRetry(attempt)
-          return true
-        } catch (error) {
-          console.error(`ImageTracer load attempt ${attempt} failed`, error)
-          if (!hasAnnouncedClientSvgFallback) {
-            setStatus('클라이언트 변환 모드로 전환되었습니다. 브라우저에서 엔진을 다시 불러오는 중입니다.', 'info', 0)
-            hasAnnouncedClientSvgFallback = true
-          }
-          if (attempt >= IMAGE_TRACER_MAX_RETRIES) {
-            throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
-          }
-          await wait(IMAGE_TRACER_RETRY_DELAY * attempt, IMAGE_TRACER_RETRY_JITTER)
-        }
-      }
-      throw new Error('SVG 변환 도구를 준비하지 못했습니다.')
-    })().catch((error) => {
-      imageTracerReadyPromise = null
-      throw error
-    })
-  }
-
-  return imageTracerReadyPromise
-}
-
 function ensureSvgOptimizerReady() {
   if (window.SVGO?.optimize || window.svgo?.optimize) {
     return Promise.resolve(true)
@@ -4326,10 +4514,25 @@ async function resolveDataUrlForTarget(target) {
 }
 
 async function convertTargetToSvg(target, desiredColors) {
-  await ensureImageTracerReady()
+  if (!isEngineReady()) {
+    const detail =
+      engineState.status === 'failed' && engineState.error?.message
+        ? ` (${engineState.error.message})`
+        : ''
+    const message =
+      engineState.status === 'failed'
+        ? `SVG 변환 엔진을 불러오지 못했습니다.${detail}`
+        : '엔진 초기화 중입니다. 잠시 후 다시 시도해주세요.'
+    return { success: false, message }
+  }
 
-  if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
-    return { success: false, message: 'SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.' }
+  const tracer = getEngineInstance()
+  if (!tracer || typeof tracer.imagedataToSVG !== 'function') {
+    const message =
+      engineState.status === 'failed'
+        ? 'SVG 변환 엔진을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.'
+        : 'SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.'
+    return { success: false, message }
   }
 
   try {
@@ -4374,7 +4577,7 @@ async function convertTargetToSvg(target, desiredColors) {
     let reducedColors = false
 
     for (let step = 0; step <= adjustments.length; step += 1) {
-      svgString = window.ImageTracer.imagedataToSVG(imageData, options)
+      svgString = tracer.imagedataToSVG(imageData, options)
       svgString = injectViewBoxAttribute(svgString, width, height)
       // eslint-disable-next-line no-await-in-loop
       svgString = await optimizeSvgContent(svgString)
@@ -4450,20 +4653,16 @@ async function convertSelectionsToSvg() {
   setStage('export')
 
   toggleProcessing(true)
-  setStatus('브라우저에서 SVG 변환 엔진을 준비하는 중입니다…', 'info', 0)
-
-  try {
-    await ensureImageTracerReady()
-  } catch (error) {
-    console.error('ImageTracer load error', error)
+  if (!assertEngineReady()) {
     toggleProcessing(false)
-    const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
-    setStatus(`SVG 변환을 준비하는 중 문제가 발생했습니다.${detail} 잠시 후 다시 시도해주세요.`, 'danger')
+    recomputeStage()
     return
   }
 
-  if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
+  const tracer = getEngineInstance()
+  if (!tracer || typeof tracer.imagedataToSVG !== 'function') {
     toggleProcessing(false)
+    recomputeStage()
     setStatus('SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
     return
   }
@@ -4562,23 +4761,33 @@ async function autoConvertUploadsToSvg(uploads) {
     return
   }
 
+  toggleProcessing(true)
+
+  if (!assertEngineReady()) {
+    toggleProcessing(false)
+    recomputeStage()
+    return
+  }
+
+  const tracer = getEngineInstance()
+  if (!tracer || typeof tracer.imagedataToSVG !== 'function') {
+    toggleProcessing(false)
+    recomputeStage()
+    setStatus('SVG 변환 기능을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    return
+  }
+
   setStatus(
     `브라우저에서 PNG ${pngUploads.length}개를 SVG로 자동 변환하는 중입니다…`,
     'info',
     0,
   )
-  toggleProcessing(true)
 
   const conversions = []
   const failures = []
   let shouldAbort = false
 
   try {
-    await ensureImageTracerReady()
-    if (!window.ImageTracer || typeof window.ImageTracer.imagedataToSVG !== 'function') {
-      throw new Error('SVG 변환 도구를 사용할 수 없습니다.')
-    }
-
     const colorCount = resolveSvgColorCount()
 
     for (const upload of pngUploads) {
@@ -5017,33 +5226,70 @@ function expandBounds(bounds, width, height, padding = 0) {
 }
 
 function detectSubjectBounds(imageData, width, height) {
-  const clone = new ImageData(new Uint8ClampedArray(imageData.data), width, height)
-  applyBackgroundRemoval(clone, width, height)
-  const alphaBounds = findAlphaBounds(clone, width, height, 8)
-  if (alphaBounds) {
-    return expandBounds(alphaBounds, width, height, 1)
+  if (!imageData || width <= 0 || height <= 0) {
+    return {
+      top: 0,
+      left: 0,
+      right: Math.max(0, width - 1),
+      bottom: Math.max(0, height - 1),
+    }
   }
 
-  const broad = findBoundingBox(imageData, width, height, 10, 70)
-  const tighter = findBoundingBox(imageData, width, height, 8, 42)
+  const { data } = imageData
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
 
-  const broadArea = boundsArea(broad)
-  const tightArea = boundsArea(tighter)
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width * 4
+    for (let x = 0; x < width; x += 1) {
+      const index = rowOffset + x * 4
+      const r = data[index]
+      const g = data[index + 1]
+      const b = data[index + 2]
+      const alpha = data[index + 3]
 
-  if (tighter && tightArea > 0 && tightArea <= broadArea * 0.92) {
-    return expandBounds(tighter, width, height, 1)
+      const isOpaque = alpha > 5
+      const isBrightWhite = r > 245 && g > 245 && b > 245
+
+      if (isOpaque && !isBrightWhite) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
   }
 
-  return expandBounds(broad, width, height, 1)
+  if (maxX === -1 || maxY === -1) {
+    return {
+      top: 0,
+      left: 0,
+      right: Math.max(0, width - 1),
+      bottom: Math.max(0, height - 1),
+    }
+  }
+
+  return {
+    top: Math.max(0, minY),
+    left: Math.max(0, minX),
+    right: Math.min(width - 1, maxX),
+    bottom: Math.min(height - 1, maxY),
+  }
 }
 
 function cropCanvas(canvas, ctx, bounds) {
-  const cropWidth = bounds.right - bounds.left + 1
-  const cropHeight = bounds.bottom - bounds.top + 1
+  const left = Math.max(0, Math.min(canvas.width - 1, bounds.left))
+  const top = Math.max(0, Math.min(canvas.height - 1, bounds.top))
+  const right = Math.max(left, Math.min(canvas.width - 1, bounds.right))
+  const bottom = Math.max(top, Math.min(canvas.height - 1, bounds.bottom))
+  const cropWidth = Math.max(1, right - left + 1)
+  const cropHeight = Math.max(1, bottom - top + 1)
   const cropped = createCanvas(cropWidth, cropHeight)
   const croppedCtx = cropped.getContext('2d')
   if (!croppedCtx) throw new Error('크롭 캔버스를 초기화할 수 없습니다.')
-  const imageData = ctx.getImageData(bounds.left, bounds.top, cropWidth, cropHeight)
+  const imageData = ctx.getImageData(left, top, cropWidth, cropHeight)
   croppedCtx.putImageData(imageData, 0, 0)
   return { canvas: cropped, ctx: croppedCtx }
 }
@@ -5969,7 +6215,7 @@ function renderResults() {
             <input type="checkbox" aria-label="결과 선택" data-role="result-checkbox" ${selected ? 'checked' : ''} />
           </label>
           <div class="asset-card__thumb">
-            <img src="${result.objectUrl}" alt="${result.name}" loading="lazy" />
+            <img src="${result.previewDataUrl || result.objectUrl}" alt="${result.name}" loading="lazy" />
           </div>
           <div class="asset-card__meta">
             <span class="asset-card__name" title="${result.name}">${result.name}</span>
@@ -6102,6 +6348,7 @@ async function processAutoCrop(upload) {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const bounds = detectSubjectBounds(imageData, canvas.width, canvas.height)
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
+  const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   return {
     blob,
@@ -6109,6 +6356,7 @@ async function processAutoCrop(upload) {
     height: cropped.height,
     operations: ['피사체 크롭'],
     name: `${baseName(upload.name)}__cropped.png`,
+    previewDataUrl,
   }
 }
 
@@ -6123,6 +6371,7 @@ async function processRemoveBackgroundAndCrop(upload) {
   const bounds = expandBounds(alphaBounds ?? fallbackBounds, canvas.width, canvas.height, 1)
 
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
+  const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   return {
     blob,
@@ -6130,6 +6379,7 @@ async function processRemoveBackgroundAndCrop(upload) {
     height: cropped.height,
     operations: ['배경 제거', '피사체 크롭'],
     name: `${baseName(upload.name)}__bg-cropped.png`,
+    previewDataUrl,
   }
 }
 
@@ -6233,6 +6483,7 @@ function findLatestResultForSource(sourceId) {
 function appendResult(upload, result, options = {}) {
   const { transferSelection = true, selectResult = true } = options
   const objectUrl = URL.createObjectURL(result.blob)
+  const previewDataUrl = typeof result.previewDataUrl === 'string' && result.previewDataUrl ? result.previewDataUrl : ''
   const record = {
     id: uuid(),
     sourceId: upload.id,
@@ -6242,6 +6493,7 @@ function appendResult(upload, result, options = {}) {
     size: result.blob.size,
     blob: result.blob,
     objectUrl,
+    previewDataUrl,
     operations: result.operations,
     createdAt: Date.now(),
   }
@@ -6289,6 +6541,10 @@ function replaceResult(existingResult, updatedPayload) {
     size: updatedPayload.blob.size,
     blob: updatedPayload.blob,
     objectUrl,
+    previewDataUrl:
+      typeof updatedPayload.previewDataUrl === 'string' && updatedPayload.previewDataUrl
+        ? updatedPayload.previewDataUrl
+        : previous.previewDataUrl,
     operations: updatedPayload.operations,
     updatedAt: Date.now(),
   }
@@ -7035,6 +7291,36 @@ function init() {
   const allowBypass = initialView !== 'home' && initialView !== 'admin'
   runtime.allowViewBypass = allowBypass
   state.view = initialView
+
+  const engineController = typeof AbortController !== 'undefined' ? new AbortController() : null
+  if (engineController) {
+    runtime.engine.controller = engineController
+  }
+
+  loadEngine({ signal: engineController?.signal })
+    .catch((error) => {
+      if (engineController?.signal?.aborted) {
+        return
+      }
+      console.error('SVG 변환 엔진을 불러오지 못했습니다.', error)
+    })
+    .finally(() => {
+      if (runtime.engine) {
+        runtime.engine.controller = null
+      }
+    })
+
+  if (engineController && typeof window !== 'undefined') {
+    window.addEventListener(
+      'pagehide',
+      () => {
+        if (!engineController.signal.aborted && engineState.status !== 'ready') {
+          engineController.abort()
+        }
+      },
+      { once: true },
+    )
+  }
 
   initializeSubscriptionState()
   initializeAdminAuthSync()
