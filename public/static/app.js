@@ -5132,46 +5132,68 @@ function detectSubjectBounds(imageData, width, height) {
   }
 
   const { data } = imageData
-  let minX = width
-  let minY = height
-  let maxX = -1
-  let maxY = -1
 
-  for (let y = 0; y < height; y += 1) {
-    const rowOffset = y * width * 4
-    for (let x = 0; x < width; x += 1) {
-      const index = rowOffset + x * 4
-      const r = data[index]
-      const g = data[index + 1]
-      const b = data[index + 2]
-      const alpha = data[index + 3]
+  const computeBounds = (includePixel) => {
+    let minX = width
+    let minY = height
+    let maxX = -1
+    let maxY = -1
 
-      const isOpaque = alpha > 5
-      const isBrightWhite = r > 245 && g > 245 && b > 245
+    for (let y = 0; y < height; y += 1) {
+      const rowOffset = y * width * 4
+      for (let x = 0; x < width; x += 1) {
+        const index = rowOffset + x * 4
+        const r = data[index]
+        const g = data[index + 1]
+        const b = data[index + 2]
+        const alpha = data[index + 3]
 
-      if (isOpaque && !isBrightWhite) {
+        if (!includePixel(r, g, b, alpha)) {
+          continue
+        }
+
         if (x < minX) minX = x
         if (x > maxX) maxX = x
         if (y < minY) minY = y
         if (y > maxY) maxY = y
       }
     }
-  }
 
-  if (maxX === -1 || maxY === -1) {
+    if (maxX === -1 || maxY === -1) {
+      return null
+    }
+
     return {
-      top: 0,
-      left: 0,
-      right: Math.max(0, width - 1),
-      bottom: Math.max(0, height - 1),
+      top: Math.max(0, minY),
+      left: Math.max(0, minX),
+      right: Math.min(width - 1, maxX),
+      bottom: Math.min(height - 1, maxY),
     }
   }
 
+  const primaryBounds = computeBounds((r, g, b, alpha) => {
+    const isOpaque = alpha > 5
+    if (!isOpaque) {
+      return false
+    }
+    const isBrightWhite = r > 245 && g > 245 && b > 245
+    return !isBrightWhite
+  })
+
+  if (primaryBounds) {
+    return primaryBounds
+  }
+
+  const fallbackBounds = computeBounds((r, g, b, alpha) => alpha > 5)
+  if (fallbackBounds) {
+    return fallbackBounds
+  }
+
   return {
-    top: Math.max(0, minY),
-    left: Math.max(0, minX),
-    right: Math.min(width - 1, maxX),
-    bottom: Math.min(height - 1, maxY),
+    top: 0,
+    left: 0,
+    right: Math.max(0, width - 1),
+    bottom: Math.max(0, height - 1),
   }
 }
 
