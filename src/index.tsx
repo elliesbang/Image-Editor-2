@@ -1570,8 +1570,16 @@ const buildKeywordListFromOpenAI = (
 
 app.post('/api/analyze', async (c) => {
   const env = c.env
+  const processEnv =
+    typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env
+      ? ((globalThis as any).process.env as Record<string, string | undefined>)
+      : undefined
+  const processApiKey =
+    typeof processEnv?.OPENAI_API_KEY === 'string' ? processEnv.OPENAI_API_KEY.trim() : ''
+  const bindingApiKey = typeof env.OPENAI_API_KEY === 'string' ? env.OPENAI_API_KEY.trim() : ''
+  const openaiApiKey = processApiKey || bindingApiKey
 
-  if (!env.OPENAI_API_KEY) {
+  if (!openaiApiKey) {
     return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
   }
 
@@ -1642,21 +1650,26 @@ app.post('/api/analyze', async (c) => {
       },
     }
 
+    const imageUrl = dataUrl.startsWith('data:') ? dataUrl : `data:image/png;base64,${base64Source}`
+
     const requestPayload = {
       model: 'gpt-4o-mini',
-      temperature: 0.7,
-      max_output_tokens: 500,
+      temperature: 0.6,
+      top_p: 0.9,
+      presence_penalty: 0,
+      frequency_penalty: 0,
+      max_tokens: 900,
       response_format: responseFormat,
-      input: [
+      messages: [
         {
           role: 'system',
-          content: [{ type: 'input_text', text: systemPrompt }],
+          content: [{ type: 'text', text: systemPrompt }],
         },
         {
           role: 'user',
           content: [
-            { type: 'input_text', text: userInstruction },
-            { type: 'input_image', image_url: `data:image/png;base64,${base64Source}` },
+            { type: 'text', text: userInstruction },
+            { type: 'image_url', image_url: { url: imageUrl } },
           ],
         },
       ],
@@ -1667,7 +1680,7 @@ app.post('/api/analyze', async (c) => {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${openaiApiKey}`,
       },
       body: JSON.stringify(requestPayload),
     }
@@ -1680,7 +1693,7 @@ app.post('/api/analyze', async (c) => {
       openaiRequestInit.signal = timeoutSignal
     }
 
-    const openaiResponse = await fetch('https://api.openai.com/v1/responses', openaiRequestInit)
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', openaiRequestInit)
     const requestId = openaiResponse.headers.get('x-request-id') ?? undefined
 
     if (!openaiResponse.ok) {
@@ -1740,18 +1753,57 @@ app.post('/api/analyze', async (c) => {
       }
     }
 
-    const collectOutputItems = (payload: any): any[] => {
-      const items: any[] = []
-      if (Array.isArray(payload?.output)) {
-        items.push(...payload.output)
+    const tryParseMessageContent = (message: any) => {
+      if (!message) return null
+
+      const { content, function_call: functionCall, tool_calls: toolCalls } = message
+
+      if (Array.isArray(content)) {
+        for (const segment of content) {
+          if (!segment) continue
+          if (segment?.type === 'output_json' && segment?.json) {
+            return segment.json
+          }
+          if (typeof segment?.text === 'string') {
+            const candidate = tryParseJsonText(segment.text)
+            if (candidate) {
+              return candidate
+            }
+          }
+          if (segment?.type === 'text' && typeof segment?.value === 'string') {
+            const candidate = tryParseJsonText(segment.value)
+            if (candidate) {
+              return candidate
+            }
+          }
+        }
+      } else if (typeof content === 'string') {
+        const candidate = tryParseJsonText(content)
+        if (candidate) {
+          return candidate
+        }
       }
-      if (Array.isArray(payload?.response?.output)) {
-        items.push(...payload.response.output)
+
+      if (functionCall && typeof functionCall?.arguments === 'string') {
+        const candidate = tryParseJsonText(functionCall.arguments)
+        if (candidate) {
+          return candidate
+        }
       }
-      if (Array.isArray(payload?.messages)) {
-        items.push(...payload.messages)
+
+      if (Array.isArray(toolCalls)) {
+        for (const toolCall of toolCalls) {
+          const args = toolCall?.function?.arguments
+          if (typeof args === 'string') {
+            const candidate = tryParseJsonText(args)
+            if (candidate) {
+              return candidate
+            }
+          }
+        }
       }
-      return items
+
+      return null
     }
 
     let parsed:
@@ -1762,37 +1814,15 @@ app.post('/api/analyze', async (c) => {
         }
       | null = null
 
-    const outputItems = collectOutputItems(completion)
-    for (const item of outputItems) {
-      if (!item) continue
-
-      if (Array.isArray(item?.content)) {
-        for (const contentItem of item.content) {
-          if (contentItem?.type === 'output_json' && contentItem?.json) {
-            parsed = contentItem.json
-            break
-          }
-          if (contentItem?.type === 'output_text') {
-            const candidate = tryParseJsonText(contentItem.text)
-            if (candidate) {
-              parsed = candidate
-              break
-            }
-          }
-        }
-      }
-
+    const choices = Array.isArray(completion?.choices) ? completion.choices : []
+    for (const choice of choices) {
+      parsed = tryParseMessageContent(choice?.message)
       if (parsed) {
         break
       }
-
-      if (item?.type === 'output_json' && item?.json) {
-        parsed = item.json
-        break
-      }
-
-      if (item?.type === 'output_text') {
-        const candidate = tryParseJsonText(item.text)
+      const delta = choice?.delta
+      if (delta) {
+        const candidate = tryParseMessageContent(delta)
         if (candidate) {
           parsed = candidate
           break
@@ -1800,12 +1830,11 @@ app.post('/api/analyze', async (c) => {
       }
     }
 
-    if (!parsed) {
-      parsed = tryParseJsonText(completion?.output_text)
-    }
-
-    if (!parsed && typeof completion?.result === 'string') {
-      parsed = tryParseJsonText(completion.result)
+    if (!parsed && typeof completion?.id === 'string') {
+      const candidate = tryParseMessageContent((completion as any)?.message)
+      if (candidate) {
+        parsed = candidate
+      }
     }
 
     if (!parsed) {

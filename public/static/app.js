@@ -4509,8 +4509,7 @@ function displayAnalysisFor(target) {
   if (provider === 'openai') {
     elements.analysisMeta.textContent = 'OpenAI GPT-4o-mini 분석 결과'
   } else if (provider === 'local') {
-    const reason = typeof data.reason === 'string' && data.reason ? ` (${data.reason})` : ''
-    elements.analysisMeta.textContent = `로컬 Canvas 분석 결과${reason}`
+    elements.analysisMeta.textContent = 'API 키 인증 오류 또는 연결 실패'
   } else {
     elements.analysisMeta.textContent = ''
   }
@@ -5140,11 +5139,11 @@ async function analyzeCurrentImage() {
       fallbackReason = apiError instanceof Error ? apiError.message : String(apiError)
       console.warn('OpenAI 분석 실패, 로컬 분석으로 대체합니다.', fallbackReason)
       const fallbackAnalysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
-      const fallbackReasonLabel =
-        typeof fallbackReason === 'string' && fallbackReason.includes('OPENAI_API_KEY_NOT_CONFIGURED')
-          ? 'OpenAI API 키 미설정'
-          : 'OpenAI API 호출 실패'
-      analysis = { ...fallbackAnalysis, provider: 'local', reason: fallbackReasonLabel }
+      analysis = {
+        ...fallbackAnalysis,
+        provider: 'local',
+        reason: 'API 키 인증 오류 또는 연결 실패',
+      }
       usedFallback = true
     }
 
