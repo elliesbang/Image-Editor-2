@@ -6016,6 +6016,12 @@ function attachEventListeners() {
         }
       })()
 
+      try {
+        window.sessionStorage?.setItem('adminPreviewRequested', '1')
+      } catch (error) {
+        console.warn('관리자 미리보기 상태 저장 실패', error)
+      }
+
       const popup = window.open(loginUrl, '_blank', 'noopener')
       if (!popup || popup.closed) {
         window.location.href = loginUrl

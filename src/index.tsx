@@ -2736,6 +2736,36 @@ app.get('/login.html', (c) => {
         color: #4338ca;
       }
 
+      .login-card__preview {
+        margin: 1.75rem 0 0;
+        padding: 1.2rem 1.15rem 1.35rem;
+        border-radius: 1.6rem;
+        border: 1px solid rgba(79, 70, 229, 0.18);
+        background: rgba(238, 242, 255, 0.65);
+        box-shadow: 0 24px 48px -32px rgba(79, 70, 229, 0.45);
+        display: grid;
+        gap: 0.85rem;
+      }
+
+      .login-card__preview[hidden] {
+        display: none;
+      }
+
+      .login-card__preview-image {
+        width: 100%;
+        display: block;
+        border-radius: 1rem;
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(59, 130, 246, 0.15));
+        box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.1);
+      }
+
+      .login-card__preview-caption {
+        margin: 0;
+        font-size: 0.82rem;
+        color: #4b5563;
+        text-align: center;
+      }
+
       @media (max-width: 640px) {
         header,
         footer {
@@ -2789,6 +2819,18 @@ app.get('/login.html', (c) => {
           <button class="login-card__submit" type="submit">대시보드 열기</button>
         </form>
         <p class="login-card__status" data-role="admin-login-status" aria-live="polite"></p>
+        <figure class="login-card__preview" data-role="admin-preview" aria-hidden="true" hidden>
+          <img
+            class="login-card__preview-image"
+            src="/static/admin-preview.svg"
+            alt="Ellie Image Editor 관리자 대시보드 미리보기"
+            loading="lazy"
+            decoding="async"
+          />
+          <figcaption class="login-card__preview-caption">
+            관리자 전용 대시보드 기능을 한눈에 살펴볼 수 있는 미리보기 화면입니다.
+          </figcaption>
+        </figure>
         <div class="login-meta">
           <span><strong>보안 안내:</strong> 관리자 인증 정보는 Cloudflare Pages 환경변수로 관리됩니다.</span>
           <span>오류가 반복되면 서비스 운영자에게 문의해주세요.</span>
@@ -2806,9 +2848,33 @@ app.get('/login.html', (c) => {
       const emailInput = document.querySelector('[data-role="admin-login-email"]');
       const passwordInput = document.querySelector('[data-role="admin-login-password"]');
       const statusElement = document.querySelector('[data-role="admin-login-status"]');
+      const previewElement = document.querySelector('[data-role="admin-preview"]');
 
       if (emailInput instanceof HTMLInputElement && ADMIN_EMAIL) {
         emailInput.placeholder = ADMIN_EMAIL;
+      }
+
+      function setPreviewVisibility(visible) {
+        if (!(previewElement instanceof HTMLElement)) {
+          return;
+        }
+        previewElement.hidden = !visible;
+        previewElement.setAttribute('aria-hidden', visible ? 'false' : 'true');
+      }
+
+      function initializePreviewVisibility() {
+        let shouldShowPreview = false;
+        try {
+          const storage = window.sessionStorage;
+          if (storage) {
+            const flag = storage.getItem('adminPreviewRequested');
+            shouldShowPreview = flag === '1';
+            storage.removeItem('adminPreviewRequested');
+          }
+        } catch (error) {
+          console.warn('[admin-login] preview flag read failed', error);
+        }
+        setPreviewVisibility(shouldShowPreview);
       }
 
       function focusEmail() {
@@ -2830,6 +2896,8 @@ app.get('/login.html', (c) => {
       } else {
         focusEmail();
       }
+
+      initializePreviewVisibility();
 
       if (form instanceof HTMLFormElement &&
           emailInput instanceof HTMLInputElement &&
