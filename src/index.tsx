@@ -2681,6 +2681,7 @@ app.get('/login.html', (c) => {
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
     <style>
       :root {
         color-scheme: light;
@@ -2883,6 +2884,14 @@ app.get('/login.html', (c) => {
     <header>
       <h1 style="margin:0;font-size:1.3rem;font-weight:600;color:#312e81;">Ellie Image Editor 관리자 센터</h1>
     </header>
+    <div class="pointer-events-none fixed inset-x-0 top-5 flex justify-center px-4">
+      <div
+        data-role="admin-toast"
+        class="hidden w-full max-w-sm -translate-y-2 transform rounded-2xl bg-slate-900/90 px-5 py-4 text-sm font-medium text-white opacity-0 shadow-2xl ring-1 ring-black/10 backdrop-blur-lg transition"
+        role="status"
+        aria-live="assertive"
+      ></div>
+    </div>
     <main>
       <section class="login-card" aria-labelledby="admin-login-title">
         <div>
@@ -2941,142 +2950,458 @@ app.get('/login.html', (c) => {
       <small>&copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.</small>
     </footer>
     <script type="module">
-      const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
-      const DASHBOARD_URL = new URL('/dashboard.html', window.location.origin).toString();
+      (() => {
+        const STORAGE_KEY = 'adminSessionState';
+        const SESSION_ID_KEY = 'adminSessionId';
+        const CHANNEL_NAME = 'admin-auth-channel';
+        const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
+        const DASHBOARD_URL = new URL('/admin-dashboard', window.location.origin).toString();
 
-      const form = document.querySelector('[data-role="admin-login-form"]');
-      const emailInput = document.querySelector('[data-role="admin-login-email"]');
-      const passwordInput = document.querySelector('[data-role="admin-login-password"]');
-      const statusElement = document.querySelector('[data-role="admin-login-status"]');
-      const previewElement = document.querySelector('[data-role="admin-preview"]');
+        const elements = {
+          form: document.querySelector('[data-role="admin-login-form"]'),
+          email: document.querySelector('[data-role="admin-login-email"]'),
+          password: document.querySelector('[data-role="admin-login-password"]'),
+          status: document.querySelector('[data-role="admin-login-status"]'),
+          preview: document.querySelector('[data-role="admin-preview"]'),
+          toast: document.querySelector('[data-role="admin-toast"]'),
+        };
 
-      if (emailInput instanceof HTMLInputElement && ADMIN_EMAIL) {
-        emailInput.placeholder = ADMIN_EMAIL;
-      }
-
-      function setPreviewVisibility(visible) {
-        if (!(previewElement instanceof HTMLElement)) {
-          return;
+        if (elements.email instanceof HTMLInputElement && ADMIN_EMAIL) {
+          elements.email.placeholder = ADMIN_EMAIL;
         }
-        previewElement.hidden = !visible;
-        previewElement.setAttribute('aria-hidden', visible ? 'false' : 'true');
-      }
 
-      function initializePreviewVisibility() {
-        let shouldShowPreview = false;
-        try {
-          const storage = window.sessionStorage;
-          if (storage) {
-            const flag = storage.getItem('adminPreviewRequested');
-            shouldShowPreview = flag === '1';
-            storage.removeItem('adminPreviewRequested');
+        let toastTimer = null;
+        let broadcast = null;
+        let currentSessionId = '';
+
+        const TOAST_TONES = {
+          info: 'bg-indigo-600 text-white',
+          success: 'bg-emerald-600 text-white',
+          warning: 'bg-amber-400 text-slate-900',
+          danger: 'bg-rose-600 text-white',
+        };
+
+        function generateSessionId() {
+          return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : 'sess-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+        }
+
+        function getTabSessionId() {
+          try {
+            return window.sessionStorage?.getItem(SESSION_ID_KEY) || '';
+          } catch (error) {
+            console.warn('[admin-login] failed to read tab session id', error);
+            return '';
           }
-        } catch (error) {
-          console.warn('[admin-login] preview flag read failed', error);
         }
-        setPreviewVisibility(shouldShowPreview);
-      }
 
-      function focusEmail() {
-        if (emailInput instanceof HTMLInputElement) {
-          emailInput.focus();
+        function setTabSessionId(value) {
+          try {
+            const storage = window.sessionStorage;
+            if (!storage) return;
+            if (!value) {
+              storage.removeItem(SESSION_ID_KEY);
+            } else {
+              storage.setItem(SESSION_ID_KEY, value);
+            }
+          } catch (error) {
+            console.warn('[admin-login] failed to store tab session id', error);
+          }
         }
-      }
 
-      function setStatus(message, tone = 'info') {
-        if (!(statusElement instanceof HTMLElement)) {
-          return;
+        function readStoredSession() {
+          try {
+            const storage = window.localStorage;
+            if (!storage) return null;
+            const raw = storage.getItem(STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return null;
+            if (!parsed.loggedIn) return null;
+            const email = typeof parsed.email === 'string' ? parsed.email : '';
+            if (!email) return null;
+            const loginTime = Number(parsed.loginTime);
+            const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : '';
+            return {
+              loggedIn: true,
+              email,
+              loginTime: Number.isFinite(loginTime) ? loginTime : Date.now(),
+              sessionId,
+            };
+          } catch (error) {
+            console.warn('[admin-login] failed to parse stored session', error);
+            return null;
+          }
         }
-        statusElement.textContent = message;
-        statusElement.dataset.tone = message ? tone : '';
-      }
 
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', focusEmail, { once: true });
-      } else {
-        focusEmail();
-      }
+        function isOwnedSession(session) {
+          if (!session || !session.sessionId) return false;
+          return session.sessionId === getTabSessionId();
+        }
 
-      initializePreviewVisibility();
+        function writeSession(email) {
+          const loginTime = Date.now();
+          const sessionId = generateSessionId();
+          try {
+            window.localStorage?.setItem(
+              STORAGE_KEY,
+              JSON.stringify({ loggedIn: true, email, loginTime, sessionId }),
+            );
+          } catch (error) {
+            console.warn('[admin-login] failed to persist session', error);
+          }
+          setTabSessionId(sessionId);
+          currentSessionId = sessionId;
+          return { loggedIn: true, email, loginTime, sessionId };
+        }
 
-      if (form instanceof HTMLFormElement &&
-          emailInput instanceof HTMLInputElement &&
-          passwordInput instanceof HTMLInputElement) {
-        form.addEventListener('submit', (event) => {
-          event.preventDefault();
-
-          const email = emailInput.value.trim().toLowerCase();
-          const password = passwordInput.value;
-
-          if (!email || !password) {
-            window.alert('이메일과 비밀번호를 입력해 주세요.');
+        function setStatus(message, tone = 'info') {
+          if (!(elements.status instanceof HTMLElement)) {
             return;
           }
+          elements.status.textContent = message;
+          elements.status.dataset.tone = message ? tone : '';
+        }
 
-          const submitButton = form.querySelector('button[type="submit"]');
-          if (submitButton instanceof HTMLButtonElement) {
-            submitButton.disabled = true;
+        function hideToast() {
+          if (!(elements.toast instanceof HTMLElement)) {
+            return;
           }
-          form.dataset.state = 'loading';
-          setStatus('관리자 자격을 확인하는 중입니다…', 'info');
+          window.clearTimeout(toastTimer);
+          elements.toast.classList.remove('opacity-100', 'translate-y-0');
+          elements.toast.classList.add('opacity-0', '-translate-y-2');
+          toastTimer = window.setTimeout(() => {
+            if (elements.toast) {
+              elements.toast.classList.add('hidden');
+            }
+          }, 220);
+        }
 
-          fetch('/api/auth/admin/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ email, password }),
-          })
-            .then(async (response) => {
-              if (response.ok) {
-                setStatus('인증이 완료되었습니다. 잠시 후 대시보드가 열립니다.', 'success');
-                const popup = window.open(DASHBOARD_URL, '_blank', 'noopener');
-                if (!popup || popup.closed) {
-                  window.location.href = DASHBOARD_URL;
+        function showToast(message, tone = 'info', duration = 4200) {
+          if (!(elements.toast instanceof HTMLElement)) {
+            return;
+          }
+          window.clearTimeout(toastTimer);
+          const toneClass = TOAST_TONES[tone] || TOAST_TONES.info;
+          const baseClasses = [
+            'pointer-events-auto',
+            'w-full',
+            'max-w-sm',
+            'rounded-2xl',
+            'px-5',
+            'py-4',
+            'text-sm',
+            'font-semibold',
+            'shadow-2xl',
+            'ring-1',
+            'ring-black/10',
+            'backdrop-blur-lg',
+            'transition',
+            'transform',
+            'opacity-0',
+            '-translate-y-2',
+          ].join(' ');
+          elements.toast.className = baseClasses + ' ' + toneClass;
+          elements.toast.textContent = message;
+          elements.toast.classList.remove('hidden');
+          window.requestAnimationFrame(() => {
+            elements.toast.classList.remove('opacity-0', '-translate-y-2');
+            elements.toast.classList.add('opacity-100', 'translate-y-0');
+          });
+          toastTimer = window.setTimeout(() => {
+            hideToast();
+          }, duration);
+        }
+
+        function setFormLocked(locked) {
+          if (!(elements.form instanceof HTMLFormElement)) {
+            return;
+          }
+          elements.form.dataset.locked = locked ? 'true' : 'false';
+          if (locked) {
+            elements.form.dataset.state = 'locked';
+          } else if (elements.form.dataset.state === 'locked') {
+            elements.form.dataset.state = 'idle';
+          }
+          const controls = elements.form.querySelectorAll('input, button');
+          controls.forEach((control) => {
+            if (control instanceof HTMLInputElement || control instanceof HTMLButtonElement) {
+              control.disabled = locked;
+              if (locked) {
+                control.setAttribute('aria-disabled', 'true');
+              } else {
+                control.removeAttribute('aria-disabled');
+              }
+            }
+          });
+          if (!locked) {
+            if (elements.email instanceof HTMLInputElement) {
+              window.requestAnimationFrame(() => elements.email.focus());
+            }
+          }
+        }
+
+        function setPreviewVisibility(visible) {
+          if (!(elements.preview instanceof HTMLElement)) {
+            return;
+          }
+          elements.preview.hidden = !visible;
+          elements.preview.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        }
+
+        function initializePreviewVisibility() {
+          let shouldShowPreview = false;
+          try {
+            const storage = window.sessionStorage;
+            if (storage) {
+              const flag = storage.getItem('adminPreviewRequested');
+              shouldShowPreview = flag === '1';
+              storage.removeItem('adminPreviewRequested');
+            }
+          } catch (error) {
+            console.warn('[admin-login] preview flag read failed', error);
+          }
+          setPreviewVisibility(shouldShowPreview);
+        }
+
+        function focusEmail() {
+          if (elements.email instanceof HTMLInputElement && elements.form?.dataset.locked !== 'true') {
+            elements.email.focus();
+          }
+        }
+
+        function openDashboard(target = 'new') {
+          if (target === 'self') {
+            window.location.replace(DASHBOARD_URL);
+            return;
+          }
+          const popup = window.open(DASHBOARD_URL, '_blank', 'noopener');
+          if (!popup || popup.closed) {
+            window.location.href = DASHBOARD_URL;
+          }
+        }
+
+        function ensureBroadcastChannel() {
+          if (broadcast || typeof BroadcastChannel === 'undefined') {
+            return;
+          }
+          try {
+            broadcast = new BroadcastChannel(CHANNEL_NAME);
+            broadcast.addEventListener('message', handleBroadcastMessage);
+          } catch (error) {
+            console.warn('[admin-login] failed to initialize channel', error);
+            broadcast = null;
+          }
+        }
+
+        function announceLogin(session) {
+          ensureBroadcastChannel();
+          if (!session) return;
+          try {
+            broadcast?.postMessage({ type: 'login', session });
+          } catch (error) {
+            console.warn('[admin-login] failed to broadcast login', error);
+          }
+        }
+
+        function forceLogout(message) {
+          currentSessionId = '';
+          setTabSessionId('');
+          setFormLocked(true);
+          setStatus(message, 'warning');
+          showToast(message, 'warning');
+        }
+
+        function handleSessionCleared(message) {
+          currentSessionId = '';
+          setTabSessionId('');
+          setFormLocked(false);
+          setStatus(message, 'info');
+          showToast(message, 'info');
+        }
+
+        function handleBroadcastMessage(event) {
+          const data = event?.data;
+          if (!data || typeof data !== 'object') return;
+          if (data.type === 'login' && data.session && !isOwnedSession(data.session)) {
+            forceLogout('다른 위치에서 로그인되었습니다.');
+          } else if (data.type === 'logout') {
+            handleSessionCleared('다른 위치에서 로그아웃되었습니다.');
+          }
+        }
+
+        function handleStorageEvent(event) {
+          if (!event || event.storageArea !== window.localStorage) return;
+          if (event.key === null) {
+            handleSessionCleared('다른 위치에서 로그아웃되었습니다.');
+            return;
+          }
+          if (event.key !== STORAGE_KEY) {
+            return;
+          }
+          if (!event.newValue) {
+            handleSessionCleared('다른 위치에서 로그아웃되었습니다.');
+            return;
+          }
+          try {
+            const session = JSON.parse(event.newValue);
+            if (!isOwnedSession(session)) {
+              forceLogout('다른 위치에서 로그인되었습니다.');
+            }
+          } catch (error) {
+            console.warn('[admin-login] failed to parse sync payload', error);
+          }
+        }
+
+        function restoreSessionIfOwned() {
+          const stored = readStoredSession();
+          if (!stored || stored.email !== ADMIN_EMAIL) {
+            return false;
+          }
+          if (isOwnedSession(stored)) {
+            currentSessionId = stored.sessionId || '';
+            setStatus('이전에 로그인한 세션을 복원했습니다. 대시보드를 여는 중입니다.', 'info');
+            showToast('이전에 로그인한 세션을 복원했습니다.', 'info');
+            openDashboard('self');
+            return true;
+          }
+          return false;
+        }
+
+        function checkExistingLock() {
+          const stored = readStoredSession();
+          if (stored && stored.email === ADMIN_EMAIL && !isOwnedSession(stored)) {
+            setFormLocked(true);
+            setStatus('이미 다른 위치에서 로그인되어 있습니다. 로그아웃 후 다시 시도해주세요.', 'warning');
+            showToast('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning');
+          }
+        }
+
+        currentSessionId = getTabSessionId();
+        ensureBroadcastChannel();
+        window.addEventListener('storage', handleStorageEvent);
+        initializePreviewVisibility();
+
+        if (restoreSessionIfOwned()) {
+          return;
+        }
+
+        checkExistingLock();
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', focusEmail, { once: true });
+        } else {
+          focusEmail();
+        }
+
+        if (
+          elements.form instanceof HTMLFormElement &&
+          elements.email instanceof HTMLInputElement &&
+          elements.password instanceof HTMLInputElement
+        ) {
+          elements.form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            if (elements.form.dataset.state === 'loading' || elements.form.dataset.locked === 'true') {
+              return;
+            }
+
+            const email = elements.email.value.trim().toLowerCase();
+            const password = elements.password.value;
+
+            if (!email || !password) {
+              setStatus('이메일과 비밀번호를 모두 입력해 주세요.', 'warning');
+              showToast('이메일과 비밀번호를 모두 입력해 주세요.', 'warning');
+              return;
+            }
+
+            const existing = readStoredSession();
+            if (existing && existing.email === email) {
+              if (isOwnedSession(existing)) {
+                setStatus('이미 로그인된 세션이 활성화되어 있습니다.', 'warning');
+                showToast('이미 로그인된 세션이 활성화되어 있습니다.', 'warning');
+              } else {
+                setStatus('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning');
+                showToast('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning');
+              }
+              setFormLocked(true);
+              return;
+            }
+
+            const submitButton = elements.form.querySelector('button[type="submit"]');
+            if (submitButton instanceof HTMLButtonElement) {
+              submitButton.disabled = true;
+            }
+            elements.form.dataset.state = 'loading';
+            setStatus('관리자 자격을 확인하는 중입니다…', 'info');
+
+            fetch('/api/auth/admin/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ email, password }),
+            })
+              .then(async (response) => {
+                if (response.ok) {
+                  const session = writeSession(email);
+                  announceLogin(session);
+                  setStatus('인증이 완료되었습니다. 잠시 후 대시보드가 열립니다.', 'success');
+                  showToast('인증이 완료되었습니다. 대시보드를 준비하고 있습니다.', 'success');
+                  const popup = window.open(DASHBOARD_URL, '_blank', 'noopener');
+                  if (!popup || popup.closed) {
+                    openDashboard('self');
+                  }
+                  elements.form.reset();
+                  window.setTimeout(() => setStatus('', ''), 3000);
+                  return;
                 }
-                form.reset();
-                focusEmail();
-                window.setTimeout(() => setStatus('', ''), 3000);
-                return;
-              }
 
-              if (response.status === 401) {
-                window.alert('관리자 자격이 올바르지 않습니다.');
-                setStatus('이메일 또는 비밀번호가 올바르지 않습니다.', 'danger');
-                passwordInput.value = '';
-                passwordInput.focus();
-                return;
-              }
+                if (response.status === 401) {
+                  setStatus('이메일 또는 비밀번호가 올바르지 않습니다.', 'danger');
+                  showToast('관리자 자격이 올바르지 않습니다.', 'danger');
+                  elements.password.value = '';
+                  elements.password.focus();
+                  return;
+                }
 
-              if (response.status === 429) {
-                const detail = await response.json().catch(() => ({}));
-                const retryAfter = Number(detail?.retryAfter ?? 0);
-                const seconds = Number.isFinite(retryAfter) ? Math.max(1, Math.ceil(retryAfter)) : 0;
-                const message = seconds
-                  ? '로그인 시도가 많아 잠시 후 다시 시도해주세요. (약 ' + seconds + '초 후 가능)'
-                  : '로그인 시도가 많아 잠시 후 다시 시도해주세요.';
-                setStatus(message, 'warning');
-                return;
-              }
+                if (response.status === 429) {
+                  const detail = await response.json().catch(() => ({}));
+                  const retryAfter = Number(detail?.retryAfter ?? 0);
+                  const seconds = Number.isFinite(retryAfter) ? Math.max(1, Math.ceil(retryAfter)) : 0;
+                  const message =
+                    seconds > 0
+                      ? '로그인 시도가 많아 잠시 후 다시 시도해주세요. (약 ' + seconds + '초 후 가능)'
+                      : '로그인 시도가 많아 잠시 후 다시 시도해주세요.';
+                  setStatus(message, 'warning');
+                  showToast(message, 'warning');
+                  return;
+                }
 
-              if (response.status === 500) {
-                setStatus('관리자 인증 구성이 완료되지 않았습니다. 운영자에게 문의해주세요.', 'danger');
-                return;
-              }
+                if (response.status === 500) {
+                  setStatus('관리자 인증 구성이 완료되지 않았습니다. 운영자에게 문의해주세요.', 'danger');
+                  showToast('관리자 인증 구성이 완료되지 않았습니다.', 'danger');
+                  return;
+                }
 
-              setStatus('로그인 중 오류(' + response.status + ')가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-            })
-            .catch((error) => {
-              console.error('[admin-login] Unexpected error', error);
-              setStatus('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-            })
-            .finally(() => {
-              if (submitButton instanceof HTMLButtonElement) {
-                submitButton.disabled = false;
-              }
-              form.dataset.state = 'idle';
-            });
-        });
-      }
+                setStatus('로그인 중 오류(' + response.status + ')가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+                showToast('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+              })
+              .catch((error) => {
+                console.error('[admin-login] Unexpected error', error);
+                setStatus('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+                showToast('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+              })
+              .finally(() => {
+                if (submitButton instanceof HTMLButtonElement) {
+                  submitButton.disabled = false;
+                }
+                if (elements.form.dataset.state === 'loading') {
+                  elements.form.dataset.state = elements.form.dataset.locked === 'true' ? 'locked' : 'idle';
+                }
+              });
+          });
+        }
+      })();
     </script>
   </body>
 </html>`
@@ -3086,7 +3411,9 @@ app.get('/login.html', (c) => {
   return response
 })
 
-app.get('/dashboard.html', (c) => {
+app.get('/dashboard.html', (c) => c.redirect('/admin-dashboard', 301))
+
+app.get('/admin-dashboard', (c) => {
   const dashboardPage = `<!DOCTYPE html>
 <html lang="ko">
   <head>
@@ -3099,6 +3426,7 @@ app.get('/dashboard.html', (c) => {
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
     <style>
       :root {
         color-scheme: light;
@@ -3126,7 +3454,45 @@ app.get('/dashboard.html', (c) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 1.5rem;
+      }
+
+      .dashboard-header__titles {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .dashboard-actions {
+        display: flex;
+        align-items: center;
         gap: 1rem;
+      }
+
+      .dashboard-session {
+        font-size: 0.9rem;
+        color: #4b5563;
+        background: rgba(99, 102, 241, 0.1);
+        border-radius: 999px;
+        padding: 0.4rem 0.9rem;
+      }
+
+      .dashboard-logout {
+        border: none;
+        border-radius: 999px;
+        padding: 0.75rem 1.25rem;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #fff;
+        background: linear-gradient(135deg, #ef4444 0%, #f97316 100%);
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .dashboard-logout:hover,
+      .dashboard-logout:focus-visible {
+        transform: translateY(-1px);
+        box-shadow: 0 18px 36px -20px rgba(239, 68, 68, 0.5);
       }
 
       footer {
@@ -3151,7 +3517,7 @@ app.get('/dashboard.html', (c) => {
       }
 
       .dashboard-subtitle {
-        margin: 0.45rem 0 0;
+        margin: 0;
         font-size: clamp(1rem, 1.3vw, 1.1rem);
         color: #4b5563;
       }
@@ -3214,6 +3580,17 @@ app.get('/dashboard.html', (c) => {
           padding: 1.75rem 1.5rem;
         }
 
+        header {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 1rem;
+        }
+
+        .dashboard-actions {
+          width: 100%;
+          justify-content: space-between;
+        }
+
         main {
           padding: 2.25rem 1.5rem 3rem;
         }
@@ -3222,12 +3599,23 @@ app.get('/dashboard.html', (c) => {
   </head>
   <body>
     <header>
-      <div>
+      <div class="dashboard-header__titles">
         <h1 class="dashboard-title">Ellie Image Editor Dashboard</h1>
-        <p class="dashboard-subtitle">관리자 전용 대시보드 영역입니다.</p>
+        <p class="dashboard-subtitle" data-role="welcome">관리자 전용 대시보드 영역입니다.</p>
       </div>
-      <a class="dashboard-card__cta" href="/" target="_blank" rel="noopener">사이트로 돌아가기</a>
+      <div class="dashboard-actions">
+        <span class="dashboard-session" data-role="session-info" aria-live="polite"></span>
+        <button class="dashboard-logout" type="button" data-role="logout">로그아웃</button>
+      </div>
     </header>
+    <div class="pointer-events-none fixed inset-x-0 top-5 flex justify-center px-4">
+      <div
+        data-role="dashboard-toast"
+        class="hidden w-full max-w-sm -translate-y-2 transform rounded-2xl bg-slate-900/90 px-5 py-4 text-sm font-medium text-white opacity-0 shadow-2xl ring-1 ring-black/10 backdrop-blur-lg transition"
+        role="status"
+        aria-live="assertive"
+      ></div>
+    </div>
     <main>
       <section class="card-grid" aria-label="관리자 기능">
         <article class="dashboard-card">
@@ -3245,12 +3633,245 @@ app.get('/dashboard.html', (c) => {
         <article class="dashboard-card">
           <h2 class="dashboard-card__title">커뮤니티 바로가기</h2>
           <p class="dashboard-card__body">미치나 커뮤니티를 열어 참여자와 소통하세요.</p>
+          <a class="dashboard-card__cta" href="/?view=community" target="_blank" rel="noopener">커뮤니티 열기</a>
         </article>
       </section>
     </main>
     <footer>
       <small>&copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.</small>
     </footer>
+    <script type="module">
+      (() => {
+        const STORAGE_KEY = 'adminSessionState';
+        const SESSION_ID_KEY = 'adminSessionId';
+        const CHANNEL_NAME = 'admin-auth-channel';
+        const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
+        const LOGIN_URL = new URL('/login.html', window.location.origin).toString();
+
+        const elements = {
+          logout: document.querySelector('[data-role="logout"]'),
+          toast: document.querySelector('[data-role="dashboard-toast"]'),
+          welcome: document.querySelector('[data-role="welcome"]'),
+          sessionInfo: document.querySelector('[data-role="session-info"]'),
+        };
+
+        let broadcast = null;
+        let toastTimer = null;
+
+        const TOAST_TONES = {
+          info: 'bg-indigo-600 text-white',
+          success: 'bg-emerald-600 text-white',
+          warning: 'bg-amber-400 text-slate-900',
+          danger: 'bg-rose-600 text-white',
+        };
+
+        function hideToast() {
+          if (!(elements.toast instanceof HTMLElement)) {
+            return;
+          }
+          window.clearTimeout(toastTimer);
+          elements.toast.classList.remove('opacity-100', 'translate-y-0');
+          elements.toast.classList.add('opacity-0', '-translate-y-2');
+          toastTimer = window.setTimeout(() => {
+            if (elements.toast) {
+              elements.toast.classList.add('hidden');
+            }
+          }, 220);
+        }
+
+        function showToast(message, tone = 'info', duration = 4200) {
+          if (!(elements.toast instanceof HTMLElement)) {
+            return;
+          }
+          window.clearTimeout(toastTimer);
+          const toneClass = TOAST_TONES[tone] || TOAST_TONES.info;
+          const baseClasses = [
+            'pointer-events-auto',
+            'w-full',
+            'max-w-sm',
+            'rounded-2xl',
+            'px-5',
+            'py-4',
+            'text-sm',
+            'font-semibold',
+            'shadow-2xl',
+            'ring-1',
+            'ring-black/10',
+            'backdrop-blur-lg',
+            'transition',
+            'transform',
+            'opacity-0',
+            '-translate-y-2',
+          ].join(' ');
+          elements.toast.className = baseClasses + ' ' + toneClass;
+          elements.toast.textContent = message;
+          elements.toast.classList.remove('hidden');
+          window.requestAnimationFrame(() => {
+            elements.toast.classList.remove('opacity-0', '-translate-y-2');
+            elements.toast.classList.add('opacity-100', 'translate-y-0');
+          });
+          toastTimer = window.setTimeout(() => {
+            hideToast();
+          }, duration);
+        }
+
+        function readStoredSession() {
+          try {
+            const storage = window.localStorage;
+            if (!storage) return null;
+            const raw = storage.getItem(STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return null;
+            if (!parsed.loggedIn) return null;
+            const email = typeof parsed.email === 'string' ? parsed.email : '';
+            if (!email) return null;
+            const loginTime = Number(parsed.loginTime);
+            const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : '';
+            return {
+              loggedIn: true,
+              email,
+              loginTime: Number.isFinite(loginTime) ? loginTime : Date.now(),
+              sessionId,
+            };
+          } catch (error) {
+            console.warn('[admin-dashboard] failed to parse stored session', error);
+            return null;
+          }
+        }
+
+        function getTabSessionId() {
+          try {
+            return window.sessionStorage?.getItem(SESSION_ID_KEY) || '';
+          } catch (error) {
+            console.warn('[admin-dashboard] failed to read tab session id', error);
+            return '';
+          }
+        }
+
+        function ensureBroadcastChannel() {
+          if (broadcast || typeof BroadcastChannel === 'undefined') {
+            return;
+          }
+          try {
+            broadcast = new BroadcastChannel(CHANNEL_NAME);
+            broadcast.addEventListener('message', handleBroadcastMessage);
+          } catch (error) {
+            console.warn('[admin-dashboard] failed to initialize channel', error);
+            broadcast = null;
+          }
+        }
+
+        function updateSessionDetails(session) {
+          if (elements.welcome instanceof HTMLElement) {
+            elements.welcome.textContent = session.email + '님, Ellie Image Editor Dashboard에 오신 것을 환영합니다.';
+          }
+          if (elements.sessionInfo instanceof HTMLElement) {
+            const formatted = new Intl.DateTimeFormat('ko', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            }).format(session.loginTime);
+            elements.sessionInfo.textContent = '로그인 시각: ' + formatted;
+          }
+        }
+
+        function redirectToLogin(message, tone = 'warning', delay = 1400) {
+          showToast(message, tone, Math.max(delay, 900));
+          if (elements.logout instanceof HTMLButtonElement) {
+            elements.logout.disabled = true;
+          }
+          window.setTimeout(() => {
+            window.location.replace(LOGIN_URL);
+          }, Math.max(delay, 900));
+        }
+
+        function handleBroadcastMessage(event) {
+          const data = event?.data;
+          if (!data || typeof data !== 'object') return;
+          if (data.type === 'login') {
+            redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning');
+          } else if (data.type === 'logout') {
+            redirectToLogin('다른 위치에서 로그아웃되었습니다.', 'info');
+          }
+        }
+
+        function handleStorageEvent(event) {
+          if (!event || event.storageArea !== window.localStorage) return;
+          if (event.key === null) {
+            redirectToLogin('로그인 세션이 종료되었습니다.', 'info');
+            return;
+          }
+          if (event.key !== STORAGE_KEY) {
+            return;
+          }
+          if (!event.newValue) {
+            redirectToLogin('로그인 세션이 종료되었습니다.', 'info');
+            return;
+          }
+          try {
+            const session = JSON.parse(event.newValue);
+            if (!session || session.sessionId !== getTabSessionId()) {
+              redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning');
+            }
+          } catch (error) {
+            console.warn('[admin-dashboard] failed to parse sync payload', error);
+          }
+        }
+
+        const activeSession = readStoredSession();
+        if (!activeSession || activeSession.email !== ADMIN_EMAIL) {
+          redirectToLogin('관리자 세션을 확인할 수 없습니다. 다시 로그인해주세요.', 'warning', 1200);
+          return;
+        }
+
+        if (!activeSession.sessionId || activeSession.sessionId !== getTabSessionId()) {
+          redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning', 1200);
+          return;
+        }
+
+        updateSessionDetails(activeSession);
+        ensureBroadcastChannel();
+        window.addEventListener('storage', handleStorageEvent);
+
+        if (elements.logout instanceof HTMLButtonElement) {
+          elements.logout.addEventListener('click', async () => {
+            if (elements.logout instanceof HTMLButtonElement) {
+              elements.logout.disabled = true;
+              elements.logout.textContent = '로그아웃 중…';
+            }
+            showToast('로그아웃을 진행하고 있습니다…', 'info');
+            try {
+              await fetch('/api/auth/admin/logout', { method: 'POST', credentials: 'include' });
+            } catch (error) {
+              console.warn('[admin-dashboard] logout request failed', error);
+            }
+            try {
+              window.localStorage?.clear();
+            } catch (error) {
+              console.warn('[admin-dashboard] failed to clear storage', error);
+            }
+            try {
+              window.sessionStorage?.removeItem(SESSION_ID_KEY);
+            } catch (error) {
+              console.warn('[admin-dashboard] failed to clear session id', error);
+            }
+            ensureBroadcastChannel();
+            try {
+              broadcast?.postMessage({ type: 'logout' });
+            } catch (error) {
+              console.warn('[admin-dashboard] failed to broadcast logout', error);
+            }
+            showToast('로그아웃되었습니다. 로그인 페이지로 이동합니다.', 'success', 1100);
+            window.setTimeout(() => {
+              window.location.replace(LOGIN_URL);
+            }, 1100);
+          });
+        }
+      })();
+    </script>
   </body>
 </html>`
 

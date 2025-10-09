@@ -12,6 +12,10 @@ const IMAGE_TRACER_RETRY_JITTER = 500
 const SVGO_BROWSER_SRC = 'https://cdn.jsdelivr.net/npm/svgo@3.3.2/dist/svgo.browser.js'
 const FREEMIUM_INITIAL_CREDITS = 30
 const MICHINA_INITIAL_CREDITS = 10000
+const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
+const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
+const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
+const ADMIN_DASHBOARD_PATH = '/admin-dashboard'
 const CREDIT_COSTS = {
   operation: 1,
   resize: 1,
@@ -154,6 +158,8 @@ const runtime = {
     retryCount: 0,
     cooldownTimer: null,
     cooldownUntil: 0,
+    sessionId: null,
+    channel: null,
   },
 }
 
@@ -467,6 +473,212 @@ let svgOptimizerReadyPromise = null
 
 function uuid() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random()}`
+}
+
+function generateAdminSessionId() {
+  return uuid()
+}
+
+function getStoredAdminSession() {
+  try {
+    const storage = window.localStorage
+    if (!storage) return null
+    const raw = storage.getItem(ADMIN_SESSION_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    if (!parsed.loggedIn) return null
+    const email = typeof parsed.email === 'string' ? parsed.email : ''
+    if (!email) return null
+    const loginTime = Number(parsed.loginTime)
+    const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+    return {
+      loggedIn: true,
+      email,
+      loginTime: Number.isFinite(loginTime) ? loginTime : Date.now(),
+      sessionId,
+    }
+  } catch (error) {
+    console.warn('관리자 세션 정보를 불러오는 중 오류가 발생했습니다.', error)
+    return null
+  }
+}
+
+function getCurrentTabAdminSessionId() {
+  try {
+    const storage = window.sessionStorage
+    if (!storage) return ''
+    return storage.getItem(ADMIN_SESSION_ID_STORAGE_KEY) || ''
+  } catch (error) {
+    console.warn('탭별 관리자 세션 정보를 확인하는 중 오류가 발생했습니다.', error)
+    return ''
+  }
+}
+
+function setCurrentTabAdminSessionId(value) {
+  try {
+    const storage = window.sessionStorage
+    if (!storage) return
+    if (!value) {
+      storage.removeItem(ADMIN_SESSION_ID_STORAGE_KEY)
+    } else {
+      storage.setItem(ADMIN_SESSION_ID_STORAGE_KEY, value)
+    }
+  } catch (error) {
+    console.warn('탭별 관리자 세션 정보를 갱신하는 중 오류가 발생했습니다.', error)
+  }
+}
+
+function persistAdminSessionState(email, sessionId, loginTime = Date.now()) {
+  try {
+    const storage = window.localStorage
+    if (storage) {
+      storage.setItem(
+        ADMIN_SESSION_STORAGE_KEY,
+        JSON.stringify({ loggedIn: true, email, loginTime, sessionId }),
+      )
+    }
+  } catch (error) {
+    console.warn('관리자 세션 정보를 저장하는 중 오류가 발생했습니다.', error)
+  }
+  setCurrentTabAdminSessionId(sessionId)
+  runtime.admin.sessionId = sessionId
+  return { loggedIn: true, email, loginTime, sessionId }
+}
+
+function clearAdminSessionStorage(options = {}) {
+  const { preserveGlobal = false } = options || {}
+  try {
+    const storage = window.localStorage
+    if (storage) {
+      if (preserveGlobal) {
+        storage.removeItem(ADMIN_SESSION_STORAGE_KEY)
+      } else {
+        storage.clear()
+      }
+    }
+  } catch (error) {
+    console.warn('관리자 세션 정보를 정리하는 중 오류가 발생했습니다.', error)
+  }
+  setCurrentTabAdminSessionId('')
+  runtime.admin.sessionId = null
+}
+
+function ensureAdminAuthChannel() {
+  if (runtime.admin.channel) {
+    return runtime.admin.channel
+  }
+  if (typeof BroadcastChannel === 'undefined') {
+    return null
+  }
+  try {
+    const channel = new BroadcastChannel(ADMIN_SESSION_CHANNEL_NAME)
+    channel.addEventListener('message', handleAdminBroadcastMessage)
+    runtime.admin.channel = channel
+    return channel
+  } catch (error) {
+    console.warn('관리자 세션 동기화 채널을 초기화하지 못했습니다.', error)
+    return null
+  }
+}
+
+function notifyAdminLogin(session) {
+  const channel = ensureAdminAuthChannel()
+  if (!channel || !session) return
+  try {
+    channel.postMessage({ type: 'login', session })
+  } catch (error) {
+    console.warn('관리자 로그인 방송을 전송하지 못했습니다.', error)
+  }
+}
+
+function notifyAdminLogout(sessionId) {
+  const channel = ensureAdminAuthChannel()
+  if (!channel) return
+  try {
+    channel.postMessage({ type: 'logout', sessionId })
+  } catch (error) {
+    console.warn('관리자 로그아웃 방송을 전송하지 못했습니다.', error)
+  }
+}
+
+function isOwnedAdminSession(session) {
+  if (!session || !session.sessionId) return false
+  return session.sessionId === getCurrentTabAdminSessionId()
+}
+
+function handleRemoteAdminLogout(reason = '다른 위치에서 로그아웃되었습니다.') {
+  setCurrentTabAdminSessionId('')
+  runtime.admin.sessionId = null
+  if (state.admin.isLoggedIn) {
+    revokeAdminSessionState()
+    setStatus(reason, 'warning')
+  }
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.dataset.state = 'idle'
+    const controls = elements.adminLoginForm.querySelectorAll('input, button')
+    controls.forEach((control) => {
+      if (control instanceof HTMLInputElement || control instanceof HTMLButtonElement) {
+        control.disabled = false
+        control.removeAttribute('aria-disabled')
+      }
+    })
+  }
+}
+
+function handleAdminBroadcastMessage(event) {
+  const data = event?.data
+  if (!data || typeof data !== 'object') return
+  if (data.type === 'login' && data.session && !isOwnedAdminSession(data.session)) {
+    handleRemoteAdminLogout('다른 위치에서 로그인되었습니다.')
+  } else if (data.type === 'logout') {
+    if (!data.sessionId || data.sessionId === runtime.admin.sessionId) {
+      handleRemoteAdminLogout('다른 위치에서 로그아웃되었습니다.')
+    }
+  }
+}
+
+function handleAdminStorageEvent(event) {
+  if (!event || event.storageArea !== window.localStorage) return
+  if (event.key === null) {
+    handleRemoteAdminLogout('다른 위치에서 로그아웃되었습니다.')
+    return
+  }
+  if (event.key !== ADMIN_SESSION_STORAGE_KEY) {
+    return
+  }
+  if (!event.newValue) {
+    handleRemoteAdminLogout('다른 위치에서 로그아웃되었습니다.')
+    return
+  }
+  try {
+    const session = JSON.parse(event.newValue)
+    if (!isOwnedAdminSession(session)) {
+      handleRemoteAdminLogout('다른 위치에서 로그인되었습니다.')
+    }
+  } catch (error) {
+    console.warn('관리자 세션 동기화 정보 파싱에 실패했습니다.', error)
+  }
+}
+
+function initializeAdminAuthSync() {
+  ensureAdminAuthChannel()
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', handleAdminStorageEvent)
+  }
+  const stored = getStoredAdminSession()
+  if (stored && stored.sessionId && isOwnedAdminSession(stored)) {
+    runtime.admin.sessionId = stored.sessionId
+  }
+}
+
+function getAdminDashboardUrl() {
+  try {
+    return new URL(ADMIN_DASHBOARD_PATH, window.location.origin).toString()
+  } catch (error) {
+    console.warn('관리자 대시보드 경로를 계산하지 못했습니다.', error)
+    return ADMIN_DASHBOARD_PATH
+  }
 }
 
 function wait(ms, jitter = 0) {
@@ -1412,15 +1624,7 @@ function showAdminDashboardShortcut(options = {}) {
   })
   actions.appendChild(openButton)
 
-  let adminUrl = '/?view=admin'
-  try {
-    const url = new URL(window.location.href)
-    url.searchParams.set('view', 'admin')
-    url.hash = ''
-    adminUrl = url.toString()
-  } catch (error) {
-    // ignore URL parse errors
-  }
+  const adminUrl = getAdminDashboardUrl()
 
   const newTabLink = document.createElement('a')
   newTabLink.href = adminUrl
@@ -1552,11 +1756,14 @@ function applyCommunityRoleFromStorage() {
 }
 
 async function handleLogout() {
+  const sessionId = runtime.admin.sessionId
   try {
-    await fetch('/api/auth/admin/logout', { method: 'POST' })
+    await fetch('/api/auth/admin/logout', { method: 'POST', credentials: 'include' })
   } catch (error) {
     // ignore network errors
   }
+  notifyAdminLogout(sessionId)
+  clearAdminSessionStorage()
   state.admin.isLoggedIn = false
   state.admin.email = ''
   state.admin.participants = []
@@ -1721,6 +1928,18 @@ async function syncAdminSession() {
     const payload = await response.json().catch(() => ({}))
     if (payload && payload.admin) {
       const email = typeof payload.email === 'string' ? payload.email : ''
+      let session = getStoredAdminSession()
+      if (!session || session.email !== email || !session.sessionId) {
+        session = persistAdminSessionState(email, generateAdminSessionId())
+        notifyAdminLogin(session)
+      } else if (!isOwnedAdminSession(session)) {
+        handleRemoteAdminLogout('이미 로그인된 다른 세션이 있어 현재 창에서 관리자 모드를 사용할 수 없습니다.')
+        return
+      } else {
+        setCurrentTabAdminSessionId(session.sessionId)
+        runtime.admin.sessionId = session.sessionId
+      }
+
       state.admin.isLoggedIn = true
       state.admin.email = email
       applyLoginProfile({ name: '관리자', email, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
@@ -1731,6 +1950,7 @@ async function syncAdminSession() {
       await fetchAdminParticipants()
       announceAdminDashboardAccess()
     } else {
+      clearAdminSessionStorage({ preserveGlobal: true })
       revokeAdminSessionState()
     }
   } catch (error) {
@@ -1926,7 +2146,7 @@ function announceAdminDashboardAccess(options = {}) {
   }
 
   const duration = Number.isFinite(options.duration) ? options.duration : 8000
-  const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
+  const dashboardUrl = getAdminDashboardUrl()
   setStatus({
     html: `
       <span><strong>관리자 로그인 완료!</strong> 대시보드를 현재 페이지에서 열거나 새 탭으로 띄울 수 있습니다.</span>
@@ -1969,7 +2189,7 @@ document.addEventListener('click', (event) => {
   if (action === 'open-admin-dashboard') {
     event.preventDefault()
     const openTarget = origin.dataset.openTarget || 'self'
-    const dashboardUrl = `${window.location.origin.replace(/\/$/, '')}/?view=admin`
+    const dashboardUrl = getAdminDashboardUrl()
     if (openTarget === 'new') {
       window.open(dashboardUrl, '_blank', 'noopener')
     } else {
@@ -2127,6 +2347,16 @@ async function handleAdminLogin(event) {
     return
   }
 
+  const existingSession = getStoredAdminSession()
+  if (existingSession && existingSession.loggedIn && existingSession.email === email) {
+    if (isOwnedAdminSession(existingSession)) {
+      setAdminMessage('이미 로그인된 세션이 활성화되어 있습니다. 대시보드에서 계속 진행해주세요.', 'warning')
+    } else {
+      setAdminMessage('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning')
+    }
+    return
+  }
+
   if (elements.adminEmailInput instanceof HTMLInputElement) {
     elements.adminEmailInput.removeAttribute('aria-invalid')
   }
@@ -2197,6 +2427,8 @@ async function handleAdminLogin(event) {
     clearAdminCooldown()
     state.admin.isLoggedIn = true
     state.admin.email = sessionEmail
+    const session = persistAdminSessionState(sessionEmail, generateAdminSessionId(), Date.now())
+    notifyAdminLogin(session)
     applyLoginProfile({ name: '관리자', email: sessionEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
     refreshAccessStates()
     closeAdminModal()
@@ -6337,6 +6569,8 @@ function init() {
   const allowBypass = initialView !== 'home' && initialView !== 'admin'
   runtime.allowViewBypass = allowBypass
   state.view = initialView
+
+  initializeAdminAuthSync()
 
   if (initialView === 'community') {
     if (document.body) {
