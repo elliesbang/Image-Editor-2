@@ -2435,16 +2435,23 @@ app.get('/', (c) => {
               </div>
             </header>
             <div class="results-toolbar">
-              <div class="results-toolbar__group">
-                <label class="results-toolbar__label" for="svgColorCount">SVG 색상 수</label>
-                <select id="svgColorCount">
-                  <option value="1">단색</option>
-                  <option value="2">2색</option>
-                  <option value="3">3색</option>
-                  <option value="4">4색</option>
-                  <option value="5">5색</option>
-                  <option value="6" selected>6색</option>
-                </select>
+              <div class="results-toolbar__group results-toolbar__group--controls">
+                <div class="results-toolbar__control">
+                  <label class="results-toolbar__label" for="svgColorCount">SVG 색상 수</label>
+                  <select id="svgColorCount">
+                    <option value="1">단색</option>
+                    <option value="2">2색</option>
+                    <option value="3">3색</option>
+                    <option value="4">4색</option>
+                    <option value="5">5색</option>
+                    <option value="6" selected>6색</option>
+                  </select>
+                </div>
+                <label class="toggle" for="smartCropToggle">
+                  <input id="smartCropToggle" type="checkbox" checked />
+                  <span class="toggle__control" aria-hidden="true"></span>
+                  <span class="toggle__label">Smart Crop</span>
+                </label>
               </div>
               <div class="results-toolbar__actions">
                 <button class="btn btn--ghost" type="button" data-result-operation="svg">PNG → SVG 변환</button>
@@ -2452,6 +2459,19 @@ app.get('/', (c) => {
                 <button class="btn btn--primary" type="button" data-result-download="all">전체 다운로드</button>
               </div>
             </div>
+            <div class="svg-progress" data-role="svg-progress" aria-hidden="true">
+              <div class="svg-progress__bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="svg-progress__fill" data-role="svg-progress-fill"></div>
+              </div>
+              <div class="svg-progress__messages">
+                <p class="svg-progress__message" data-role="svg-progress-message" aria-live="polite">Uploading image...</p>
+                <p class="svg-progress__detail" data-role="svg-progress-detail"></p>
+                <p class="svg-progress__hint" data-role="svg-progress-hint" aria-live="polite">Still working... please wait.</p>
+              </div>
+            </div>
+            <p class="svg-progress__notice" data-role="svg-stroke-notice" hidden>
+              Some strokes were adjusted or removed for compatibility.
+            </p>
             <div class="gate results-gate" data-role="results-gate" data-state="locked">
               <i class="ri-lock-2-line results-gate__icon" aria-hidden="true"></i>
               <div class="results-gate__body">
