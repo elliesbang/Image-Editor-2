@@ -707,6 +707,14 @@ const elements = {
   resultDownloadButtons: document.querySelectorAll('[data-result-download]'),
   svgButton: document.querySelector('[data-result-operation="svg"]'),
   svgColorSelect: document.querySelector('#svgColorCount'),
+  smartCropToggle: document.querySelector('#smartCropToggle'),
+  svgProgress: document.querySelector('[data-role="svg-progress"]'),
+  svgProgressBar: document.querySelector('[data-role="svg-progress"] [role="progressbar"]'),
+  svgProgressFill: document.querySelector('[data-role="svg-progress-fill"]'),
+  svgProgressMessage: document.querySelector('[data-role="svg-progress-message"]'),
+  svgProgressDetail: document.querySelector('[data-role="svg-progress-detail"]'),
+  svgProgressHint: document.querySelector('[data-role="svg-progress-hint"]'),
+  svgStrokeNotice: document.querySelector('[data-role="svg-stroke-notice"]'),
   uploadSelectAll: document.querySelector('[data-action="upload-select-all"]'),
   uploadClear: document.querySelector('[data-action="upload-clear"]'),
   uploadDeleteSelected: document.querySelector('[data-action="upload-delete-selected"]'),
@@ -796,6 +804,25 @@ const elements = {
 
 let statusTimer = null
 let svgOptimizerReadyPromise = null
+
+const SVG_PROGRESS_STEPS = {
+  uploading: { label: 'Uploading image...', fraction: 0.1 },
+  analyzing: { label: 'Analyzing pixels...', fraction: 0.35 },
+  vectorizing: { label: 'Vectorizing shapes...', fraction: 0.7 },
+  rendering: { label: 'Rendering SVG...', fraction: 0.9 },
+  done: { label: 'Done!', fraction: 1 },
+}
+
+const svgProgressState = {
+  active: false,
+  totalTargets: 1,
+  stillWorkingTimer: null,
+  hideTimer: null,
+}
+
+const svgNoticeState = {
+  hideTimer: null,
+}
 
 function uuid() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random()}`
@@ -1413,6 +1440,161 @@ function setStatus(message, tone = 'info', duration = 3200) {
   }
 }
 
+function resetSvgProgressTimers() {
+  if (svgProgressState.stillWorkingTimer) {
+    window.clearTimeout(svgProgressState.stillWorkingTimer)
+    svgProgressState.stillWorkingTimer = null
+  }
+  if (svgProgressState.hideTimer) {
+    window.clearTimeout(svgProgressState.hideTimer)
+    svgProgressState.hideTimer = null
+  }
+}
+
+function setSvgProgressHintVisible(visible) {
+  if (!(elements.svgProgressHint instanceof HTMLElement)) return
+  elements.svgProgressHint.classList.toggle('is-visible', Boolean(visible))
+}
+
+function setSvgProgressValue(value) {
+  if (elements.svgProgressFill instanceof HTMLElement) {
+    const clamped = Math.max(0, Math.min(100, value))
+    elements.svgProgressFill.style.width = `${clamped}%`
+  }
+  if (elements.svgProgressBar instanceof HTMLElement) {
+    const clampedValue = Math.round(Math.max(0, Math.min(100, value)))
+    elements.svgProgressBar.setAttribute('aria-valuenow', String(clampedValue))
+  }
+}
+
+function setSvgProgressMessage(message) {
+  if (elements.svgProgressMessage instanceof HTMLElement) {
+    elements.svgProgressMessage.textContent = message
+  }
+}
+
+function setSvgProgressDetail(detail) {
+  if (elements.svgProgressDetail instanceof HTMLElement) {
+    elements.svgProgressDetail.textContent = detail
+  }
+}
+
+function showSvgProgress(totalTargets = 1) {
+  const container = elements.svgProgress
+  if (!(container instanceof HTMLElement)) return
+
+  resetSvgProgressTimers()
+  if (svgNoticeState.hideTimer) {
+    window.clearTimeout(svgNoticeState.hideTimer)
+    svgNoticeState.hideTimer = null
+  }
+  if (elements.svgStrokeNotice instanceof HTMLElement) {
+    elements.svgStrokeNotice.classList.remove('is-visible')
+    elements.svgStrokeNotice.hidden = true
+  }
+  svgProgressState.active = true
+  svgProgressState.totalTargets = Math.max(1, totalTargets)
+  container.classList.add('is-active')
+  container.setAttribute('aria-hidden', 'false')
+  setSvgProgressHintVisible(false)
+  setSvgProgressDetail(totalTargets > 1 ? `Processing image 1 of ${totalTargets}` : '')
+  setSvgProgressMessage(SVG_PROGRESS_STEPS.uploading.label)
+  setSvgProgressValue(5)
+
+  svgProgressState.stillWorkingTimer = window.setTimeout(() => {
+    setSvgProgressHintVisible(true)
+  }, 5000)
+}
+
+function hideSvgProgress(immediate = false) {
+  const container = elements.svgProgress
+  if (!(container instanceof HTMLElement)) return
+
+  resetSvgProgressTimers()
+  const executeHide = () => {
+    container.classList.remove('is-active')
+    container.setAttribute('aria-hidden', 'true')
+    setSvgProgressValue(0)
+    setSvgProgressDetail('')
+    setSvgProgressHintVisible(false)
+    svgProgressState.active = false
+  }
+
+  if (immediate) {
+    executeHide()
+  } else {
+    svgProgressState.hideTimer = window.setTimeout(executeHide, 600)
+  }
+}
+
+function finishSvgProgress(success = true) {
+  if (!svgProgressState.active) {
+    hideSvgProgress(true)
+    return
+  }
+
+  if (success) {
+    setSvgProgressMessage(SVG_PROGRESS_STEPS.done.label)
+    setSvgProgressValue(100)
+    setSvgProgressHintVisible(false)
+    svgProgressState.hideTimer = window.setTimeout(() => hideSvgProgress(true), 1200)
+  } else {
+    hideSvgProgress(true)
+  }
+}
+
+function formatSvgDetail(targetIndex, totalTargets, name = '') {
+  if (totalTargets <= 0) {
+    return ''
+  }
+  const safeName = typeof name === 'string' ? name.trim() : ''
+  const truncatedName = safeName.length > 48 ? `${safeName.slice(0, 45)}…` : safeName
+  if (totalTargets === 1) {
+    return truncatedName ? `Processing ${truncatedName}` : 'Processing image'
+  }
+  const position = Math.min(totalTargets, Math.max(1, targetIndex + 1))
+  return truncatedName
+    ? `Processing image ${position} of ${totalTargets} · ${truncatedName}`
+    : `Processing image ${position} of ${totalTargets}`
+}
+
+function updateSvgProgressStep(step, targetIndex, totalTargets, targetName = '') {
+  const descriptor = SVG_PROGRESS_STEPS[step]
+  if (!descriptor) return
+
+  if (!svgProgressState.active) {
+    showSvgProgress(totalTargets)
+  }
+
+  const total = Math.max(1, totalTargets)
+  const position = Math.max(0, targetIndex)
+  const progressRatio = Math.min(1, Math.max(0, (position + descriptor.fraction) / total))
+  const progressValue = progressRatio * 100
+
+  setSvgProgressMessage(descriptor.label)
+  setSvgProgressDetail(formatSvgDetail(position, total, targetName))
+  setSvgProgressValue(progressValue)
+  if (progressValue < 100) {
+    setSvgProgressHintVisible(false)
+  }
+}
+
+function showStrokeAdjustmentNotice() {
+  if (!(elements.svgStrokeNotice instanceof HTMLElement)) return
+
+  if (svgNoticeState.hideTimer) {
+    window.clearTimeout(svgNoticeState.hideTimer)
+    svgNoticeState.hideTimer = null
+  }
+
+  elements.svgStrokeNotice.hidden = false
+  elements.svgStrokeNotice.classList.add('is-visible')
+  svgNoticeState.hideTimer = window.setTimeout(() => {
+    elements.svgStrokeNotice.classList.remove('is-visible')
+    elements.svgStrokeNotice.hidden = true
+  }, 6000)
+}
+
 function setGoogleButtonState(state = 'idle', labelOverride) {
   const button = elements.googleLoginButton
   if (!(button instanceof HTMLButtonElement)) {
@@ -1778,6 +1960,10 @@ function toggleProcessing(isProcessing) {
 
   if (elements.svgColorSelect instanceof HTMLSelectElement) {
     elements.svgColorSelect.disabled = isProcessing
+  }
+
+  if (elements.smartCropToggle instanceof HTMLInputElement) {
+    elements.smartCropToggle.disabled = isProcessing
   }
 
   updateOperationAvailability()
@@ -4380,6 +4566,44 @@ function injectViewBoxAttribute(svgString, width, height) {
   return svgString
 }
 
+function detectNonTransparentBounds(imageData) {
+  if (!imageData || typeof imageData.width !== 'number' || typeof imageData.height !== 'number') {
+    return null
+  }
+  const { width, height, data } = imageData
+  if (!width || !height || !data) {
+    return null
+  }
+
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const alpha = data[(y * width + x) * 4 + 3]
+      if (alpha > 0) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return null
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+  }
+}
+
 function ensureScriptElement(src, dataLib) {
   let script = document.querySelector(`script[data-lib="${dataLib}"]`)
   if (!script) {
@@ -4513,7 +4737,7 @@ async function resolveDataUrlForTarget(target) {
   return ensureDataUrl(target.item.objectUrl)
 }
 
-async function convertTargetToSvg(target, desiredColors) {
+async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) {
   if (!isEngineReady()) {
     const detail =
       engineState.status === 'failed' && engineState.error?.message
@@ -4536,11 +4760,54 @@ async function convertTargetToSvg(target, desiredColors) {
   }
 
   try {
+    const onStep = typeof progressHandlers.onStep === 'function' ? progressHandlers.onStep : null
+
+    onStep?.('uploading')
+
     const dataUrl = await resolveDataUrlForTarget(target)
+
+    onStep?.('analyzing')
+
     const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
-    const width = canvas.width
-    const height = canvas.height
-    const imageData = ctx.getImageData(0, 0, width, height)
+    let workingCanvas = canvas
+    let workingCtx = ctx
+    let workingWidth = workingCanvas.width
+    let workingHeight = workingCanvas.height
+
+    const baseImageData = workingCtx.getImageData(0, 0, workingWidth, workingHeight)
+    let imageData = baseImageData
+    let appliedSmartCrop = false
+
+    if (isSmartCropEnabled()) {
+      const bounds = detectNonTransparentBounds(baseImageData)
+      if (bounds && (bounds.width !== workingWidth || bounds.height !== workingHeight)) {
+        const croppedCanvas = createCanvas(bounds.width, bounds.height)
+        const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true })
+        if (!croppedCtx) {
+          throw new Error('캔버스를 초기화할 수 없습니다.')
+        }
+        croppedCtx.drawImage(
+          workingCanvas,
+          bounds.x,
+          bounds.y,
+          bounds.width,
+          bounds.height,
+          0,
+          0,
+          bounds.width,
+          bounds.height,
+        )
+        workingCanvas = croppedCanvas
+        workingCtx = croppedCtx
+        workingWidth = bounds.width
+        workingHeight = bounds.height
+        imageData = workingCtx.getImageData(0, 0, bounds.width, bounds.height)
+        appliedSmartCrop = true
+      }
+    }
+
+    const width = workingWidth
+    const height = workingHeight
 
     const baseColors = Number.isFinite(desiredColors) ? desiredColors : 6
     const clampedColors = Math.max(1, Math.min(6, Math.round(baseColors)))
@@ -4572,17 +4839,22 @@ async function convertTargetToSvg(target, desiredColors) {
     ]
 
     let svgString = ''
-    let svgBlob = null
     let sizeOk = false
     let reducedColors = false
 
+    onStep?.('vectorizing')
+
+    let optimizedBlob = null
+
     for (let step = 0; step <= adjustments.length; step += 1) {
-      svgString = tracer.imagedataToSVG(imageData, options)
-      svgString = injectViewBoxAttribute(svgString, width, height)
+      const candidateSvg = tracer.imagedataToSVG(imageData, options)
+      const svgWithViewBox = injectViewBoxAttribute(candidateSvg, width, height)
       // eslint-disable-next-line no-await-in-loop
-      svgString = await optimizeSvgContent(svgString)
-      svgBlob = new Blob([svgString], { type: 'image/svg+xml' })
-      if (svgBlob.size <= MAX_SVG_BYTES) {
+      const optimized = await optimizeSvgContent(svgWithViewBox)
+      const candidateBlob = new Blob([optimized], { type: 'image/svg+xml' })
+      if (candidateBlob.size <= MAX_SVG_BYTES) {
+        svgString = optimized
+        optimizedBlob = candidateBlob
         sizeOk = true
         break
       }
@@ -4596,26 +4868,43 @@ async function convertTargetToSvg(target, desiredColors) {
       options = nextOptions
     }
 
-    if (!sizeOk || !svgBlob) {
+    if (!sizeOk || !svgString) {
       return { success: false, message: 'SVG 파일이 150KB 이하로 압축되지 않았습니다.' }
+    }
+
+    onStep?.('rendering')
+
+    const sanitizedResult = sanitizeSVG(svgString, { trackAdjustments: true })
+    const cleanedSvg = sanitizedResult.svgText
+    let effectiveStrokeAdjusted = Boolean(sanitizedResult.strokeAdjusted)
+    let outputBlob = new Blob([cleanedSvg], { type: 'image/svg+xml' })
+    if (outputBlob.size > MAX_SVG_BYTES && optimizedBlob) {
+      outputBlob = optimizedBlob
+      effectiveStrokeAdjusted = false
     }
 
     const finalColors = Math.max(1, Math.min(6, options.numberofcolors || clampedColors))
     const operations = Array.isArray(target.item.operations) ? [...target.item.operations] : []
+    if (appliedSmartCrop) {
+      operations.push('Smart Crop')
+    }
     operations.push(`SVG 변환(${finalColors}색)`)
 
     const filenameBase = baseName(target.item.name || 'image')
     const resultName = `${filenameBase}__vector-${finalColors}c.svg`
 
+    onStep?.('done')
+
     return {
       success: true,
-      blob: svgBlob,
+      blob: outputBlob,
       width,
       height,
       name: resultName,
       operations,
       colors: finalColors,
       reducedColors,
+      strokeAdjusted: effectiveStrokeAdjusted,
     }
   } catch (error) {
     console.error('SVG 변환 중 오류', error)
@@ -4632,6 +4921,13 @@ function resolveSvgColorCount() {
     }
   }
   return colorCount
+}
+
+function isSmartCropEnabled() {
+  if (!(elements.smartCropToggle instanceof HTMLInputElement)) {
+    return true
+  }
+  return elements.smartCropToggle.checked
 }
 
 async function convertSelectionsToSvg() {
@@ -4669,7 +4965,7 @@ async function convertSelectionsToSvg() {
 
   const colorCount = resolveSvgColorCount()
 
-  setStatus('SVG 변환 중...', 'info', 0)
+  setStatus('SVG 변환을 준비하고 있습니다...', 'info', 0)
 
   const conversions = []
   const targets = []
@@ -4690,11 +4986,20 @@ async function convertSelectionsToSvg() {
 
   const failures = []
   const colorAdjustments = []
+  let hadStrokeAdjustments = false
+  let progressSuccess = false
+  let conversionError = null
 
   try {
-    for (const target of targets) {
+    if (targets.length > 0) {
+      showSvgProgress(targets.length)
+    }
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index]
       // eslint-disable-next-line no-await-in-loop
-      const conversion = await convertTargetToSvg(target, colorCount)
+      const conversion = await convertTargetToSvg(target, colorCount, {
+        onStep: (step) => updateSvgProgressStep(step, index, targets.length, target.item?.name || ''),
+      })
       if (!conversion.success || !conversion.blob) {
         console.warn('SVG 변환 실패:', target.item?.name || '(이름 없음)', conversion.message)
         failures.push({
@@ -4719,10 +5024,23 @@ async function convertSelectionsToSvg() {
       if (conversion.reducedColors) {
         colorAdjustments.push(conversion)
       }
+      if (conversion.strokeAdjusted) {
+        hadStrokeAdjustments = true
+      }
     }
+    progressSuccess = conversions.length > 0
+  } catch (error) {
+    conversionError = error instanceof Error ? error : new Error(String(error))
+    console.error('SVG 변환 처리 중 오류', conversionError)
   } finally {
     toggleProcessing(false)
     recomputeStage()
+    finishSvgProgress(progressSuccess && !conversionError)
+  }
+
+  if (conversionError) {
+    setStatus('SVG conversion failed. Please try again later.', 'danger')
+    return
   }
 
   if (conversions.length > 0) {
@@ -4737,9 +5055,13 @@ async function convertSelectionsToSvg() {
     } else {
       setStatus(message, 'success')
     }
+    if (hadStrokeAdjustments) {
+      showStrokeAdjustmentNotice()
+    }
   } else if (failures.length > 0) {
-    const firstFailure = failures[0]
-    setStatus(`SVG 변환에 실패했습니다: ${firstFailure.message}`, 'danger')
+    setStatus('SVG conversion failed. Please try again later.', 'danger')
+  } else {
+    setStatus('SVG conversion failed. Please try again later.', 'danger')
   }
 }
 
@@ -6768,19 +7090,347 @@ function clearResultsSelection() {
   updateOperationAvailability()
 }
 
-function sanitizeSVG(svgText) {
+function fallbackSanitizeSvg(svgText) {
   return svgText
     .replace(/stroke="[^"]*"/g, '')
     .replace(/stroke-width="[^"]*"/g, '')
     .replace(/stroke-linecap="[^"]*"/g, '')
     .replace(/stroke-linejoin="[^"]*"/g, '')
+    .replace(/stroke-opacity="[^"]*"/g, '')
+    .replace(/stroke-dasharray="[^"]*"/g, '')
+    .replace(/stroke-dashoffset="[^"]*"/g, '')
+    .replace(/stroke-miterlimit="[^"]*"/g, '')
     .replace(/<g>\s*<\/g>/g, '')
+}
+
+function formatSvgNumber(value) {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+  return Number.parseFloat(value.toFixed(3))
+}
+
+function getStyleProperty(element, property) {
+  const style = element.getAttribute('style')
+  if (!style) return ''
+  const normalized = property.toLowerCase()
+  const declarations = style.split(';')
+  for (const declaration of declarations) {
+    const trimmed = declaration.trim()
+    if (!trimmed) continue
+    const [prop, rawValue] = trimmed.split(':')
+    if (!prop) continue
+    if (prop.trim().toLowerCase() === normalized) {
+      return (rawValue || '').trim()
+    }
+  }
+  return ''
+}
+
+function stripStrokeFromElement(element) {
+  const attributesToRemove = [
+    'stroke',
+    'stroke-width',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'stroke-opacity',
+    'stroke-dasharray',
+    'stroke-dashoffset',
+    'stroke-miterlimit',
+  ]
+  for (const attribute of attributesToRemove) {
+    element.removeAttribute(attribute)
+  }
+  const style = element.getAttribute('style')
+  if (!style) {
+    return
+  }
+  const filtered = style
+    .split(';')
+    .map((declaration) => declaration.trim())
+    .filter((declaration) => {
+      if (!declaration) return false
+      const [prop, value] = declaration.split(':').map((part) => (part || '').trim())
+      if (!prop) return false
+      const normalized = prop.toLowerCase()
+      if (
+        [
+          'stroke',
+          'stroke-width',
+          'stroke-linecap',
+          'stroke-linejoin',
+          'stroke-opacity',
+          'stroke-dasharray',
+          'stroke-dashoffset',
+          'stroke-miterlimit',
+        ].includes(normalized)
+      ) {
+        return false
+      }
+      return value !== ''
+    })
+    .join('; ')
+  if (filtered) {
+    element.setAttribute('style', filtered)
+  } else {
+    element.removeAttribute('style')
+  }
+}
+
+function getStrokeWidthValue(element) {
+  const attr = element.getAttribute('stroke-width')
+  if (attr) {
+    const parsed = parseFloat(attr)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed
+    }
+  }
+  const fromStyle = getStyleProperty(element, 'stroke-width')
+  if (fromStyle) {
+    const parsed = parseFloat(fromStyle)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed
+    }
+  }
+  return 1
+}
+
+function getStrokeOpacityValue(element) {
+  const attr = element.getAttribute('stroke-opacity')
+  if (attr !== null) {
+    const parsed = parseFloat(attr)
+    if (Number.isFinite(parsed)) {
+      return Math.min(1, Math.max(0, parsed))
+    }
+  }
+  const fromStyle = getStyleProperty(element, 'stroke-opacity')
+  if (fromStyle) {
+    const parsed = parseFloat(fromStyle)
+    if (Number.isFinite(parsed)) {
+      return Math.min(1, Math.max(0, parsed))
+    }
+  }
+  return null
+}
+
+function approximateStrokeOutlinePath(element, strokeWidth) {
+  if (!element || !Number.isFinite(strokeWidth) || strokeWidth <= 0) {
+    return ''
+  }
+
+  let totalLength = 0
+  try {
+    totalLength = element.getTotalLength()
+  } catch (error) {
+    return ''
+  }
+
+  if (!Number.isFinite(totalLength) || totalLength <= 0) {
+    return ''
+  }
+
+  const sampleCount = Math.max(12, Math.ceil(totalLength / Math.max(1, strokeWidth / 2)))
+  const halfWidth = strokeWidth / 2
+  const forward = []
+  const backward = []
+
+  for (let index = 0; index <= sampleCount; index += 1) {
+    const length = (totalLength * index) / sampleCount
+    let current
+    let prev
+    let next
+    try {
+      current = element.getPointAtLength(length)
+      prev = element.getPointAtLength(Math.max(0, length - totalLength / sampleCount))
+      next = element.getPointAtLength(Math.min(totalLength, length + totalLength / sampleCount))
+    } catch (error) {
+      return ''
+    }
+    const dx = next.x - prev.x
+    const dy = next.y - prev.y
+    const magnitude = Math.hypot(dx, dy) || 1
+    const nx = (-dy / magnitude) * halfWidth
+    const ny = (dx / magnitude) * halfWidth
+    forward.push({ x: current.x + nx, y: current.y + ny })
+    backward.push({ x: current.x - nx, y: current.y - ny })
+  }
+
+  const points = forward.concat(backward.reverse())
+  if (points.length === 0) {
+    return ''
+  }
+
+  const commands = [`M${formatSvgNumber(points[0].x)} ${formatSvgNumber(points[0].y)}`]
+  for (let i = 1; i < points.length; i += 1) {
+    const point = points[i]
+    commands.push(`L${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
+  }
+  commands.push('Z')
+  return commands.join(' ')
+}
+
+function cleanElementAttributes(element) {
+  const removals = []
+  for (const attribute of Array.from(element.attributes)) {
+    const name = attribute.name
+    const value = attribute.value
+    if (!value || value.trim() === '') {
+      removals.push(name)
+      continue
+    }
+    if (name === 'style') {
+      const cleaned = value
+        .split(';')
+        .map((declaration) => declaration.trim())
+        .filter(Boolean)
+        .join('; ')
+      if (cleaned) {
+        element.setAttribute(name, cleaned)
+      } else {
+        removals.push(name)
+      }
+      continue
+    }
+    if (name === 'transform') {
+      const normalized = value.replace(/\s+/g, ' ').trim()
+      if (
+        !normalized ||
+        [
+          'matrix(1 0 0 1 0 0)',
+          'translate(0)',
+          'translate(0 0)',
+          'scale(1)',
+          'rotate(0)',
+          'skewX(0)',
+          'skewY(0)',
+        ].includes(normalized)
+      ) {
+        removals.push(name)
+      } else {
+        element.setAttribute(name, normalized)
+      }
+    }
+  }
+  removals.forEach((name) => element.removeAttribute(name))
+}
+
+function cleanSvgTree(root) {
+  const stack = [root]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (!(node instanceof Element)) continue
+    cleanElementAttributes(node)
+    const children = Array.from(node.children)
+    for (const child of children) {
+      stack.push(child)
+    }
+    if (node.tagName && node.tagName.toLowerCase() === 'g' && node.childNodes.length === 0) {
+      node.remove()
+    }
+  }
+}
+
+function attemptStrokeConversion(element, geometryCtor) {
+  let adjusted = false
+  try {
+    const strokeValue = getStyleProperty(element, 'stroke') || element.getAttribute('stroke')
+    const hasStroke = strokeValue && strokeValue !== 'none'
+    if (!hasStroke) {
+      stripStrokeFromElement(element)
+      return adjusted
+    }
+
+    let converted = false
+    if (geometryCtor && element instanceof geometryCtor) {
+      const strokeWidth = getStrokeWidthValue(element)
+      if (Number.isFinite(strokeWidth) && strokeWidth > 0) {
+        const outlinePath = approximateStrokeOutlinePath(element, strokeWidth)
+        if (outlinePath) {
+          const doc = element.ownerDocument
+          const pathEl = doc.createElementNS('http://www.w3.org/2000/svg', 'path')
+          pathEl.setAttribute('d', outlinePath)
+          pathEl.setAttribute('fill', strokeValue)
+          const strokeOpacity = getStrokeOpacityValue(element)
+          if (strokeOpacity !== null) {
+            pathEl.setAttribute('fill-opacity', String(strokeOpacity))
+          }
+          const transform = element.getAttribute('transform')
+          if (transform) {
+            pathEl.setAttribute('transform', transform)
+          }
+          const opacity = element.getAttribute('opacity')
+          if (opacity) {
+            pathEl.setAttribute('opacity', opacity)
+          }
+          element.parentNode?.insertBefore(pathEl, element.nextSibling)
+          converted = true
+        }
+      }
+    }
+
+    stripStrokeFromElement(element)
+    if (!element.getAttribute('fill')) {
+      const fillStyle = getStyleProperty(element, 'fill')
+      if (!fillStyle) {
+        element.setAttribute('fill', 'none')
+      }
+    }
+
+    if (converted || hasStroke) {
+      adjusted = true
+    }
+  } catch (error) {
+    console.warn('Stroke conversion failed', error)
+    stripStrokeFromElement(element)
+  }
+  return adjusted
+}
+
+function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
+  if (typeof DOMParser !== 'function') {
+    return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
+  }
+
+  let strokeAdjusted = false
+
+  try {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgText, 'image/svg+xml')
+    const parserError = doc.querySelector('parsererror')
+    if (parserError) {
+      throw new Error(parserError.textContent || 'Failed to parse SVG.')
+    }
+    const svg = doc.documentElement
+    if (!svg || svg.nodeName.toLowerCase() !== 'svg') {
+      throw new Error('Unable to locate a valid SVG root element.')
+    }
+
+    const geometryCtor = doc.defaultView?.SVGGeometryElement || window.SVGGeometryElement
+    const strokeNodes = Array.from(svg.querySelectorAll('[stroke]'))
+    for (const node of strokeNodes) {
+      const adjusted = attemptStrokeConversion(node, geometryCtor)
+      if (adjusted) {
+        strokeAdjusted = true
+      }
+    }
+
+    cleanSvgTree(svg)
+
+    const serialized = new XMLSerializer().serializeToString(svg)
+    return {
+      svgText: serialized,
+      strokeAdjusted: trackAdjustments ? strokeAdjusted : false,
+    }
+  } catch (error) {
+    console.warn('Failed to sanitize SVG', error)
+    return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
+  }
 }
 
 async function createSanitizedSvgBlob(blob) {
   const originalText = await blob.text()
-  const cleanedSVG = sanitizeSVG(originalText)
-  return new Blob([cleanedSVG], { type: 'image/svg+xml' })
+  const cleaned = sanitizeSVG(originalText)
+  return new Blob([cleaned.svgText], { type: 'image/svg+xml' })
 }
 
 async function resolveDownloadBlob(result) {
