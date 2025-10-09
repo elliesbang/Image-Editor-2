@@ -3,6 +3,7 @@ const MAX_SVG_BYTES = 150 * 1024
 const IMAGETRACER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js'
 const IMAGE_TRACER_SOURCES = [
   IMAGETRACER_SRC,
+  'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
   'https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
 ]
 const IMAGE_TRACER_MAX_RETRIES = 3
@@ -3670,8 +3671,8 @@ async function convertTargetToSvg(target, desiredColors) {
     const height = canvas.height
     const imageData = ctx.getImageData(0, 0, width, height)
 
-    const baseColors = Number.isFinite(desiredColors) ? desiredColors : 4
-    const clampedColors = Math.max(1, Math.min(8, Math.round(baseColors)))
+    const baseColors = Number.isFinite(desiredColors) ? desiredColors : 6
+    const clampedColors = Math.max(1, Math.min(6, Math.round(baseColors)))
 
     let options = {
       numberofcolors: clampedColors,
@@ -3685,14 +3686,17 @@ async function convertTargetToSvg(target, desiredColors) {
       strokewidth: 0,
       linefilter: true,
       scale: 1,
-      viewbox: false,
+      viewbox: true,
     }
 
     const adjustments = [
       (opts) => ({ ...opts, pathomit: opts.pathomit + 8 }),
       (opts) => ({ ...opts, qtres: opts.qtres * 1.35 }),
       (opts) => ({ ...opts, ltres: opts.ltres * 1.3 }),
-      (opts) => (opts.numberofcolors > 1 ? { ...opts, numberofcolors: opts.numberofcolors - 1 } : opts),
+      (opts) =>
+        opts.numberofcolors > 1
+          ? { ...opts, numberofcolors: Math.max(1, opts.numberofcolors - 1) }
+          : opts,
       (opts) => ({ ...opts, pathomit: opts.pathomit + 16, qtres: opts.qtres * 1.6 }),
     ]
 
@@ -3725,7 +3729,7 @@ async function convertTargetToSvg(target, desiredColors) {
       return { success: false, message: 'SVG 파일이 150KB 이하로 압축되지 않았습니다.' }
     }
 
-    const finalColors = options.numberofcolors
+    const finalColors = Math.max(1, Math.min(6, options.numberofcolors || clampedColors))
     const operations = Array.isArray(target.item.operations) ? [...target.item.operations] : []
     operations.push(`SVG 변환(${finalColors}색)`)
 
@@ -3749,11 +3753,11 @@ async function convertTargetToSvg(target, desiredColors) {
 }
 
 function resolveSvgColorCount() {
-  let colorCount = 4
+  let colorCount = 6
   if (elements.svgColorSelect instanceof HTMLSelectElement) {
     const parsed = parseInt(elements.svgColorSelect.value, 10)
     if (!Number.isNaN(parsed)) {
-      colorCount = parsed
+      colorCount = Math.max(1, Math.min(6, parsed))
     }
   }
   return colorCount
@@ -3778,7 +3782,7 @@ async function convertSelectionsToSvg() {
   setStage('export')
 
   toggleProcessing(true)
-  setStatus('SVG 변환 엔진을 불러오는 중입니다…', 'info', 0)
+  setStatus('브라우저에서 SVG 변환 엔진을 준비하는 중입니다…', 'info', 0)
 
   try {
     await ensureImageTracerReady()
@@ -3890,7 +3894,11 @@ async function autoConvertUploadsToSvg(uploads) {
     return
   }
 
-  setStatus(`${pngUploads.length}개의 PNG를 SVG로 자동 변환하는 중입니다…`, 'info', 0)
+  setStatus(
+    `브라우저에서 PNG ${pngUploads.length}개를 SVG로 자동 변환하는 중입니다…`,
+    'info',
+    0,
+  )
   toggleProcessing(true)
 
   const conversions = []
@@ -5933,6 +5941,21 @@ async function downloadResults(ids, mode = 'selected') {
   }
 
   try {
+    if (targets.length === 1) {
+      const [result] = targets
+      const directUrl = URL.createObjectURL(result.blob)
+      const link = document.createElement('a')
+      link.href = directUrl
+      link.download = result.name
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(directUrl)
+      consumeCredits(actionType, targets.length)
+      setStatus(`${result.name} 파일을 다운로드했습니다.`, 'success')
+      return
+    }
+
     const zip = new window.JSZip()
     for (const result of targets) {
       // eslint-disable-next-line no-await-in-loop
