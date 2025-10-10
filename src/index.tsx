@@ -89,6 +89,27 @@ type RateLimitStatus = {
   retryAfterSeconds?: number
 }
 
+type MichinaPeriod = {
+  start: string
+  end: string
+  updatedAt: string
+  updatedBy?: string
+}
+
+type MichinaChallengerRecord = {
+  challengers: string[]
+  updatedAt: string
+  updatedBy?: string
+}
+
+type MichinaUserRecord = {
+  name: string
+  email: string
+  joinedAt: string
+  role: string
+  updatedAt: string
+}
+
 const ADMIN_SESSION_COOKIE = 'admin_session'
 const ADMIN_SESSION_ISSUER = 'easy-image-editor'
 const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
@@ -101,6 +122,10 @@ const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
 const ADMIN_LOGIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL ?? ''
+
+const MICHINA_PERIOD_KEY = 'michina:period'
+const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
+const MICHINA_USERS_KEY = 'michina:users'
 
 function renderCommunityDashboardPage() {
   return `<!DOCTYPE html>
@@ -201,6 +226,401 @@ function renderCommunityDashboardPage() {
 
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script type="module" src="/static/community-dashboard.js"></script>
+  </body>
+</html>`
+}
+
+function renderAdminManagementPage() {
+  return `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>관리자 대시보드 | 미치나 챌린지 관리</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+    <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Pretendard','Noto Sans KR',sans-serif;
+        background-color: #f5eee9;
+        color: #333333;
+      }
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #f5eee9;
+        color: #333333;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button {
+        font-family: inherit;
+      }
+      .admin-header {
+        background: #ffd331;
+        padding: 20px 24px;
+        font-weight: 600;
+        font-size: 1.2rem;
+        text-align: center;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+      }
+      .admin-layout {
+        display: flex;
+        min-height: calc(100vh - 72px);
+      }
+      .admin-sidebar {
+        width: 240px;
+        background: #ffffff;
+        border-right: 2px solid #ffd331;
+        padding: 20px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .admin-sidebar button {
+        border: none;
+        background: #ffffff;
+        padding: 12px 14px;
+        text-align: left;
+        border-radius: 10px;
+        font-weight: 600;
+        color: #333333;
+        cursor: pointer;
+        transition: background 0.2s ease, box-shadow 0.2s ease;
+      }
+      .admin-sidebar button:hover {
+        background: rgba(255, 211, 49, 0.35);
+        box-shadow: 0 4px 12px -8px rgba(0, 0, 0, 0.2);
+      }
+      .admin-sidebar button.is-active {
+        background: rgba(255, 211, 49, 0.95);
+        box-shadow: 0 10px 18px -12px rgba(0, 0, 0, 0.35);
+      }
+      .admin-content {
+        flex: 1;
+        padding: 28px 36px 80px;
+        display: block;
+      }
+      .card {
+        background: #ffffff;
+        border: 1px solid #ffd331;
+        border-radius: 14px;
+        padding: 24px;
+        margin-bottom: 28px;
+        box-shadow: 0 18px 32px -24px rgba(0, 0, 0, 0.35);
+      }
+      .card h2 {
+        margin: 0 0 12px;
+        font-size: 1.2rem;
+        font-weight: 700;
+      }
+      .admin-description {
+        margin: 0 0 18px;
+        color: #555555;
+        font-size: 0.95rem;
+        line-height: 1.55;
+      }
+      .form-grid {
+        display: grid;
+        gap: 16px;
+        max-width: 360px;
+      }
+      .form-grid label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-weight: 600;
+        color: #333333;
+      }
+      .form-grid input[type="date"] {
+        border: 1px solid rgba(255, 211, 49, 0.8);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 1rem;
+        background: #ffffff;
+        color: #333333;
+      }
+      .admin-action {
+        margin-top: 4px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: none;
+        border-radius: 10px;
+        background: #ffd331;
+        color: #333333;
+        padding: 10px 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .admin-action:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px -14px rgba(0, 0, 0, 0.35);
+      }
+      .admin-action--ghost {
+        background: transparent;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+      }
+      .admin-summary {
+        margin: 18px 0 6px;
+        font-weight: 600;
+        color: #333333;
+      }
+      .admin-hint {
+        margin: 8px 0 0;
+        font-size: 0.9rem;
+        color: #666666;
+      }
+      .admin-hint[hidden] {
+        display: none;
+      }
+      .admin-hint[data-tone="success"] {
+        color: #1b6b2c;
+      }
+      .admin-hint[data-tone="danger"] {
+        color: #c02629;
+      }
+      .admin-hint[data-tone="warning"] {
+        color: #a16207;
+      }
+      .admin-hint[data-tone="info"] {
+        color: #555555;
+      }
+      .admin-tag-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      .admin-tag {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #fff1b3;
+        border: 1px solid #ffd331;
+        font-size: 0.85rem;
+        color: #333333;
+      }
+      .admin-empty {
+        color: #777777;
+        font-size: 0.95rem;
+        margin-top: 12px;
+      }
+      .admin-table-wrapper {
+        overflow-x: auto;
+        margin-top: 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 211, 49, 0.4);
+      }
+      .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 420px;
+      }
+      .admin-table th,
+      .admin-table td {
+        padding: 12px 14px;
+        text-align: left;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      }
+      .admin-table th {
+        background: rgba(255, 211, 49, 0.3);
+        font-weight: 600;
+      }
+      .admin-table tbody tr:nth-child(even) {
+        background: rgba(245, 238, 233, 0.6);
+      }
+      .admin-toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        background: #333333;
+        color: #ffffff;
+        padding: 14px 18px;
+        border-radius: 12px;
+        box-shadow: 0 22px 34px -22px rgba(0, 0, 0, 0.45);
+        font-size: 0.95rem;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        z-index: 1200;
+      }
+      .admin-toast[hidden] {
+        display: none;
+      }
+      .admin-toast[data-tone="success"] {
+        background: #1b6b2c;
+      }
+      .admin-toast[data-tone="danger"] {
+        background: #c02629;
+      }
+      .admin-toast[data-tone="warning"] {
+        background: #a16207;
+      }
+      .admin-view {
+        display: none;
+      }
+      .admin-view.is-active {
+        display: block;
+      }
+      .card--center {
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 220px;
+        gap: 12px;
+      }
+      .admin-upload {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 8px;
+        font-weight: 600;
+        color: #333333;
+      }
+      .admin-upload input[type="file"] {
+        border: 1px dashed rgba(255, 211, 49, 0.6);
+        border-radius: 12px;
+        padding: 18px;
+        background: rgba(255, 211, 49, 0.1);
+        cursor: pointer;
+      }
+      @media (max-width: 960px) {
+        .admin-layout {
+          flex-direction: column;
+        }
+        .admin-sidebar {
+          width: auto;
+          flex-direction: row;
+          flex-wrap: wrap;
+          gap: 8px;
+          border-right: none;
+          border-bottom: 2px solid #ffd331;
+        }
+        .admin-sidebar button {
+          flex: 1 1 160px;
+        }
+        .admin-content {
+          padding: 24px 16px 72px;
+        }
+        .admin-table {
+          min-width: 320px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="admin-header">관리자 대시보드 | 미치나 챌린지 관리</header>
+    <div class="admin-layout">
+      <aside class="admin-sidebar" aria-label="관리자 메뉴">
+        <button type="button" data-view="period" class="is-active">📅 미치나 기간 설정</button>
+        <button type="button" data-view="upload">📂 챌린저 명단 업로드</button>
+        <button type="button" data-view="status">👥 챌린저 현황 보기</button>
+        <button type="button" data-view="users">🔐 로그인 DB 보기</button>
+        <button type="button" data-view="plans">💳 구독 플랜 보기 (준비 중)</button>
+      </aside>
+      <main class="admin-content">
+        <div class="admin-toast" data-role="admin-toast" hidden></div>
+        <section class="admin-view is-active" data-admin-view="period">
+          <div class="card">
+            <h2>📅 미치나 챌린지 기간 설정</h2>
+            <p class="admin-description">시작일과 종료일을 지정하면 미치나 챌린저 등급 부여가 해당 기간에 자동으로 적용됩니다.</p>
+            <form class="form-grid" data-role="period-form">
+              <label>시작일
+                <input type="date" data-role="period-start" required />
+              </label>
+              <label>종료일
+                <input type="date" data-role="period-end" required />
+              </label>
+              <button class="admin-action" type="submit">기간 저장</button>
+            </form>
+            <p class="admin-summary" data-role="period-summary">저장된 기간이 없습니다.</p>
+            <p class="admin-hint" data-role="period-meta" hidden></p>
+            <p class="admin-hint" data-role="period-status" hidden></p>
+            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="period">기간 새로고침</button>
+          </div>
+        </section>
+        <section class="admin-view" data-admin-view="upload">
+          <div class="card">
+            <h2>📂 챌린저 명단 업로드</h2>
+            <p class="admin-description">CSV 또는 XLSX 파일에서 이메일 주소를 추출해 챌린저 명단을 업데이트합니다. 기존 명단은 새 데이터로 교체됩니다.</p>
+            <label class="admin-upload">챌린저 명단 파일 선택
+              <input type="file" accept=".csv,.xlsx" data-role="challenger-upload" />
+            </label>
+            <p class="admin-hint" data-role="upload-status" hidden></p>
+            <p class="admin-hint" data-role="challenger-meta" hidden></p>
+            <div class="admin-tag-list" data-role="challenger-list" aria-live="polite"></div>
+            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="challengers">명단 새로고침</button>
+          </div>
+        </section>
+        <section class="admin-view" data-admin-view="status">
+          <div class="card">
+            <h2>👥 챌린저 현황 보기</h2>
+            <p class="admin-description">업로드된 명단은 챌린저 자동 등급 부여에 사용됩니다.</p>
+            <p class="admin-summary">등록된 챌린저: <strong data-role="status-count">0</strong>명</p>
+            <div class="admin-table-wrapper">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th scope="col">No.</th>
+                    <th scope="col">이메일</th>
+                  </tr>
+                </thead>
+                <tbody data-role="status-table">
+                  <tr><td colspan="2" class="admin-empty">아직 등록된 명단이 없습니다.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="challengers">현황 새로고침</button>
+          </div>
+        </section>
+        <section class="admin-view" data-admin-view="users">
+          <div class="card">
+            <h2>🔐 로그인 DB 보기</h2>
+            <p class="admin-description">/api/users 엔드포인트에서 최신 로그인 정보를 조회합니다.</p>
+            <div class="admin-table-wrapper">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th scope="col">이름</th>
+                    <th scope="col">이메일</th>
+                    <th scope="col">가입일</th>
+                    <th scope="col">등급</th>
+                  </tr>
+                </thead>
+                <tbody data-role="users-table">
+                  <tr><td colspan="4" class="admin-empty">데이터를 불러오는 중입니다…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="users">DB 새로고침</button>
+          </div>
+        </section>
+        <section class="admin-view" data-admin-view="plans">
+          <div class="card card--center">
+            <h2>💳 구독 플랜 보기</h2>
+            <p class="admin-description" data-role="plans-message">현재 등록된 구독 목록 보기 기능은 준비 중입니다.</p>
+            <p class="admin-hint admin-empty">추후 /api/plans 연동 시 자동으로 업데이트됩니다.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+    <script type="module" src="/static/admin-lite.js"></script>
   </body>
 </html>`
 }
@@ -699,6 +1119,174 @@ async function kvDelete(env: Bindings, key: string) {
   }
 }
 
+function normalizeEmailValue(value: unknown) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+  return value.trim().toLowerCase()
+}
+
+function isValidDateString(value: unknown) {
+  if (typeof value !== 'string') {
+    return false
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false
+  }
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp)
+}
+
+async function getMichinaPeriodRecord(env: Bindings): Promise<MichinaPeriod | null> {
+  const raw = await kvGet(env, MICHINA_PERIOD_KEY)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<MichinaPeriod>
+    const start = typeof parsed.start === 'string' ? parsed.start : ''
+    const end = typeof parsed.end === 'string' ? parsed.end : ''
+    if (!start || !end) {
+      return null
+    }
+    return {
+      start,
+      end,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      updatedBy: typeof parsed.updatedBy === 'string' ? parsed.updatedBy : undefined,
+    }
+  } catch (error) {
+    console.error('[michina] Failed to parse period record', error)
+    return null
+  }
+}
+
+async function saveMichinaPeriodRecord(
+  env: Bindings,
+  data: { start: string; end: string; updatedBy?: string },
+): Promise<MichinaPeriod> {
+  const record: MichinaPeriod = {
+    start: data.start,
+    end: data.end,
+    updatedAt: new Date().toISOString(),
+    updatedBy: data.updatedBy,
+  }
+  if (!record.updatedBy) {
+    delete record.updatedBy
+  }
+  await kvPut(env, MICHINA_PERIOD_KEY, JSON.stringify(record))
+  return record
+}
+
+async function getMichinaChallengerRecord(env: Bindings): Promise<MichinaChallengerRecord | null> {
+  const raw = await kvGet(env, MICHINA_CHALLENGERS_KEY)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (Array.isArray(parsed)) {
+      const normalized = parsed.map((value) => normalizeEmailValue(value)).filter(Boolean)
+      return {
+        challengers: Array.from(new Set(normalized)),
+        updatedAt: new Date().toISOString(),
+      }
+    }
+    if (parsed && typeof parsed === 'object') {
+      const list = Array.isArray((parsed as MichinaChallengerRecord).challengers)
+        ? (parsed as MichinaChallengerRecord).challengers
+        : []
+      const normalized = list.map((value) => normalizeEmailValue(value)).filter(Boolean)
+      return {
+        challengers: Array.from(new Set(normalized)),
+        updatedAt:
+          typeof (parsed as MichinaChallengerRecord).updatedAt === 'string'
+            ? (parsed as MichinaChallengerRecord).updatedAt
+            : '',
+        updatedBy:
+          typeof (parsed as MichinaChallengerRecord).updatedBy === 'string'
+            ? (parsed as MichinaChallengerRecord).updatedBy
+            : undefined,
+      }
+    }
+  } catch (error) {
+    console.error('[michina] Failed to parse challenger record', error)
+  }
+  return null
+}
+
+async function saveMichinaChallengerRecord(
+  env: Bindings,
+  emails: string[],
+  options: { updatedBy?: string } = {},
+): Promise<MichinaChallengerRecord> {
+  const normalized = Array.from(new Set(emails.map((value) => normalizeEmailValue(value)).filter(Boolean)))
+  const record: MichinaChallengerRecord = {
+    challengers: normalized,
+    updatedAt: new Date().toISOString(),
+    updatedBy: options.updatedBy,
+  }
+  if (!record.updatedBy) {
+    delete record.updatedBy
+  }
+  await kvPut(env, MICHINA_CHALLENGERS_KEY, JSON.stringify(record))
+  return record
+}
+
+async function getMichinaChallengerEmails(env: Bindings) {
+  const record = await getMichinaChallengerRecord(env)
+  return record?.challengers ?? []
+}
+
+async function getMichinaUsers(env: Bindings): Promise<MichinaUserRecord[]> {
+  const raw = await kvGet(env, MICHINA_USERS_KEY)
+  if (!raw) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    const records: MichinaUserRecord[] = []
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object') {
+        continue
+      }
+      const email = normalizeEmailValue((entry as MichinaUserRecord).email)
+      if (!email) {
+        continue
+      }
+      const name = typeof (entry as MichinaUserRecord).name === 'string' ? (entry as MichinaUserRecord).name : ''
+      const joinedAt =
+        typeof (entry as MichinaUserRecord).joinedAt === 'string'
+          ? (entry as MichinaUserRecord).joinedAt
+          : new Date().toISOString()
+      const updatedAt =
+        typeof (entry as MichinaUserRecord).updatedAt === 'string'
+          ? (entry as MichinaUserRecord).updatedAt
+          : joinedAt
+      const role = typeof (entry as MichinaUserRecord).role === 'string' ? (entry as MichinaUserRecord).role : 'member'
+      records.push({ name, email, joinedAt, updatedAt, role })
+    }
+    return records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  } catch (error) {
+    console.error('[michina/users] Failed to parse user records', error)
+    return []
+  }
+}
+
+async function saveMichinaUsers(env: Bindings, users: MichinaUserRecord[]) {
+  const payload = users.map((user) => ({
+    name: user.name,
+    email: normalizeEmailValue(user.email),
+    joinedAt: user.joinedAt,
+    updatedAt: user.updatedAt,
+    role: user.role,
+  }))
+  await kvPut(env, MICHINA_USERS_KEY, JSON.stringify(payload))
+}
+
 async function listParticipantKeys(env: Bindings) {
   if (env.CHALLENGE_KV) {
     const keys: string[] = []
@@ -1059,6 +1647,144 @@ app.post('/api/auth/admin/login', async (c) => {
 app.post('/api/auth/admin/logout', async (c) => {
   clearAdminSession(c)
   return c.json({ ok: true })
+})
+
+app.get('/api/michina/config', async (c) => {
+  const [period, challengers] = await Promise.all([getMichinaPeriodRecord(c.env), getMichinaChallengerRecord(c.env)])
+  return c.json({
+    period,
+    challengers: challengers?.challengers ?? [],
+    updatedAt: period?.updatedAt ?? challengers?.updatedAt ?? null,
+    challengersUpdatedAt: challengers?.updatedAt ?? null,
+    challengersUpdatedBy: challengers?.updatedBy ?? null,
+  })
+})
+
+app.get('/api/admin/michina/period', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const period = await getMichinaPeriodRecord(c.env)
+  return c.json({ period })
+})
+
+app.post('/api/admin/michina/period', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const start = isValidDateString((payload as { start?: string }).start) ? (payload as { start: string }).start : ''
+  const end = isValidDateString((payload as { end?: string }).end) ? (payload as { end: string }).end : ''
+  if (!start || !end) {
+    return c.json({ error: 'INVALID_PERIOD' }, 400)
+  }
+  if (start > end) {
+    return c.json({ error: 'INVALID_RANGE' }, 400)
+  }
+  const record = await saveMichinaPeriodRecord(c.env, { start, end, updatedBy: adminEmail })
+  return c.json({ ok: true, period: record })
+})
+
+app.get('/api/admin/michina/challengers', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const record = await getMichinaChallengerRecord(c.env)
+  return c.json({
+    challengers: record?.challengers ?? [],
+    updatedAt: record?.updatedAt ?? null,
+    updatedBy: record?.updatedBy ?? null,
+  })
+})
+
+app.post('/api/admin/michina/challengers', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+
+  const source: unknown = (payload as { challengers?: unknown; emails?: unknown }).challengers ??
+    (payload as { emails?: unknown }).emails ??
+    null;
+
+  let rawList: string[] = []
+  if (Array.isArray(source)) {
+    rawList = source as string[]
+  } else if (typeof source === 'string') {
+    rawList = source.split(/[\s,;\r\n]+/)
+  }
+
+  if (rawList.length === 0 && !(payload as { allowEmpty?: boolean }).allowEmpty) {
+    if (!Array.isArray(source)) {
+      return c.json({ error: 'NO_CHALLENGERS' }, 400)
+    }
+  }
+
+  const record = await saveMichinaChallengerRecord(c.env, rawList, { updatedBy: adminEmail })
+  return c.json({ ok: true, challengers: record.challengers, updatedAt: record.updatedAt, updatedBy: record.updatedBy ?? null })
+})
+
+app.post('/api/michina/role/sync', async (c) => {
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const email = normalizeEmailValue((payload as { email?: string }).email)
+  if (!email) {
+    return c.json({ error: 'INVALID_EMAIL' }, 400)
+  }
+  const name = typeof (payload as { name?: string }).name === 'string' ? (payload as { name: string }).name.trim() : ''
+  const roleRaw = typeof (payload as { role?: string }).role === 'string' ? (payload as { role: string }).role.trim().toLowerCase() : ''
+  const resolvedRole = roleRaw === 'michina' ? 'michina' : roleRaw === 'admin' ? 'admin' : roleRaw === 'guest' ? 'guest' : 'member'
+
+  const users = await getMichinaUsers(c.env)
+  const now = new Date().toISOString()
+  const existing = users.find((user) => user.email === email)
+  if (existing) {
+    if (name) {
+      existing.name = name
+    }
+    existing.role = resolvedRole
+    existing.updatedAt = now
+    if (!existing.joinedAt) {
+      existing.joinedAt = now
+    }
+  } else {
+    users.push({
+      name,
+      email,
+      role: resolvedRole,
+      joinedAt: now,
+      updatedAt: now,
+    })
+  }
+  await saveMichinaUsers(c.env, users)
+  return c.json({ ok: true })
+})
+
+app.get('/api/users', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const users = await getMichinaUsers(c.env)
+  return c.json({ users })
 })
 
 app.post('/api/auth/google', async (c) => {
@@ -2004,7 +2730,14 @@ app.post('/api/analyze', async (c) => {
   }
 })
 
-app.get('/', (c) => {
+app.get('/', async (c) => {
+  const adminParam = (c.req.query('admin') || '').trim()
+  if (adminParam === '1') {
+    const response = c.html(renderAdminManagementPage())
+    response.headers.set('Cache-Control', 'no-store, max-age=0')
+    return response
+  }
+
   const viewParam = (c.req.query('view') || '').trim().toLowerCase()
   if (viewParam === 'community') {
     const response = c.html(renderCommunityDashboardPage())
@@ -2485,7 +3218,7 @@ app.get('/', (c) => {
             <a href="/privacy">개인정보 처리방침</a>
             <a href="/terms">이용약관</a>
             <a href="/cookies">쿠키 정책</a>
-            <a href="/?admin=1" target="_blank" rel="noopener">관리자 전용</a>
+            <button type="button" data-role="footer-admin">관리자 전용</button>
           </nav>
         </div>
         <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>

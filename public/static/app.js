@@ -8,6 +8,8 @@ const FREEMIUM_INITIAL_CREDITS = 30
 const MICHINA_INITIAL_CREDITS = 10000
 const USER_PLAN_STORAGE_KEY = 'userPlanSelection'
 const MICHINA_APPROVED_STORAGE_KEY = 'michinaApprovedEmails'
+const MICHINA_PERIOD_STORAGE_KEY = 'michinaPeriod'
+const MICHINA_CHALLENGERS_STORAGE_KEY = 'michinaChallengers'
 const SUBSCRIPTION_PLANS = Object.freeze({
   free: { name: 'Free', price: 0, uploadLimit: 3, auto: false },
   basic: { name: 'Basic', price: 9900, uploadLimit: 10, auto: false },
@@ -152,6 +154,7 @@ const state = {
     name: '',
     email: '',
     plan: 'public',
+    role: 'guest',
     credits: 0,
     totalUsed: 0,
     subscriptionPlan: 'free',
@@ -211,6 +214,13 @@ const runtime = {
   subscription: {
     approvedMichinaEmails: new Set(),
     initialized: false,
+  },
+  michina: {
+    period: null,
+    challengers: new Set(),
+    loading: false,
+    loadPromise: null,
+    lastSyncedAt: 0,
   },
 }
 
@@ -801,6 +811,7 @@ const elements = {
   adminRefreshButton: document.querySelector('[data-role="admin-refresh"]'),
   adminDownloadCompletion: document.querySelector('[data-role="admin-download-completion"]'),
   adminLogoutButton: document.querySelector('[data-role="admin-logout"]'),
+  adminFooterLink: document.querySelector('[data-role="footer-admin"]'),
   planBadge: document.querySelector('[data-role="plan-badge"]'),
   challengeSection: document.querySelector('[data-role="challenge-section"]'),
   challengeDashboard: document.querySelector('[data-role="challenge-dashboard"]'),
@@ -944,7 +955,346 @@ function persistSubscriptionState(planKey, { auto = false, email = '' } = {}) {
   }
 }
 
+function loadStoredMichinaPeriod() {
+  try {
+    const storage = window.localStorage
+    if (!storage) {
+      return null
+    }
+    const raw = storage.getItem(MICHINA_PERIOD_STORAGE_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+    const start = typeof parsed.start === 'string' ? parsed.start : ''
+    const end = typeof parsed.end === 'string' ? parsed.end : ''
+    if (!start || !end) {
+      return null
+    }
+    return {
+      start,
+      end,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+    }
+  } catch (error) {
+    console.warn('미치나 기간 정보를 불러오는 중 오류가 발생했습니다.', error)
+    return null
+  }
+}
+
+function persistMichinaPeriod(period, metadata = {}) {
+  if (period && typeof period.start === 'string' && typeof period.end === 'string') {
+    runtime.michina.period = {
+      start: period.start,
+      end: period.end,
+      updatedAt: typeof metadata.updatedAt === 'string' ? metadata.updatedAt : new Date().toISOString(),
+    }
+  } else {
+    runtime.michina.period = null
+  }
+
+  try {
+    const storage = window.localStorage
+    if (!storage) {
+      return
+    }
+    if (runtime.michina.period) {
+      storage.setItem(MICHINA_PERIOD_STORAGE_KEY, JSON.stringify(runtime.michina.period))
+    } else {
+      storage.removeItem(MICHINA_PERIOD_STORAGE_KEY)
+    }
+  } catch (error) {
+    console.warn('미치나 기간 정보를 저장하지 못했습니다.', error)
+  }
+}
+
+function loadStoredMichinaChallengers() {
+  try {
+    const storage = window.localStorage
+    if (!storage) {
+      return []
+    }
+    const raw = storage.getItem(MICHINA_CHALLENGERS_STORAGE_KEY)
+    if (!raw) {
+      return []
+    }
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return parsed.map((value) => normalizeEmail(value)).filter(Boolean)
+    }
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.challengers)) {
+      return parsed.challengers.map((value) => normalizeEmail(value)).filter(Boolean)
+    }
+  } catch (error) {
+    console.warn('미치나 챌린저 명단을 불러오는 중 오류가 발생했습니다.', error)
+  }
+  return []
+}
+
+function persistMichinaChallengerList(emails = [], metadata = {}) {
+  const unique = Array.from(new Set((emails || []).map((value) => normalizeEmail(value)).filter(Boolean)))
+  runtime.michina.challengers = new Set(unique)
+  runtime.subscription.approvedMichinaEmails = new Set(unique)
+
+  const payload = {
+    challengers: unique,
+    updatedAt: typeof metadata.updatedAt === 'string' ? metadata.updatedAt : new Date().toISOString(),
+  }
+
+  try {
+    const storage = window.localStorage
+    if (storage) {
+      storage.setItem(MICHINA_CHALLENGERS_STORAGE_KEY, JSON.stringify(payload))
+      storage.setItem(MICHINA_APPROVED_STORAGE_KEY, JSON.stringify(unique))
+    }
+  } catch (error) {
+    console.warn('미치나 챌린저 명단을 저장하지 못했습니다.', error)
+  }
+
+  return unique
+}
+
+function restoreMichinaConfigFromStorage() {
+  const period = loadStoredMichinaPeriod()
+  if (period) {
+    runtime.michina.period = period
+  } else {
+    runtime.michina.period = null
+  }
+
+  const challengers = loadStoredMichinaChallengers()
+  if (challengers.length > 0) {
+    runtime.michina.challengers = new Set(challengers)
+    runtime.subscription.approvedMichinaEmails = new Set(challengers)
+  } else {
+    runtime.michina.challengers = new Set()
+  }
+}
+
+function getTodayDateString() {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+function isDateWithinMichinaPeriod(period, dateString = getTodayDateString()) {
+  if (!period || typeof period.start !== 'string' || typeof period.end !== 'string') {
+    return false
+  }
+  if (!dateString) {
+    return false
+  }
+  return period.start <= dateString && dateString <= period.end
+}
+
+function fetchMichinaConfig(options = {}) {
+  const { force = false } = options || {}
+
+  if (runtime.michina.loading && runtime.michina.loadPromise) {
+    return runtime.michina.loadPromise
+  }
+
+  const now = Date.now()
+  if (!force && runtime.michina.lastSyncedAt && now - runtime.michina.lastSyncedAt < 60_000) {
+    return Promise.resolve({
+      period: runtime.michina.period,
+      challengers: Array.from(runtime.michina.challengers),
+    })
+  }
+
+  const promise = fetch('/api/michina/config', {
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+    cache: 'no-store',
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error('MICHINA_CONFIG_REQUEST_FAILED')
+      }
+      const payload = await response.json().catch(() => ({}))
+      const period = payload && typeof payload === 'object' ? payload.period : null
+      if (period && typeof period.start === 'string' && typeof period.end === 'string') {
+        persistMichinaPeriod(period, { updatedAt: period.updatedAt })
+      } else {
+        persistMichinaPeriod(null)
+      }
+      const challengers = Array.isArray(payload?.challengers) ? payload.challengers : []
+      const challengerMetadata =
+        typeof payload?.challengersUpdatedAt === 'string'
+          ? { updatedAt: payload.challengersUpdatedAt }
+          : typeof payload?.updatedAt === 'string'
+            ? { updatedAt: payload.updatedAt }
+            : {}
+      persistMichinaChallengerList(challengers, challengerMetadata)
+      runtime.michina.lastSyncedAt = Date.now()
+      return {
+        period: runtime.michina.period,
+        challengers: Array.from(runtime.michina.challengers),
+      }
+    })
+    .catch((error) => {
+      console.warn('미치나 설정 정보를 동기화하지 못했습니다.', error)
+      throw error
+    })
+    .finally(() => {
+      runtime.michina.loading = false
+      runtime.michina.loadPromise = null
+    })
+
+  runtime.michina.loading = true
+  runtime.michina.loadPromise = promise
+  return promise
+}
+
+async function syncMichinaRoleWithServer({ email, name, role }) {
+  const normalizedEmail = normalizeEmail(email)
+  if (!normalizedEmail) {
+    return
+  }
+  try {
+    await fetch('/api/michina/role/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: normalizedEmail,
+        name: typeof name === 'string' ? name : '',
+        role,
+      }),
+    })
+  } catch (error) {
+    console.warn('미치나 역할 정보를 동기화하지 못했습니다.', error)
+  }
+}
+
+function assignMichinaRole(email, options = {}) {
+  const normalizedEmail = normalizeEmail(email)
+  if (!normalizedEmail) {
+    return
+  }
+  const previousRole = state.user.role
+
+  setSubscriptionPlan('michina', { auto: true, email: normalizedEmail })
+  state.user.role = 'michina'
+  state.user.plan = 'michina'
+  state.user.credits = Number.MAX_SAFE_INTEGER
+
+  try {
+    window.localStorage?.setItem(COMMUNITY_ROLE_STORAGE_KEY, 'michina')
+  } catch (error) {
+    console.warn('미치나 역할 정보를 저장하지 못했습니다.', error)
+  }
+
+  if (previousRole !== 'michina') {
+    setStatus('미치나 챌린저 등급이 적용되었습니다. 전체 기능을 자유롭게 이용할 수 있어요!', 'success', 3800)
+  }
+
+  syncMichinaRoleWithServer({
+    email: normalizedEmail,
+    name: typeof options.name === 'string' ? options.name : state.user.name,
+    role: 'michina',
+  })
+}
+
+function revokeMichinaRole(email) {
+  const normalizedEmail = normalizeEmail(email)
+  if (!normalizedEmail) {
+    return
+  }
+
+  if (state.user.subscriptionPlan === 'michina') {
+    setSubscriptionPlan('free', { auto: false, email: normalizedEmail })
+  }
+
+  if (state.user.plan === 'michina' && !state.admin.isLoggedIn) {
+    state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
+    if (state.user.isLoggedIn) {
+      state.user.credits = Math.max(state.user.credits, FREEMIUM_INITIAL_CREDITS)
+    } else {
+      state.user.credits = 0
+    }
+  }
+
+  if (state.user.role === 'michina') {
+    state.user.role = state.user.isLoggedIn ? 'member' : 'guest'
+  }
+
+  try {
+    if (window.localStorage?.getItem(COMMUNITY_ROLE_STORAGE_KEY) === 'michina') {
+      window.localStorage.removeItem(COMMUNITY_ROLE_STORAGE_KEY)
+    }
+  } catch (error) {
+    console.warn('미치나 역할 정보를 초기화하지 못했습니다.', error)
+  }
+
+  refreshAccessStates()
+
+  syncMichinaRoleWithServer({
+    email: normalizedEmail,
+    name: state.user.name,
+    role: state.user.isLoggedIn ? 'member' : 'guest',
+  })
+}
+
+function ensureMichinaRoleFor(email, options = {}) {
+  const normalizedEmail = normalizeEmail(email)
+  if (!normalizedEmail) {
+    return
+  }
+
+  const evaluate = () => {
+    const period = runtime.michina.period
+    const challengers = runtime.michina.challengers
+    const today = getTodayDateString()
+    const eligible =
+      !!period &&
+      challengers instanceof Set &&
+      challengers.has(normalizedEmail) &&
+      isDateWithinMichinaPeriod(period, today)
+
+    if (eligible) {
+      assignMichinaRole(normalizedEmail, options)
+    } else {
+      revokeMichinaRole(normalizedEmail)
+    }
+  }
+
+  if (runtime.michina.loading && runtime.michina.loadPromise) {
+    runtime.michina.loadPromise.then(evaluate).catch(evaluate)
+    return
+  }
+
+  if (!runtime.michina.period || !(runtime.michina.challengers instanceof Set)) {
+    fetchMichinaConfig().then(evaluate).catch(evaluate)
+    return
+  }
+
+  if (runtime.michina.challengers.size === 0) {
+    fetchMichinaConfig().then(evaluate).catch(evaluate)
+    return
+  }
+
+  evaluate()
+}
+
 function loadApprovedMichinaEmails() {
+  if (runtime.michina && runtime.michina.challengers instanceof Set && runtime.michina.challengers.size > 0) {
+    return new Set(runtime.michina.challengers)
+  }
+
+  const storedList = loadStoredMichinaChallengers()
+  if (storedList.length > 0) {
+    runtime.michina.challengers = new Set(storedList)
+    return new Set(storedList)
+  }
+
   try {
     const storage = window.localStorage
     if (!storage) return new Set()
@@ -952,11 +1302,17 @@ function loadApprovedMichinaEmails() {
     if (!raw) return new Set()
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed)) {
-      return new Set(parsed.map((value) => normalizeEmail(value)).filter(Boolean))
+      const list = parsed.map((value) => normalizeEmail(value)).filter(Boolean)
+      runtime.michina.challengers = new Set(list)
+      return new Set(list)
     }
     if (typeof parsed === 'string') {
       const normalized = normalizeEmail(parsed)
-      return normalized ? new Set([normalized]) : new Set()
+      if (normalized) {
+        runtime.michina.challengers = new Set([normalized])
+        return new Set([normalized])
+      }
+      return new Set()
     }
   } catch (error) {
     console.warn('미치나 승인 목록을 불러오는 중 오류가 발생했습니다.', error)
@@ -1085,12 +1441,16 @@ function setSubscriptionPlan(planKey, options = {}) {
   if (normalizedPlan === 'michina' && !state.admin.isLoggedIn) {
     state.user.plan = 'michina'
     state.user.credits = Number.MAX_SAFE_INTEGER
+    state.user.role = 'michina'
   } else if (normalizedPlan !== 'michina' && state.user.plan === 'michina' && !state.admin.isLoggedIn) {
     state.user.plan = state.user.isLoggedIn ? 'freemium' : 'public'
     if (state.user.isLoggedIn) {
       state.user.credits = Math.max(state.user.credits, FREEMIUM_INITIAL_CREDITS)
     } else {
       state.user.credits = 0
+    }
+    if (state.user.role === 'michina') {
+      state.user.role = state.user.isLoggedIn ? 'member' : 'guest'
     }
   }
 
@@ -2637,6 +2997,13 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
   state.user.name = normalizedName
   state.user.email = typeof email === 'string' ? email : state.user.email
   state.user.plan = plan
+  if (plan === 'michina') {
+    state.user.role = 'michina'
+  } else if (plan === 'admin') {
+    state.user.role = 'admin'
+  } else {
+    state.user.role = 'member'
+  }
   if (plan === 'michina' || plan === 'admin') {
     state.user.credits = Number.MAX_SAFE_INTEGER
   } else {
@@ -2645,6 +3012,8 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
   state.user.totalUsed = 0
   applySubscriptionForEmail(state.user.email, plan)
   refreshAccessStates()
+
+  ensureMichinaRoleFor(state.user.email, { name: state.user.name })
 }
 
 function applyCommunityRoleFromStorage() {
@@ -2657,10 +3026,12 @@ function applyCommunityRoleFromStorage() {
     if (storedRole === 'michina') {
       state.user.isLoggedIn = true
       state.user.plan = 'michina'
+      state.user.role = 'michina'
       state.user.name = state.user.name || '미치나 커뮤니티 멤버'
       state.user.credits = Math.max(state.user.credits, MICHINA_INITIAL_CREDITS, FREEMIUM_INITIAL_CREDITS)
       state.user.totalUsed = 0
       setSubscriptionPlan('michina', { auto: true, skipRefresh: true })
+      ensureMichinaRoleFor(state.user.email || '', { name: state.user.name })
       return true
     }
   } catch (error) {
@@ -2686,6 +3057,7 @@ async function handleLogout() {
   state.user.name = ''
   state.user.email = ''
   state.user.plan = 'public'
+  state.user.role = 'guest'
   state.user.credits = 0
   state.user.totalUsed = 0
   state.user.subscriptionPlan = 'free'
@@ -2696,6 +3068,11 @@ async function handleLogout() {
   hasShownAdminDashboardPrompt = false
   dismissAdminDashboardPrompt()
   clearAdminNavHighlight()
+  try {
+    window.localStorage?.removeItem(COMMUNITY_ROLE_STORAGE_KEY)
+  } catch (error) {
+    console.warn('커뮤니티 역할 정보를 초기화하지 못했습니다.', error)
+  }
   setView('home', { force: true })
   refreshAccessStates()
   renderChallengeDashboard()
@@ -8001,6 +8378,18 @@ function attachEventListeners() {
     })
   }
 
+  if (elements.adminFooterLink instanceof HTMLElement) {
+    elements.adminFooterLink.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      try {
+        window.open('/?admin=1', '_blank', 'noopener')
+      } catch (error) {
+        console.error('관리자 대시보드를 새 탭으로 여는 데 실패했습니다.', error)
+      }
+    })
+  }
+
   if (elements.headerAuthButton instanceof HTMLButtonElement) {
     elements.headerAuthButton.addEventListener('click', () => {
       const action = elements.headerAuthButton.dataset.action
@@ -8335,6 +8724,17 @@ function init() {
       { once: true },
     )
   }
+
+  restoreMichinaConfigFromStorage()
+  fetchMichinaConfig()
+    .then(() => {
+      if (state.user.isLoggedIn) {
+        ensureMichinaRoleFor(state.user.email, { name: state.user.name })
+      }
+    })
+    .catch((error) => {
+      console.warn('미치나 설정 정보를 불러오는 데 실패했습니다.', error)
+    })
 
   initializeSubscriptionState()
   initializeAdminAuthSync()
