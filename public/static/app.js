@@ -6230,6 +6230,245 @@ function cropCanvas(canvas, ctx, bounds) {
   return { canvas: cropped, ctx: croppedCtx }
 }
 
+function createMaskFromAlpha(imageData, width, height, alphaThreshold = 4) {
+  if (!imageData) return null
+  const { data } = imageData
+  const length = width * height
+  if (length === 0) return null
+  const mask = new Uint8Array(length)
+  for (let i = 0; i < length; i += 1) {
+    if (data[i * 4 + 3] > alphaThreshold) {
+      mask[i] = 1
+    }
+  }
+  return mask
+}
+
+function dilateMask(mask, width, height, radius = 1) {
+  const output = new Uint8Array(mask.length)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let value = 0
+      for (let ky = -radius; ky <= radius && value === 0; ky += 1) {
+        const ny = y + ky
+        if (ny < 0 || ny >= height) continue
+        for (let kx = -radius; kx <= radius; kx += 1) {
+          const nx = x + kx
+          if (nx < 0 || nx >= width) continue
+          if (mask[ny * width + nx]) {
+            value = 1
+            break
+          }
+        }
+      }
+      output[y * width + x] = value
+    }
+  }
+  return output
+}
+
+function erodeMask(mask, width, height, radius = 1) {
+  const output = new Uint8Array(mask.length)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let value = 1
+      for (let ky = -radius; ky <= radius && value === 1; ky += 1) {
+        const ny = y + ky
+        if (ny < 0 || ny >= height) {
+          value = 0
+          break
+        }
+        for (let kx = -radius; kx <= radius; kx += 1) {
+          const nx = x + kx
+          if (nx < 0 || nx >= width) {
+            value = 0
+            break
+          }
+          if (!mask[ny * width + nx]) {
+            value = 0
+            break
+          }
+        }
+      }
+      output[y * width + x] = value
+    }
+  }
+  return output
+}
+
+function closeMask(mask, width, height, iterations = 1) {
+  let result = mask
+  for (let i = 0; i < iterations; i += 1) {
+    result = dilateMask(result, width, height, 1)
+  }
+  for (let i = 0; i < iterations; i += 1) {
+    result = erodeMask(result, width, height, 1)
+  }
+  return result
+}
+
+function fillMaskHoles(mask, width, height) {
+  const length = width * height
+  const visited = new Uint8Array(length)
+  const queue = []
+
+  const enqueue = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return
+    const index = y * width + x
+    if (visited[index] || mask[index]) return
+    visited[index] = 1
+    queue.push(index)
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0)
+    enqueue(x, height - 1)
+  }
+  for (let y = 0; y < height; y += 1) {
+    enqueue(0, y)
+    enqueue(width - 1, y)
+  }
+
+  let head = 0
+  while (head < queue.length) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    const y = Math.floor(index / width)
+
+    const neighbors = [
+      [x - 1, y],
+      [x + 1, y],
+      [x, y - 1],
+      [x, y + 1],
+    ]
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+      const neighborIndex = ny * width + nx
+      if (visited[neighborIndex] || mask[neighborIndex]) continue
+      visited[neighborIndex] = 1
+      queue.push(neighborIndex)
+    }
+  }
+
+  const filled = mask.slice()
+  for (let i = 0; i < length; i += 1) {
+    if (!mask[i] && !visited[i]) {
+      filled[i] = 1
+    }
+  }
+  return filled
+}
+
+function isolateLargestComponent(mask, width, height) {
+  const length = width * height
+  const visited = new Uint8Array(length)
+  let bestIndices = null
+  let bestBounds = null
+  let bestSize = 0
+
+  for (let i = 0; i < length; i += 1) {
+    if (!mask[i] || visited[i]) continue
+    const queue = [i]
+    visited[i] = 1
+    const component = []
+    let size = 0
+    let minX = width
+    let minY = height
+    let maxX = -1
+    let maxY = -1
+
+    while (queue.length > 0) {
+      const index = queue.pop()
+      component.push(index)
+      size += 1
+      const x = index % width
+      const y = Math.floor(index / width)
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+
+      const neighbors = [
+        index - 1,
+        index + 1,
+        index - width,
+        index + width,
+      ]
+
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || neighbor >= length) continue
+        if (visited[neighbor]) continue
+        const nx = neighbor % width
+        const ny = Math.floor(neighbor / width)
+        if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue
+        if (!mask[neighbor]) continue
+        visited[neighbor] = 1
+        queue.push(neighbor)
+      }
+    }
+
+    if (size > bestSize) {
+      bestSize = size
+      bestIndices = component
+      bestBounds = { top: minY, left: minX, right: maxX, bottom: maxY }
+    }
+  }
+
+  if (!bestIndices || bestSize === 0 || !bestBounds) {
+    return { mask: null, bounds: null }
+  }
+
+  const resultMask = new Uint8Array(length)
+  for (const index of bestIndices) {
+    resultMask[index] = 1
+  }
+
+  return { mask: resultMask, bounds: bestBounds }
+}
+
+function applyMaskToImageData(imageData, mask) {
+  if (!imageData || !mask) return imageData
+  const { data } = imageData
+  const length = mask.length
+  for (let i = 0; i < length; i += 1) {
+    if (mask[i]) continue
+    const offset = i * 4
+    data[offset] = 0
+    data[offset + 1] = 0
+    data[offset + 2] = 0
+    data[offset + 3] = 0
+  }
+  return imageData
+}
+
+function refineAlphaMask(imageData, width, height) {
+  if (!imageData || width <= 0 || height <= 0) {
+    return null
+  }
+
+  const baseMask = createMaskFromAlpha(imageData, width, height, 4)
+  if (!baseMask) {
+    return null
+  }
+
+  let refinedMask = closeMask(baseMask, width, height, 2)
+  refinedMask = fillMaskHoles(refinedMask, width, height)
+
+  for (let i = 0; i < refinedMask.length; i += 1) {
+    if (baseMask[i]) {
+      refinedMask[i] = 1
+    }
+  }
+
+  const { mask: largestMask, bounds } = isolateLargestComponent(refinedMask, width, height)
+  if (!largestMask || !bounds) {
+    return null
+  }
+
+  return { mask: largestMask, bounds }
+}
+
 function applyBoxBlur(imageData, width, height) {
   const { data } = imageData
   const output = new Uint8ClampedArray(data.length)
@@ -7265,8 +7504,12 @@ function deleteResults(ids) {
 
 async function processRemoveBackground(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  applyBackgroundRemoval(imageData, canvas.width, canvas.height)
+  let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
+  const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
+  if (refined && refined.mask) {
+    imageData = applyMaskToImageData(imageData, refined.mask)
+  }
   ctx.putImageData(imageData, 0, 0)
   const blob = await canvasToBlob(canvas, 'image/png', 0.95)
   const operations = mergeOperations(previousOperations, '배경 제거')
@@ -7309,11 +7552,19 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
   let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
+  let bounds = null
+  const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
+  if (refined && refined.mask) {
+    imageData = applyMaskToImageData(imageData, refined.mask)
+    bounds = expandBounds(refined.bounds, canvas.width, canvas.height, 2)
+  }
   ctx.putImageData(imageData, 0, 0)
 
-  const alphaBounds = findAlphaBounds(imageData, canvas.width, canvas.height, 6)
-  const fallbackBounds = findBoundingBox(imageData, canvas.width, canvas.height, 8, 36)
-  const bounds = expandBounds(alphaBounds ?? fallbackBounds, canvas.width, canvas.height, 1)
+  if (!bounds) {
+    const alphaBounds = findAlphaBounds(imageData, canvas.width, canvas.height, 4)
+    const fallbackBounds = findBoundingBox(imageData, canvas.width, canvas.height, 6, 32)
+    bounds = expandBounds(alphaBounds ?? fallbackBounds, canvas.width, canvas.height, 2)
+  }
 
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
   const previewDataUrl = cropped.toDataURL('image/png')
