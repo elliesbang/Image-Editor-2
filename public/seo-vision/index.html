@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>이미지 기반 SEO 최적화 한국어 키워드 분석</title>
+    <meta
+      name="description"
+      content="GPT-5 Vision을 활용해 이미지에서 바로 사용할 수 있는 한국어 SEO 키워드 25개와 대표 제목을 생성하세요."
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Pretendard', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        --bg: #f4f6fb;
+        --card: #ffffff;
+        --accent: #3a6ff8;
+        --accent-strong: #2448a5;
+        --border: #d9deeb;
+        --text-primary: #1f2933;
+        --text-secondary: #52606d;
+        --danger: #d92d20;
+        --success: #15803d;
+        --radius-lg: 20px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text-primary);
+      }
+
+      header {
+        padding: 48px 24px 32px;
+        text-align: center;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 2.8rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      header p {
+        margin: 16px auto 0;
+        max-width: 680px;
+        line-height: 1.6;
+        color: var(--text-secondary);
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto 120px;
+        padding: 0 24px 24px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 32px;
+        align-items: start;
+      }
+
+      .panel {
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        box-shadow: 0 20px 40px -28px rgba(30, 64, 175, 0.35);
+        padding: 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .panel h2 {
+        margin: 0;
+        font-size: 1.35rem;
+        font-weight: 600;
+      }
+
+      .dropzone {
+        position: relative;
+        border: 2px dashed var(--border);
+        border-radius: 18px;
+        background: rgba(58, 111, 248, 0.04);
+        padding: 28px;
+        text-align: center;
+        transition: border-color 0.2s ease, background 0.2s ease;
+      }
+
+      .dropzone.is-dragover {
+        border-color: var(--accent);
+        background: rgba(58, 111, 248, 0.12);
+      }
+
+      .dropzone h3 {
+        margin: 0 0 12px;
+        font-size: 1.05rem;
+      }
+
+      .dropzone p {
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+      }
+
+      .dropzone button {
+        margin-top: 18px;
+        padding: 12px 20px;
+        border-radius: 999px;
+        border: none;
+        background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      .dropzone button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(58, 111, 248, 0.35);
+      }
+
+      .dropzone input[type='file'] {
+        display: none;
+      }
+
+      .gallery {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 14px;
+      }
+
+      .gallery-item {
+        position: relative;
+        border-radius: 16px;
+        overflow: hidden;
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: border-color 0.2s ease, transform 0.2s ease;
+        background: #fff;
+      }
+
+      .gallery-item img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        aspect-ratio: 1 / 1;
+      }
+
+      .gallery-item.is-selected {
+        border-color: var(--accent);
+        transform: translateY(-2px);
+      }
+
+      .gallery-item span {
+        position: absolute;
+        left: 12px;
+        bottom: 10px;
+        right: 12px;
+        padding: 6px 8px;
+        border-radius: 999px;
+        background: rgba(23, 37, 84, 0.78);
+        color: #fff;
+        font-size: 0.75rem;
+        text-align: center;
+      }
+
+      .action-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .analyze-button {
+        flex: 1;
+        min-width: 140px;
+        padding: 14px 18px;
+        border-radius: 12px;
+        border: none;
+        font-weight: 600;
+        background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+        color: #fff;
+        cursor: pointer;
+        transition: opacity 0.2s ease, transform 0.2s ease;
+      }
+
+      .analyze-button[disabled] {
+        opacity: 0.55;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .status-text {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+      }
+
+      .result-card {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .result-title {
+        font-size: 1.4rem;
+        font-weight: 700;
+        line-height: 1.4;
+      }
+
+      .keyword-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 10px;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+
+      .keyword-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 9px 12px;
+        border-radius: 999px;
+        background: rgba(58, 111, 248, 0.08);
+        color: var(--accent-strong);
+        font-weight: 600;
+        font-size: 0.9rem;
+        text-align: center;
+      }
+
+      .copy-section {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+      }
+
+      .copy-button {
+        padding: 12px 18px;
+        border-radius: 10px;
+        border: 1px solid rgba(58, 111, 248, 0.3);
+        background: rgba(58, 111, 248, 0.08);
+        color: var(--accent-strong);
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s ease, transform 0.2s ease;
+      }
+
+      .copy-button:hover {
+        background: rgba(58, 111, 248, 0.16);
+        transform: translateY(-1px);
+      }
+
+      .copy-toast {
+        font-size: 0.9rem;
+        color: var(--success);
+        font-weight: 600;
+        opacity: 0;
+        transition: opacity 0.25s ease;
+      }
+
+      .copy-toast.is-visible {
+        opacity: 1;
+      }
+
+      .error-banner {
+        background: rgba(217, 45, 32, 0.12);
+        border: 1px solid rgba(217, 45, 32, 0.3);
+        color: var(--danger);
+        padding: 12px 16px;
+        border-radius: 12px;
+        font-weight: 600;
+      }
+
+      .loading-spinner {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 3px solid rgba(58, 111, 248, 0.2);
+        border-top-color: var(--accent-strong);
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (max-width: 720px) {
+        header {
+          padding: 36px 20px 24px;
+        }
+
+        .panel {
+          padding: 24px;
+        }
+
+        .gallery {
+          grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        }
+
+        .keyword-list {
+          grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>이미지 기반 SEO 최적화 한국어 키워드 분석</h1>
+      <p>
+        이미지를 업로드하거나 결과물 갤러리에서 선택하면 GPT-5 Vision이 스타일·색감·소재·감정·분위기를 반영한
+        한국어 키워드 25개와 대표 제목을 자동으로 제안합니다.
+      </p>
+    </header>
+    <main>
+      <section class="panel" aria-labelledby="upload-panel-title">
+        <div>
+          <h2 id="upload-panel-title">이미지 선택</h2>
+          <p class="status-text">
+            업로드하거나 아래 샘플을 선택하면 분석 버튼이 활성화됩니다. 분석은 Cloudflare Pages Functions에서 안전하게
+            처리됩니다.
+          </p>
+        </div>
+        <div class="dropzone" id="dropzone" role="button" tabindex="0">
+          <h3>파일을 드래그하거나 클릭해 업로드</h3>
+          <p>PNG, JPG, WebP 형식을 지원하며 한 번에 여러 이미지를 추가할 수 있습니다.</p>
+          <button type="button" id="file-trigger">이미지 업로드</button>
+          <input type="file" id="file-input" accept="image/*" multiple />
+        </div>
+        <div>
+          <h3 style="margin: 0 0 14px; font-size: 1rem; font-weight: 600;">샘플 및 업로드 목록</h3>
+          <div class="gallery" id="gallery" aria-live="polite"></div>
+        </div>
+        <div class="action-bar">
+          <button type="button" class="analyze-button" id="analyze-button" disabled>선택한 이미지 분석</button>
+          <div class="status-text" id="analyze-status"></div>
+        </div>
+        <div id="error-banner" class="error-banner" style="display: none;">분석 기능이 일시적으로 중지되었습니다.</div>
+      </section>
+      <section class="panel" aria-labelledby="result-panel-title">
+        <div class="result-card" id="result-card" style="display: none;">
+          <div>
+            <h2 id="result-panel-title" class="result-title">대표 제목 미생성</h2>
+            <p class="status-text" id="result-description">
+              분석을 실행하면 이미지의 핵심 포인트를 반영한 대표 제목과 키워드가 여기에 표시됩니다.
+            </p>
+          </div>
+          <div class="copy-section">
+            <button type="button" class="copy-button" id="copy-button">키워드 복사</button>
+            <span class="copy-toast" id="copy-toast">✅ 키워드가 복사되었습니다.</span>
+          </div>
+          <ul class="keyword-list" id="keyword-list"></ul>
+        </div>
+        <div id="result-placeholder" class="status-text">
+          이미지 분석 결과가 여기에 표시됩니다. 25개의 한국어 키워드와 대표 제목을 확인해보세요.
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/static/seo-vision/app.js"></script>
+  </body>
+</html>

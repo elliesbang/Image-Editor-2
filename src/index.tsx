@@ -987,6 +987,10 @@ app.use('*', async (c, next) => {
 })
 
 app.use('/static/*', serveStatic({ root: './public' }))
+
+app.get('/seo-vision', (c) => c.redirect('/static/seo-vision/index.html'))
+app.get('/seo-vision/', (c) => c.redirect('/static/seo-vision/index.html'))
+
 app.use(renderer)
 
 app.get('/api/auth/session', async (c) => {
