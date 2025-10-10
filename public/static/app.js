@@ -6717,7 +6717,11 @@ function displayAnalysisFor(target) {
   const provider = typeof data.provider === 'string' ? data.provider : ''
   elements.analysisPanel.dataset.provider = provider
   const metaParts = [metaLabel]
-  if (provider === 'openai') {
+  if (provider === 'gemini+openai') {
+    metaParts.push('Gemini + OpenAI 하이브리드 분석')
+  } else if (provider === 'gemini') {
+    metaParts.push('Google Gemini 분석')
+  } else if (provider === 'openai') {
     metaParts.push('OpenAI GPT-4o-mini 분석')
   } else if (provider === 'local') {
     metaParts.push('로컬 분석 결과')
@@ -6726,7 +6730,8 @@ function displayAnalysisFor(target) {
   elements.analysisHint.textContent = ''
   elements.analysisHeadline.textContent = data.title ? `✨ ${data.title}` : ''
   elements.analysisKeywords.innerHTML = ''
-  elements.analysisSummary.textContent = ''
+  const summaryText = typeof data.summary === 'string' ? data.summary.trim() : ''
+  elements.analysisSummary.textContent = summaryText
   const keywords = Array.isArray(data.keywords)
     ? data.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean)
     : []
@@ -7332,16 +7337,21 @@ async function analyzeCurrentImage() {
 
     let analysis
     let usedFallback = false
-
     let fallbackReason = ''
+
     try {
-      const response = await fetch('/functions/analyze-keywords', {
+      window.selectedImageUrl = scaledDataUrl
+    } catch (error) {
+      // ignore assignment issues
+    }
+
+    try {
+      const response = await fetch('/api/keyword-analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          image: scaledDataUrl,
           imageUrl: scaledDataUrl,
           name: item.name,
           targetType: target.type,
@@ -7349,44 +7359,60 @@ async function analyzeCurrentImage() {
         }),
       })
 
+      const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
         const reasonMessage =
-          typeof detail?.message === 'string' && detail.message
-            ? detail.message
-            : typeof detail?.error === 'string' && detail.error
-              ? detail.error
-              : `OpenAI API 오류(${response.status})`
-        const reason = reasonMessage || `OpenAI API 오류(${response.status})`
-        throw new Error(reason)
+          typeof payload?.message === 'string' && payload.message
+            ? payload.message
+            : typeof payload?.error === 'string' && payload.error
+              ? payload.error
+              : `AI 분석 오류(${response.status})`
+        throw new Error(reasonMessage || `AI 분석 오류(${response.status})`)
       }
 
-      const payload = await response.json()
-      if (!payload || typeof payload.title !== 'string' || typeof payload.summary !== 'string' || !Array.isArray(payload.keywords)) {
-        throw new Error('API 응답 구조가 올바르지 않습니다.')
+      const keywords = Array.isArray(payload?.keywords)
+        ? payload.keywords
+            .map((keyword) => (typeof keyword === 'string' ? keyword.trim() : ''))
+            .filter(Boolean)
+        : []
+
+      if (keywords.length === 0) {
+        throw new Error('키워드 분석 결과가 비어 있습니다.')
       }
-      if (payload.keywords.length !== 25) {
-        throw new Error('키워드 개수가 25개가 아닙니다.')
+
+      const title = typeof payload?.title === 'string' ? payload.title.trim() : ''
+      const summary = typeof payload?.summary === 'string' ? payload.summary.trim() : ''
+      const sources = payload && typeof payload.sources === 'object' && payload.sources ? payload.sources : {}
+      const geminiSuccess = sources?.gemini?.success === true
+      const openaiSuccess = sources?.openai?.success === true
+      let provider = 'openai'
+      if (geminiSuccess && openaiSuccess) {
+        provider = 'gemini+openai'
+      } else if (geminiSuccess) {
+        provider = 'gemini'
+      } else if (openaiSuccess) {
+        provider = 'openai'
       }
+
+      const normalizedTitle = title || keywords.slice(0, 3).join(' ')
+
       analysis = {
-        title: payload.title.trim(),
-        summary: payload.summary.trim(),
-        keywords: payload.keywords
-          .map((keyword) => (typeof keyword === 'string' ? keyword.trim() : ''))
-          .filter(Boolean)
-          .slice(0, 25),
-        provider: 'openai',
+        title: normalizedTitle,
+        summary,
+        keywords: keywords.slice(0, 25),
+        provider,
+        sources,
         targetType: target.type,
         mode,
       }
     } catch (apiError) {
       fallbackReason = apiError instanceof Error ? apiError.message : String(apiError)
-      console.warn('OpenAI 분석 실패, 로컬 분석으로 대체합니다.', fallbackReason)
+      console.warn('AI 분석 실패, 로컬 분석으로 대체합니다.', fallbackReason)
       const fallbackAnalysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
       analysis = {
         ...fallbackAnalysis,
         provider: 'local',
-        reason: 'API 키가 감지되지 않음',
+        reason: fallbackReason || 'AI 분석 실패',
         targetType: target.type,
         mode,
       }
@@ -7403,13 +7429,21 @@ async function analyzeCurrentImage() {
     const statusHeadline = analysis.title || analysis.keywords.slice(0, 3).join(', ')
     if (usedFallback) {
       if (fallbackReason) {
-        console.warn('OpenAI 분석 실패 사유:', fallbackReason)
+        console.warn('AI 분석 실패 사유:', fallbackReason)
       }
-      setStatus('API 키가 감지되지 않음. 로컬 분석 결과를 대신 제공했습니다.', 'warning')
+      setStatus('AI 분석에 실패하여 로컬 분석 결과를 대신 제공했습니다.', 'warning')
     } else {
+      let providerLabel = 'AI 키워드 분석'
+      if (analysis.provider === 'gemini+openai') {
+        providerLabel = 'Gemini + OpenAI 키워드 분석'
+      } else if (analysis.provider === 'gemini') {
+        providerLabel = 'Gemini 키워드 분석'
+      } else if (analysis.provider === 'openai') {
+        providerLabel = 'OpenAI 키워드 분석'
+      }
       const successMessage = statusHeadline
-        ? `OpenAI 키워드 분석 완료: ${statusHeadline}`
-        : 'OpenAI 키워드 분석이 완료되었습니다.'
+        ? `${providerLabel} 완료: ${statusHeadline}`
+        : `${providerLabel}이 완료되었습니다.`
       setStatus(successMessage, 'success')
     }
   } catch (error) {
