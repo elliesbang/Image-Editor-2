@@ -3174,13 +3174,6 @@ app.get('/', async (c) => {
               <div class="analysis__header">
                 <span class="analysis__title">키워드 분석</span>
                 <div class="analysis__actions">
-                  <div class="analyze-options">
-                    <label for="analyze-target">분석할 이미지 선택:</label>
-                    <select id="analyze-target">
-                      <option value="original">원본 이미지</option>
-                      <option value="processed">처리된 결과</option>
-                    </select>
-                  </div>
                   <button
                     id="keyword-analyze-btn"
                     class="btn btn--brand btn--sm"
@@ -3193,7 +3186,7 @@ app.get('/', async (c) => {
               </div>
               <p class="analysis__meta" data-role="analysis-meta" aria-live="polite"></p>
               <p class="analysis__hint" data-role="analysis-hint">
-                분석할 이미지를 선택하고 분석할 대상을 고른 뒤 “키워드 분석” 버튼을 눌러보세요.
+                분석할 이미지를 선택한 뒤 “키워드 분석” 버튼을 눌러보세요.
               </p>
               <p class="analysis__headline" data-role="analysis-title"></p>
               <ul class="analysis__keywords" data-role="analysis-keywords"></ul>
