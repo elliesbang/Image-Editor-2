@@ -785,7 +785,6 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
-  analysisTargetSelect: document.querySelector('#analyze-target'),
   analysisKeywordResult: document.querySelector('#keyword-result'),
   analysisKeywordTextarea: document.querySelector('#keyword-list'),
   analysisSeoTitle: document.querySelector('#seo-title'),
@@ -2452,36 +2451,28 @@ function resolveActiveTarget(preferred) {
 }
 
 function resolveAnalysisMode() {
-  const select = elements.analysisTargetSelect instanceof HTMLSelectElement ? elements.analysisTargetSelect : null
   const hasUploads = state.uploads.length > 0
   const hasResults = state.results.length > 0
   let mode = state.analysisMode === 'processed' ? 'processed' : 'original'
 
-  if (select) {
-    mode = select.value === 'processed' ? 'processed' : 'original'
+  if (state.activeTarget) {
+    mode = state.activeTarget.type === 'result' ? 'processed' : 'original'
+  } else if (state.selectedResults.size > 0) {
+    mode = 'processed'
+  } else if (state.selectedUploads.size > 0) {
+    mode = 'original'
   }
 
   if (mode === 'processed' && !hasResults && hasUploads) {
     mode = 'original'
-    if (select) {
-      select.value = 'original'
-    }
   } else if (mode === 'original' && !hasUploads && hasResults) {
     mode = 'processed'
-    if (select) {
-      select.value = 'processed'
-    }
-  }
-
-  if (select) {
-    const originalOption = select.querySelector('option[value="original"]')
-    if (originalOption instanceof HTMLOptionElement) {
-      originalOption.disabled = !hasUploads
-    }
-    const processedOption = select.querySelector('option[value="processed"]')
-    if (processedOption instanceof HTMLOptionElement) {
-      processedOption.disabled = !hasResults
-    }
+  } else if (!hasUploads && hasResults) {
+    mode = 'processed'
+  } else if (!hasResults && hasUploads) {
+    mode = 'original'
+  } else if (!hasUploads && !hasResults) {
+    mode = 'original'
   }
 
   state.analysisMode = mode
@@ -6650,10 +6641,8 @@ function displayAnalysisFor(target) {
   let preferredTarget = null
   if (target) {
     preferredTarget = normalizeTarget(target)
-    if (preferredTarget && elements.analysisTargetSelect instanceof HTMLSelectElement) {
-      const desiredMode = preferredTarget.type === 'result' ? 'processed' : 'original'
-      elements.analysisTargetSelect.value = desiredMode
-      state.analysisMode = desiredMode
+    if (preferredTarget) {
+      state.analysisMode = preferredTarget.type === 'result' ? 'processed' : 'original'
     }
   }
 
@@ -9099,13 +9088,6 @@ function attachEventListeners() {
 
   if (elements.analysisCopyButton instanceof HTMLButtonElement) {
     elements.analysisCopyButton.addEventListener('click', copyAnalysisToClipboard)
-  }
-
-  if (elements.analysisTargetSelect instanceof HTMLSelectElement) {
-    elements.analysisTargetSelect.addEventListener('change', () => {
-      resolveAnalysisMode()
-      displayAnalysisFor()
-    })
   }
 
   if (elements.resizeInput instanceof HTMLInputElement) {
