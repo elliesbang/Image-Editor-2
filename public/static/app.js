@@ -635,6 +635,18 @@ function hasUnlimitedAccess() {
   return state.admin.isLoggedIn
 }
 
+function isFreeSubscriptionActive() {
+  if (!state.user.isLoggedIn) return false
+  if (hasUnlimitedAccess()) return false
+  if (state.user.plan === 'michina') return false
+
+  const subscriptionPlan = state.user.subscriptionPlan
+  if (subscriptionPlan === 'free') return true
+  if (!subscriptionPlan && state.user.plan === 'freemium') return true
+
+  return false
+}
+
 function formatCreditsValue(value) {
   if (hasUnlimitedAccess()) return '∞'
   if (state.user.plan === 'michina') return '∞'
@@ -2466,6 +2478,18 @@ function toggleProcessing(isProcessing) {
 
 function getCreditCost(action, count = 1) {
   const base = CREDIT_COSTS[action] ?? 0
+
+  if (hasUnlimitedAccess()) {
+    return 0
+  }
+
+  if (isFreeSubscriptionActive()) {
+    if (action === 'download' || action === 'downloadAll') {
+      return base > 0 ? 1 : 0
+    }
+    return 0
+  }
+
   return base * Math.max(1, count)
 }
 
@@ -2680,6 +2704,7 @@ function updateOperationsGate() {
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const isAdmin = state.admin.isLoggedIn
   const isMichina = state.user.plan === 'michina' && !isAdmin
+  const isFreePlan = isFreeSubscriptionActive()
   const credits = Math.max(0, state.user.credits)
   const formattedCredits = formatCreditsValue(state.user.credits)
 
@@ -2699,6 +2724,10 @@ function updateOperationsGate() {
     stateName = 'success'
     title = '미치나 플랜이 활성화되어 있습니다.'
     copy = `미치나 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · 작업당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다.`
+  } else if (isFreePlan) {
+    stateName = 'success'
+    title = '편집 도구는 크레딧이 차감되지 않습니다.'
+    copy = `Free 플랜에서는 편집 기능 사용 시 크레딧이 차감되지 않습니다. 다운로드 시에만 크레딧이 사용돼요. (잔여 크레딧 <strong>${formattedCredits}</strong>개)`
   } else if (credits <= 0) {
     stateName = 'danger'
     title = '크레딧이 부족합니다.'
@@ -2727,6 +2756,7 @@ function updateResultsGate() {
   const loggedIn = state.user.isLoggedIn || state.admin.isLoggedIn
   const isAdmin = state.admin.isLoggedIn
   const isMichina = state.user.plan === 'michina' && !isAdmin
+  const isFreePlan = isFreeSubscriptionActive()
   const credits = Math.max(0, state.user.credits)
   const formattedCredits = formatCreditsValue(state.user.credits)
   const hasResults = state.results.length > 0
@@ -2751,6 +2781,20 @@ function updateResultsGate() {
     stateName = 'success'
     title = '미치나 플랜 잔여 크레딧 안내'
     copy = `미치나 플랜 잔여 크레딧 <strong>${formattedCredits}</strong>개 · PNG→SVG 변환 ${CREDIT_COSTS.svg} 크레딧, 다운로드 ${CREDIT_COSTS.download} 크레딧이 차감됩니다.`
+  } else if (isFreePlan) {
+    if (credits <= 0) {
+      stateName = 'danger'
+      title = '다운로드 크레딧이 부족합니다.'
+      copy = '다운로드를 위해 크레딧을 충전하거나 플랜을 업그레이드해주세요. 편집과 PNG→SVG 변환은 계속 이용할 수 있어요.'
+    } else if (credits <= 1) {
+      stateName = 'warning'
+      title = '다운로드 크레딧이 1개 남았습니다.'
+      copy = `Free 플랜에서는 다운로드 버튼을 누를 때마다 1크레딧이 차감됩니다. 현재 잔여 크레딧은 <strong>${formattedCredits}</strong>개입니다.`
+    } else {
+      stateName = 'success'
+      title = '다운로드 준비 완료'
+      copy = `Free 플랜에서는 다운로드 버튼을 누를 때마다 1크레딧이 차감됩니다. 현재 잔여 크레딧은 <strong>${formattedCredits}</strong>개입니다.`
+    }
   } else if (credits <= 0) {
     stateName = 'danger'
     title = '크레딧이 부족합니다.'
@@ -2784,6 +2828,7 @@ function updateAccessGates() {
 function getStageMessage(stageName) {
   const loggedIn = state.user.isLoggedIn
   const credits = Math.max(0, state.user.credits)
+  const freePlanActive = isFreeSubscriptionActive()
 
   switch (stageName) {
     case 'upload':
@@ -2791,13 +2836,21 @@ function getStageMessage(stageName) {
         ? `업로드한 이미지를 선택하고 다음 단계를 준비하세요. 현재 잔여 크레딧은 ${credits}개입니다.`
         : `로그인 전에 업로드 목록을 확인할 수 있어요. 계정을 연결하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 즉시 지급됩니다.`
     case 'refine':
-      return loggedIn
-        ? `도구 실행 시 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개로 편집을 진행해보세요.`
-        : `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
+      if (!loggedIn) {
+        return `도구 실행에는 로그인과 크레딧이 필요합니다. 로그인하면 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧으로 바로 시작할 수 있어요.`
+      }
+      if (freePlanActive) {
+        return `Free 플랜에서는 편집 기능 사용 시 크레딧이 차감되지 않습니다. 남은 크레딧 ${credits}개로 결과를 만들어보세요.`
+      }
+      return `도구 실행 시 이미지당 ${CREDIT_COSTS.operation} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개로 편집을 진행해보세요.`
     case 'export':
-      return loggedIn
-        ? `다운로드는 항목당 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개입니다.`
-        : '로그인 후 결과를 다운로드하거나 PNG→SVG 변환을 이용할 수 있어요.'
+      if (!loggedIn) {
+        return '로그인 후 결과를 다운로드하거나 PNG→SVG 변환을 이용할 수 있어요.'
+      }
+      if (freePlanActive) {
+        return `Free 플랜에서는 PNG→SVG 변환은 무료이며, 다운로드 버튼을 누를 때마다 1크레딧이 차감됩니다. 남은 크레딧 ${credits}개입니다.`
+      }
+      return `다운로드는 항목당 ${CREDIT_COSTS.download} 크레딧, PNG→SVG 변환은 ${CREDIT_COSTS.svg} 크레딧이 차감됩니다. 남은 크레딧 ${credits}개입니다.`
     default:
       return ''
   }
