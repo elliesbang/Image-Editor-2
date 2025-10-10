@@ -8414,6 +8414,19 @@ function attemptStrokeConversion(element) {
   return adjusted
 }
 
+function removeStrokeFromSvg(svgContent) {
+  if (typeof svgContent !== 'string') {
+    return ''
+  }
+  let cleaned = svgContent.replace(/stroke[^=]*="[^"]*"/gi, '')
+  cleaned = cleaned.replace(/stroke-[^=]*="[^"]*"/gi, '')
+  cleaned = cleaned.replace(/\s{2,}/g, ' ')
+  if (!/fill\s*=/.test(cleaned)) {
+    cleaned = cleaned.replace(/<path/gi, '<path fill="black"')
+  }
+  return cleaned.trim()
+}
+
 function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
   if (typeof DOMParser !== 'function') {
     return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
@@ -8480,8 +8493,9 @@ async function createSanitizedSvgBlob(blob) {
 
   const originalText = await blob.text()
   const cleaned = sanitizeSVG(originalText, { trackAdjustments: true })
+  const strokeFree = removeStrokeFromSvg(cleaned.svgText)
   return {
-    blob: new Blob([cleaned.svgText], { type: 'image/svg+xml' }),
+    blob: new Blob([strokeFree], { type: 'image/svg+xml' }),
     strokeAdjusted: Boolean(cleaned.strokeAdjusted),
     sanitized: true,
   }
