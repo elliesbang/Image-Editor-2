@@ -322,6 +322,20 @@
       </p>
     </header>
     <main>
+      <section class="panel" aria-labelledby="login-panel-title">
+        <div>
+          <h2 id="login-panel-title">Google 로그인</h2>
+          <p class="status-text" id="google-login-status">
+            Google 계정으로 로그인하면 사용자 정보를 확인할 수 있습니다.
+          </p>
+        </div>
+        <div id="google-login-container">
+          <div id="g_id_onload" data-auto_prompt="false"></div>
+          <div id="google-signin" class="g_id_signin" data-type="standard"></div>
+          <div id="user-info" style="margin-top: 20px;"></div>
+          <button id="logout-btn" type="button" style="display: none; margin-top: 12px;">로그아웃</button>
+        </div>
+      </section>
       <section class="panel" aria-labelledby="upload-panel-title">
         <div>
           <h2 id="upload-panel-title">이미지 선택</h2>
@@ -365,6 +379,180 @@
         </div>
       </section>
     </main>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+      ;(() => {
+        const allowedOrigin = 'https://image-editor-3.pages.dev'
+        const statusElement = document.getElementById('google-login-status')
+        const userInfoElement = document.getElementById('user-info')
+        const logoutButton = document.getElementById('logout-btn')
+        const googleButtonContainer = document.getElementById('google-signin')
+        let userInfo = null
+
+        const setStatus = (message, tone = 'info') => {
+          if (!statusElement) return
+          statusElement.textContent = message
+          statusElement.dataset.tone = tone
+        }
+
+        const clearUserInfo = () => {
+          userInfo = null
+          if (userInfoElement) {
+            userInfoElement.innerHTML = ''
+          }
+          if (logoutButton instanceof HTMLButtonElement) {
+            logoutButton.style.display = 'none'
+          }
+        }
+
+        const waitForGoogleSdk = () =>
+          new Promise((resolve, reject) => {
+            if (window.google?.accounts?.id) {
+              resolve(window.google.accounts.id)
+              return
+            }
+
+            let attempts = 0
+            const maxAttempts = 40
+            const interval = window.setInterval(() => {
+              if (window.google?.accounts?.id) {
+                window.clearInterval(interval)
+                resolve(window.google.accounts.id)
+                return
+              }
+              attempts += 1
+              if (attempts > maxAttempts) {
+                window.clearInterval(interval)
+                reject(new Error('GOOGLE_SDK_LOAD_FAILED'))
+              }
+            }, 250)
+          })
+
+        const decodeJwtPayload = (credential) => {
+          try {
+            const payload = credential.split('.')[1]
+            const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+            const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=')
+            const json = atob(padded)
+            return JSON.parse(json)
+          } catch (error) {
+            console.warn('Failed to decode Google credential payload', error)
+            return null
+          }
+        }
+
+        const renderGoogleButton = (clientId) => {
+          if (!googleButtonContainer) return
+          googleButtonContainer.innerHTML = ''
+          googleButtonContainer.style.display = ''
+          google.accounts.id.initialize({
+            client_id: clientId,
+            callback: (response) => window.handleCredentialResponse?.(response),
+            auto_select: false,
+          })
+          google.accounts.id.renderButton(googleButtonContainer, {
+            type: 'standard',
+            theme: 'outline',
+            size: 'large',
+          })
+        }
+
+        window.handleCredentialResponse = (response) => {
+          const currentOrigin = window.location.origin
+          if (currentOrigin !== allowedOrigin) {
+            window.alert('이 도메인에서는 Google 로그인을 사용할 수 없습니다.')
+            if (window.google?.accounts?.id) {
+              window.google.accounts.id.disableAutoSelect()
+            }
+            return
+          }
+
+          const credential = response?.credential
+          if (typeof credential !== 'string' || credential.length === 0) {
+            setStatus('Google 로그인에 실패했습니다. 다시 시도해주세요.', 'error')
+            return
+          }
+
+          const payload = decodeJwtPayload(credential)
+          if (!payload) {
+            setStatus('Google 사용자 정보를 확인할 수 없습니다. 다시 시도해주세요.', 'error')
+            return
+          }
+
+          userInfo = {
+            name: payload.name,
+            email: payload.email,
+            picture: payload.picture,
+            token: credential,
+          }
+
+          if (userInfoElement) {
+            userInfoElement.innerHTML = `
+              <img src="${userInfo.picture}" alt="profile" width="50" height="50" style="border-radius:50%;vertical-align:middle;" />
+              <span style="margin-left:10px;">${userInfo.name ?? ''} (${userInfo.email ?? ''})</span>
+            `
+          }
+
+          if (logoutButton instanceof HTMLButtonElement) {
+            logoutButton.style.display = 'inline-block'
+          }
+
+          setStatus('✅ 로그인 성공: Google 계정 정보를 확인했습니다.', 'success')
+          console.log('✅ 로그인 성공:', userInfo)
+        }
+
+        const initializeGoogleLogin = async () => {
+          if (window.location.origin !== allowedOrigin) {
+            setStatus('이 도메인에서는 Google 로그인을 사용할 수 없습니다.', 'warning')
+            if (googleButtonContainer) {
+              googleButtonContainer.style.display = 'none'
+            }
+            return
+          }
+
+          try {
+            const response = await fetch('/api/seo-vision/google-client', { credentials: 'omit' })
+            if (!response.ok) {
+              throw new Error('GOOGLE_CONFIG_FETCH_FAILED')
+            }
+
+            const data = await response.json().catch(() => ({}))
+            const clientId = typeof data?.clientId === 'string' ? data.clientId.trim() : ''
+
+            if (!clientId) {
+              throw new Error('GOOGLE_CLIENT_ID_MISSING')
+            }
+
+            await waitForGoogleSdk()
+            renderGoogleButton(clientId)
+            setStatus('Google 로그인을 사용할 준비가 완료되었습니다.', 'info')
+          } catch (error) {
+            console.error('Google 로그인 초기화 실패', error)
+            setStatus('현재 Google 로그인을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.', 'error')
+            if (googleButtonContainer) {
+              googleButtonContainer.innerHTML = ''
+              googleButtonContainer.style.display = 'none'
+            }
+          }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+          clearUserInfo()
+
+          if (logoutButton instanceof HTMLButtonElement) {
+            logoutButton.addEventListener('click', () => {
+              clearUserInfo()
+              if (window.google?.accounts?.id) {
+                window.google.accounts.id.disableAutoSelect()
+              }
+              window.alert('로그아웃 되었습니다.')
+            })
+          }
+
+          initializeGoogleLogin()
+        })
+      })()
+    </script>
     <script type="module" src="/static/seo-vision/app.js"></script>
   </body>
 </html>
