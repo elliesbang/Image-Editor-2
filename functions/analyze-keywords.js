@@ -191,14 +191,25 @@ export async function onRequest({ request, env }) {
     return jsonResponse({ error: 'INVALID_JSON_BODY' }, { status: 400 })
   }
 
-  const image = typeof payload?.image === 'string' ? payload.image : ''
-  if (!image.startsWith('data:image')) {
+  const imageDataInput = typeof payload?.image === 'string' ? payload.image.trim() : ''
+  const directImageUrl = typeof payload?.imageUrl === 'string' ? payload.imageUrl.trim() : ''
+
+  if (!imageDataInput && !directImageUrl) {
     return jsonResponse({ error: 'IMAGE_DATA_URL_REQUIRED' }, { status: 400 })
   }
 
+  let imageUrl = ''
+  if (directImageUrl) {
+    imageUrl = directImageUrl
+  } else {
+    if (!imageDataInput.startsWith('data:image')) {
+      return jsonResponse({ error: 'IMAGE_DATA_URL_REQUIRED' }, { status: 400 })
+    }
+    const base64Source = imageDataInput.replace(/^data:[^;]+;base64,/, '')
+    imageUrl = imageDataInput.startsWith('data:') ? imageDataInput : `data:image/png;base64,${base64Source}`
+  }
+
   const requestedName = typeof payload?.name === 'string' && payload.name.trim() ? payload.name.trim() : '이미지'
-  const base64Source = image.replace(/^data:[^;]+;base64,/, '')
-  const imageUrl = image.startsWith('data:') ? image : `data:image/png;base64,${base64Source}`
 
   const systemPrompt = `당신은 한국어 기반의 시각 콘텐츠 마케터입니다. 이미지를 분석하여 SEO에 최적화된 메타데이터를 작성하세요.
 반드시 JSON 포맷으로만 응답하고, 형식은 다음과 같습니다:

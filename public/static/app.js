@@ -145,6 +145,7 @@ const state = {
   activeTarget: null,
   processing: false,
   analysis: new Map(),
+  analysisMode: 'original',
   user: {
     isLoggedIn: false,
     name: '',
@@ -784,6 +785,10 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  analysisTargetSelect: document.querySelector('#analyze-target'),
+  analysisKeywordResult: document.querySelector('#keyword-result'),
+  analysisKeywordTextarea: document.querySelector('#keyword-list'),
+  analysisSeoTitle: document.querySelector('#seo-title'),
   analysisCopyButton: document.querySelector('[data-action="copy-analysis"]'),
   adminNavButton: document.querySelector('[data-role="admin-nav"]'),
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
@@ -2343,6 +2348,8 @@ function activateEmailFallback() {
 
 function toggleProcessing(isProcessing) {
   state.processing = isProcessing
+  const analysisMode = resolveAnalysisMode()
+  const availableAnalysisTarget = resolveAnalysisTargetForMode(analysisMode, state.activeTarget)
   elements.operationButtons?.forEach((button) => {
     if (!(button instanceof HTMLButtonElement)) return
     button.disabled = isProcessing || (button.dataset.operation !== 'svg' && state.selectedUploads.size === 0)
@@ -2356,15 +2363,14 @@ function toggleProcessing(isProcessing) {
   }
 
   if (elements.analysisButton instanceof HTMLButtonElement) {
-    elements.analysisButton.disabled = isProcessing
+    elements.analysisButton.disabled = isProcessing || !availableAnalysisTarget
   }
 
   if (elements.analysisCopyButton instanceof HTMLButtonElement) {
     if (isProcessing) {
       elements.analysisCopyButton.disabled = true
     } else {
-      const target = resolveActiveTarget()
-      const key = getAnalysisKey(target)
+      const key = getAnalysisKey(availableAnalysisTarget)
       elements.analysisCopyButton.disabled = !key || !state.analysis.has(key)
     }
   }
@@ -2439,6 +2445,83 @@ function resolveActiveTarget(preferred) {
     const normalized = normalizeTarget(candidate)
     if (normalized) {
       return normalized
+    }
+  }
+
+  return null
+}
+
+function resolveAnalysisMode() {
+  const select = elements.analysisTargetSelect instanceof HTMLSelectElement ? elements.analysisTargetSelect : null
+  const hasUploads = state.uploads.length > 0
+  const hasResults = state.results.length > 0
+  let mode = state.analysisMode === 'processed' ? 'processed' : 'original'
+
+  if (select) {
+    mode = select.value === 'processed' ? 'processed' : 'original'
+  }
+
+  if (mode === 'processed' && !hasResults && hasUploads) {
+    mode = 'original'
+    if (select) {
+      select.value = 'original'
+    }
+  } else if (mode === 'original' && !hasUploads && hasResults) {
+    mode = 'processed'
+    if (select) {
+      select.value = 'processed'
+    }
+  }
+
+  if (select) {
+    const originalOption = select.querySelector('option[value="original"]')
+    if (originalOption instanceof HTMLOptionElement) {
+      originalOption.disabled = !hasUploads
+    }
+    const processedOption = select.querySelector('option[value="processed"]')
+    if (processedOption instanceof HTMLOptionElement) {
+      processedOption.disabled = !hasResults
+    }
+  }
+
+  state.analysisMode = mode
+  return mode
+}
+
+function resolveAnalysisTargetForMode(mode, preferred) {
+  const normalizedPreferred = normalizeTarget(preferred)
+
+  if (mode === 'processed') {
+    if (normalizedPreferred && normalizedPreferred.type === 'result') {
+      return normalizedPreferred
+    }
+    const selectedResult = firstFromSet(state.selectedResults)
+    if (selectedResult) {
+      const normalized = normalizeTarget({ type: 'result', id: selectedResult })
+      if (normalized) return normalized
+    }
+    if (state.activeTarget && state.activeTarget.type === 'result') {
+      return state.activeTarget
+    }
+    if (state.results.length > 0) {
+      const normalized = normalizeTarget({ type: 'result', id: state.results[0].id })
+      if (normalized) return normalized
+    }
+  } else {
+    if (normalizedPreferred && normalizedPreferred.type === 'upload') {
+      return normalizedPreferred
+    }
+    const selectedUpload = firstFromSet(state.selectedUploads)
+    if (selectedUpload) {
+      const normalized = normalizeTarget({ type: 'upload', id: selectedUpload })
+      if (normalized) return normalized
+    }
+    if (state.activeTarget && state.activeTarget.type === 'upload') {
+      return state.activeTarget
+    }
+    if (state.uploads.length > 0) {
+      const normalized = normalizeTarget({ type: 'upload', id: state.uploads[0].id })
+      if (normalized) return normalized
     }
   }
 
@@ -6564,11 +6647,26 @@ function displayAnalysisFor(target) {
     return
   }
 
-  const normalizedTarget = resolveActiveTarget(target)
-  state.activeTarget = normalizedTarget
+  let preferredTarget = null
+  if (target) {
+    preferredTarget = normalizeTarget(target)
+    if (preferredTarget && elements.analysisTargetSelect instanceof HTMLSelectElement) {
+      const desiredMode = preferredTarget.type === 'result' ? 'processed' : 'original'
+      elements.analysisTargetSelect.value = desiredMode
+      state.analysisMode = desiredMode
+    }
+  }
+
+  const mode = resolveAnalysisMode()
+  const normalizedTarget = resolveAnalysisTargetForMode(mode, preferredTarget || state.activeTarget)
+  state.activeTarget = normalizedTarget || null
 
   const button = elements.analysisButton instanceof HTMLButtonElement ? elements.analysisButton : null
   const copyButton = elements.analysisCopyButton instanceof HTMLButtonElement ? elements.analysisCopyButton : null
+  const keywordResult = elements.analysisKeywordResult instanceof HTMLElement ? elements.analysisKeywordResult : null
+  const keywordTextarea =
+    elements.analysisKeywordTextarea instanceof HTMLTextAreaElement ? elements.analysisKeywordTextarea : null
+  const seoTitle = elements.analysisSeoTitle instanceof HTMLElement ? elements.analysisSeoTitle : null
   if (button) {
     button.disabled = state.processing || !normalizedTarget
   }
@@ -6576,46 +6674,74 @@ function displayAnalysisFor(target) {
     copyButton.disabled = true
   }
 
-  const resetView = (hintText) => {
+  const resetView = (hintText, metaText = '') => {
     elements.analysisPanel.classList.remove('analysis--has-data')
     elements.analysisPanel.dataset.provider = ''
     elements.analysisHint.textContent = hintText
-    elements.analysisMeta.textContent = ''
+    elements.analysisMeta.textContent = metaText
     elements.analysisHeadline.textContent = ''
     elements.analysisKeywords.innerHTML = ''
     elements.analysisSummary.textContent = ''
+    if (keywordResult) {
+      keywordResult.hidden = true
+    }
+    if (keywordTextarea) {
+      keywordTextarea.value = ''
+    }
+    if (seoTitle) {
+      seoTitle.textContent = ''
+    }
   }
 
   if (!normalizedTarget) {
-    resetView('이미지를 선택하면 25개의 SEO 키워드와 요약이 표시됩니다.')
+    const hint =
+      mode === 'processed'
+        ? '처리된 결과 이미지를 생성한 뒤 “키워드 분석”을 눌러보세요.'
+        : '원본 이미지를 업로드하면 “키워드 분석”을 사용할 수 있습니다.'
+    resetView(hint)
     return
   }
 
   const item = findItemByTarget(normalizedTarget)
+  const targetLabel = normalizedTarget.type === 'result' ? '처리된 결과' : '원본 이미지'
+  const metaLabel = item?.name ? `${targetLabel} · ${item.name}` : targetLabel
   const data = state.analysis.get(getAnalysisKey(normalizedTarget))
 
   if (!data) {
     const nameHint = item?.name ? ` (${item.name})` : ''
-    resetView(`“분석 실행” 버튼을 눌러 선택한 이미지${nameHint}의 키워드를 생성하세요.`)
+    resetView(`“키워드 분석” 버튼을 눌러 ${targetLabel}${nameHint}의 키워드를 생성하세요.`, metaLabel)
     return
   }
 
   elements.analysisPanel.classList.add('analysis--has-data')
   const provider = typeof data.provider === 'string' ? data.provider : ''
   elements.analysisPanel.dataset.provider = provider
+  const metaParts = [metaLabel]
   if (provider === 'openai') {
-    elements.analysisMeta.textContent = 'OpenAI GPT-4o-mini 분석 결과'
+    metaParts.push('OpenAI GPT-4o-mini 분석')
   } else if (provider === 'local') {
-    elements.analysisMeta.textContent = 'API 키 인증 오류 또는 연결 실패'
-  } else {
-    elements.analysisMeta.textContent = ''
+    metaParts.push('로컬 분석 결과')
   }
+  elements.analysisMeta.textContent = metaParts.join(' · ')
   elements.analysisHint.textContent = ''
-  elements.analysisHeadline.textContent = data.title || ''
-  elements.analysisKeywords.innerHTML = data.keywords.map((keyword) => `<li>${keyword}</li>`).join('')
-  elements.analysisSummary.textContent = data.summary
+  elements.analysisHeadline.textContent = data.title ? `✨ ${data.title}` : ''
+  elements.analysisKeywords.innerHTML = ''
+  elements.analysisSummary.textContent = ''
+  const keywords = Array.isArray(data.keywords)
+    ? data.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean)
+    : []
+  const keywordText = keywords.join(', ')
+  if (keywordResult) {
+    keywordResult.hidden = false
+  }
+  if (keywordTextarea) {
+    keywordTextarea.value = keywordText
+  }
+  if (seoTitle) {
+    seoTitle.textContent = data.title || ''
+  }
   if (copyButton) {
-    copyButton.disabled = state.processing
+    copyButton.disabled = state.processing || keywordText.length === 0
   }
 }
 
@@ -7166,9 +7292,16 @@ function analyzeCanvasForKeywords(canvas, ctx) {
 }
 
 async function analyzeCurrentImage() {
-  const target = resolveActiveTarget()
+  const mode = resolveAnalysisMode()
+  const target = resolveAnalysisTargetForMode(mode, state.activeTarget)
+
   if (!target) {
-    setStatus('먼저 분석할 이미지를 선택해주세요.', 'danger')
+    const message =
+      mode === 'processed'
+        ? '처리된 이미지를 선택하거나 생성한 뒤 다시 시도해주세요.'
+        : '먼저 원본 이미지를 업로드해주세요.'
+    setStatus(message, 'danger')
+    displayAnalysisFor()
     return
   }
 
@@ -7180,17 +7313,17 @@ async function analyzeCurrentImage() {
     return
   }
 
-  const { type, id } = target
-
   if (!ensureActionAllowed('analysis', { gate: 'results', count: 1 })) {
     return
   }
 
+  displayAnalysisFor(target)
+  toggleProcessing(true)
   setStage('export')
   setStatus('이미지를 분석하는 중입니다…', 'info', 0)
 
   try {
-    const source = type === 'upload' ? item.dataUrl : item.objectUrl
+    const source = target.type === 'upload' ? item.dataUrl : item.objectUrl
     const dataUrl = await ensureDataUrl(source)
     const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
     const surface = prepareAnalysisSurface(canvas, ctx)
@@ -7207,7 +7340,13 @@ async function analyzeCurrentImage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ image: scaledDataUrl, name: item.name }),
+        body: JSON.stringify({
+          image: scaledDataUrl,
+          imageUrl: scaledDataUrl,
+          name: item.name,
+          targetType: target.type,
+          mode,
+        }),
       })
 
       if (!response.ok) {
@@ -7237,6 +7376,8 @@ async function analyzeCurrentImage() {
           .filter(Boolean)
           .slice(0, 25),
         provider: 'openai',
+        targetType: target.type,
+        mode,
       }
     } catch (apiError) {
       fallbackReason = apiError instanceof Error ? apiError.message : String(apiError)
@@ -7246,6 +7387,8 @@ async function analyzeCurrentImage() {
         ...fallbackAnalysis,
         provider: 'local',
         reason: 'API 키가 감지되지 않음',
+        targetType: target.type,
+        mode,
       }
       usedFallback = true
     }
@@ -7272,13 +7415,21 @@ async function analyzeCurrentImage() {
   } catch (error) {
     console.error(error)
     setStatus('키워드 분석 기능이 일시적으로 중단되었습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  } finally {
+    toggleProcessing(false)
+    displayAnalysisFor(target)
   }
 }
 
 async function copyAnalysisToClipboard() {
-  const target = resolveActiveTarget()
+  const mode = resolveAnalysisMode()
+  const target = resolveAnalysisTargetForMode(mode, state.activeTarget)
   if (!target) {
-    setStatus('복사할 분석 결과가 없습니다.', 'danger')
+    const message =
+      mode === 'processed'
+        ? '처리된 이미지 분석 결과가 없습니다.'
+        : '원본 이미지 분석 결과가 없습니다.'
+    setStatus(message, 'danger')
     return
   }
 
@@ -7294,42 +7445,58 @@ async function copyAnalysisToClipboard() {
     return
   }
 
-  const lines = []
-  if (data.title) {
-    lines.push(`# ${data.title}`)
-  }
-  if (data.summary) {
-    if (lines.length > 0) lines.push('')
-    lines.push(data.summary)
-  }
-  if (Array.isArray(data.keywords) && data.keywords.length > 0) {
-    lines.push('')
-    lines.push('키워드 25개:')
-    data.keywords.forEach((keyword, index) => {
-      lines.push(`${index + 1}. ${keyword}`)
-    })
+  const keywords = Array.isArray(data.keywords)
+    ? data.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean)
+    : []
+
+  if (keywords.length === 0) {
+    setStatus('복사할 키워드가 없습니다.', 'danger')
+    return
   }
 
-  const text = lines.join('\n')
+  const keywordText = keywords.join(', ')
+  const textarea =
+    elements.analysisKeywordTextarea instanceof HTMLTextAreaElement ? elements.analysisKeywordTextarea : null
 
   try {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(text)
-    } else {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.setAttribute('readonly', '')
-      textarea.style.position = 'absolute'
-      textarea.style.left = '-9999px'
-      document.body.appendChild(textarea)
+      await navigator.clipboard.writeText(keywordText)
+    } else if (textarea) {
+      const previousStart = textarea.selectionStart
+      const previousEnd = textarea.selectionEnd
+      const previousScroll = textarea.scrollTop
+      textarea.focus()
       textarea.select()
       const successful = document.execCommand('copy')
-      document.body.removeChild(textarea)
+      if (!successful) {
+        throw new Error('execCommand copy failed')
+      }
+      textarea.selectionStart = previousStart
+      textarea.selectionEnd = previousEnd
+      textarea.scrollTop = previousScroll
+    } else {
+      const fallback = document.createElement('textarea')
+      fallback.value = keywordText
+      fallback.setAttribute('readonly', '')
+      fallback.style.position = 'absolute'
+      fallback.style.left = '-9999px'
+      document.body.appendChild(fallback)
+      fallback.select()
+      const successful = document.execCommand('copy')
+      document.body.removeChild(fallback)
       if (!successful) {
         throw new Error('execCommand copy failed')
       }
     }
-    setStatus('키워드와 제목을 클립보드에 복사했습니다.', 'success')
+    if (textarea) {
+      textarea.dataset.copied = 'true'
+      window.setTimeout(() => {
+        if (textarea.dataset.copied === 'true') {
+          delete textarea.dataset.copied
+        }
+      }, 1500)
+    }
+    setStatus('키워드를 클립보드에 복사했습니다.', 'success')
   } catch (error) {
     console.error('analysis copy error', error)
     setStatus('클립보드 복사에 실패했습니다. 브라우저 권한을 확인해주세요.', 'danger')
@@ -8898,6 +9065,13 @@ function attachEventListeners() {
 
   if (elements.analysisCopyButton instanceof HTMLButtonElement) {
     elements.analysisCopyButton.addEventListener('click', copyAnalysisToClipboard)
+  }
+
+  if (elements.analysisTargetSelect instanceof HTMLSelectElement) {
+    elements.analysisTargetSelect.addEventListener('change', () => {
+      resolveAnalysisMode()
+      displayAnalysisFor()
+    })
   }
 
   if (elements.resizeInput instanceof HTMLInputElement) {
