@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (completedDays.length === 0) {
       const emptyItem = document.createElement('li')
-      emptyItem.className = 'rounded-xl bg-[#fdf9f0] px-4 py-3 text-sm text-slate-500 shadow-sm'
+      emptyItem.className = 'completed-list__item completed-list__item--empty'
       emptyItem.textContent = '아직 제출된 미션이 없어요.'
       elements.completedList.appendChild(emptyItem)
       return
@@ -191,7 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     completedDays.forEach((day) => {
       const item = document.createElement('li')
-      item.className = 'rounded-xl bg-[#fdf9f0] px-4 py-3 text-sm font-semibold text-slate-800 shadow-sm'
+      item.className = 'completed-list__item completed-list__item--filled'
       item.textContent = `✅ ${day}일차 완료`
       elements.completedList.appendChild(item)
     })

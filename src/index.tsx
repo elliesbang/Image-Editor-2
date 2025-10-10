@@ -113,127 +113,89 @@ function renderCommunityDashboardPage() {
       name="description"
       content="Elliesbang Image Editor와 함께하는 3주(15일) 미치나 챌린지를 공개 미리보기 모드에서 체험해보세요."
     />
-    <title>미치나 챌린지 대시보드</title>
+    <title>미치나 커뮤니티 대시보드</title>
+    <base href="/" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <script>
-      window.tailwind = window.tailwind || {}
-      window.tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              michinaYellow: '#ffd331',
-              michinaIvory: '#f5eee9',
-            },
-            fontFamily: {
-              sans: ['Inter', 'system-ui', 'sans-serif'],
-            },
-          },
-        },
-      }
-    </script>
-    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
-    <style>
-      :root {
-        color-scheme: light;
-      }
-      body {
-        background-color: #f5eee9;
-        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      }
-    </style>
+    <link rel="stylesheet" href="/static/community-dashboard.css" />
   </head>
-  <body class="min-h-screen bg-[#f5eee9] text-slate-900">
-    <div class="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-8 px-4 py-10 sm:px-6 lg:px-8">
-      <header class="rounded-3xl bg-white p-8 text-center shadow-md shadow-black/5">
-        <h1 class="text-3xl font-bold text-slate-900 sm:text-4xl">미치나 챌린지 대시보드</h1>
-        <p class="mt-3 text-sm text-slate-600 sm:text-base">
-          공개 미리보기 모드에서 미치나 챌린지의 진행률을 기록하고 수료증을 발급받을 수 있어요.
-        </p>
-        <div class="mt-6 space-y-2">
-          <div class="h-4 w-full rounded-full bg-[#e5e7eb]">
-            <div
-              class="h-4 rounded-full bg-[#ffd331] transition-all duration-300"
-              data-role="progress-bar"
-              style="width: 0%"
-            ></div>
+  <body>
+    <header class="dashboard-header">💡 미치나 커뮤니티</header>
+    <div class="dashboard-layout">
+      <nav class="sidebar" aria-label="미치나 대시보드 메뉴">
+        <a href="#" class="sidebar__link is-active">참여 현황</a>
+        <a href="#" class="sidebar__link">통계 보기</a>
+        <a href="#" class="sidebar__link">과제 제출률</a>
+      </nav>
+      <main class="dashboard-content">
+        <section class="dashboard-card">
+          <h2 class="dashboard-card__title">미치나 8기 현황</h2>
+          <p class="dashboard-card__meta">현재 참여자: 128명</p>
+          <div class="dashboard-progress">
+            <span class="dashboard-progress__text" data-role="progress-text">0 / 15일차 완료</span>
+            <div class="dashboard-progress__bar">
+              <div class="dashboard-progress__fill" data-role="progress-bar"></div>
+            </div>
           </div>
-          <p class="text-sm font-medium text-slate-700" data-role="progress-text">0 / 15일차 완료</p>
-        </div>
-      </header>
+        </section>
 
-      <main class="grid flex-1 gap-6 lg:grid-cols-[1.6fr,1fr]">
-        <section class="rounded-3xl bg-white p-6 shadow-md shadow-black/5 sm:p-8">
-          <h2 class="text-xl font-semibold text-slate-900">오늘의 미션 제출</h2>
-          <p class="mt-2 text-sm text-slate-600">
-            각 일차는 하루에 한 번만 제출할 수 있고, 업로드한 이미지는 이 기기(localStorage)에만 저장됩니다.
-          </p>
-          <form class="mt-6 space-y-5" data-role="submission-form">
-            <label class="block text-left text-sm font-medium text-slate-700">
-              도전 일차
-              <select
-                class="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm shadow-sm focus:border-[#ffd331] focus:ring-[#ffd331]"
-                data-role="day-select"
-                aria-label="미션 일차 선택"
-              ></select>
-            </label>
-            <label class="block text-left text-sm font-medium text-slate-700">
-              이미지 업로드
-              <input
-                type="file"
-                accept="image/*"
-                class="mt-2 block w-full cursor-pointer rounded-xl border border-dashed border-slate-300 bg-[#fdf9f0] px-4 py-3 text-sm text-slate-600 file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-[#ffd331] file:px-4 file:py-2 file:font-semibold file:text-slate-900 hover:file:bg-[#ffcf00]"
-                data-role="file-input"
-              />
-            </label>
-            <button
-              type="submit"
-              class="w-full rounded-xl bg-[#ffd331] px-5 py-3 text-sm font-semibold text-slate-900 shadow-md transition hover:bg-[#ffcf00]"
-            >
-              오늘 미션 제출
-            </button>
+        <section class="dashboard-card">
+          <h2 class="dashboard-card__title">이번 주 과제 제출률</h2>
+          <p class="dashboard-card__meta">평균 제출률: 94%</p>
+          <p class="dashboard-section-copy">미치나 멤버들의 열정적인 참여가 이어지고 있어요!</p>
+        </section>
+
+        <section class="dashboard-card">
+          <h2 class="dashboard-card__title">인기 키워드</h2>
+          <p class="dashboard-card__meta">#디자인 #AI #챌린지 #미리캔버스</p>
+          <p class="dashboard-section-copy">커뮤니티에서 가장 많이 언급되는 키워드를 확인해보세요.</p>
+        </section>
+
+        <section class="dashboard-card">
+          <h2 class="dashboard-card__title">오늘의 미션 제출</h2>
+          <p class="dashboard-card__meta">각 일차는 하루에 한 번만 제출할 수 있어요.</p>
+          <form class="dashboard-form" data-role="submission-form">
+            <div class="form-field">
+              <label for="michina-day-select">도전 일차</label>
+              <select id="michina-day-select" data-role="day-select" aria-label="미션 일차 선택"></select>
+            </div>
+            <div class="form-field">
+              <label for="michina-file-input">이미지 업로드</label>
+              <input id="michina-file-input" type="file" accept="image/*" data-role="file-input" />
+            </div>
+            <button type="submit">오늘 미션 제출</button>
           </form>
         </section>
 
-        <aside class="flex flex-col gap-4 rounded-3xl bg-white p-6 shadow-md shadow-black/5 sm:p-8">
-          <div>
-            <h2 class="text-lg font-semibold text-slate-900">완료된 일차</h2>
-            <p class="mt-1 text-sm text-slate-600">제출한 일차는 자동으로 아래 목록에 표시됩니다.</p>
-          </div>
-          <ul class="grid grid-cols-1 gap-2 text-left sm:grid-cols-2" data-role="completed-list"></ul>
-          <button
-            type="button"
-            class="mt-auto hidden w-full rounded-xl bg-[#ffd331] px-4 py-3 text-sm font-semibold text-slate-900 shadow-md transition hover:bg-[#ffcf00]"
-            data-role="certificate-button"
-          >
-            수료증 다시 보기
-          </button>
-        </aside>
+        <section class="dashboard-card">
+          <h2 class="dashboard-card__title">완료된 일차</h2>
+          <p class="dashboard-card__meta">제출한 일차는 아래 목록에서 확인할 수 있어요.</p>
+          <ul class="completed-list" data-role="completed-list"></ul>
+          <button type="button" class="upgrade-btn hidden" data-role="certificate-button">수료증 다시 보기</button>
+        </section>
+
+        <section class="dashboard-card">
+          <h2 class="dashboard-card__title">미션 진행 안내</h2>
+          <ul class="dashboard-section-copy" role="list">
+            <li>· 15일차까지 모두 제출하면 자동으로 수료증이 발급돼요.</li>
+            <li>· 공개 미리보기 모드는 이 기기에서만 진행률이 저장돼요.</li>
+            <li>· 필요할 때 언제든 “수료증 다시 보기” 버튼으로 PNG를 재다운로드할 수 있어요.</li>
+          </ul>
+        </section>
       </main>
-
-      <section class="mb-8 rounded-3xl bg-white p-6 shadow-md shadow-black/5 sm:p-8">
-        <h2 class="text-lg font-semibold text-slate-900">미션 진행 안내</h2>
-        <ul class="mt-3 space-y-2 text-left text-sm text-slate-600">
-          <li>· 15일차까지 모두 제출하면 자동으로 수료증이 발급돼요.</li>
-          <li>· 공개 미리보기 모드는 이 기기에서만 진행률이 저장돼요.</li>
-          <li>· 필요할 때 언제든 “수료증 다시 보기” 버튼으로 PNG를 재다운로드할 수 있어요.</li>
-        </ul>
-      </section>
     </div>
+    <footer class="footer">© 엘리의방 | Ellie’s Bang</footer>
 
-    <div
-      data-role="certificate-canvas"
-      style="position: fixed; top: -9999px; left: -9999px; width: 1000px;"
-      class="pointer-events-none"
-    >
-      <div class="mx-auto max-w-3xl rounded-[32px] border-4 border-[#ffd331] bg-white p-10 text-center shadow-xl" data-role="certificate-template">
-        <p class="text-3xl font-bold text-slate-900">🎉 Elliesbang Michina Challenge 수료증</p>
-        <p class="mt-6 text-lg text-slate-700" data-role="certificate-date">수료일: -</p>
-        <p class="mt-3 text-base font-semibold text-slate-800">Elliesbang Image Editor</p>
+    <div class="certificate-canvas-wrapper" data-role="certificate-canvas">
+      <div class="certificate-template" data-role="certificate-template">
+        <h3>🎉 Elliesbang Michina Challenge 수료증</h3>
+        <p data-role="certificate-date">수료일: -</p>
+        <p>Elliesbang Image Editor</p>
       </div>
     </div>
 

@@ -7991,15 +7991,12 @@ function attachEventListeners() {
   if (elements.communityLink instanceof HTMLElement) {
     elements.communityLink.addEventListener('click', (event) => {
       event.preventDefault()
+      event.stopPropagation()
       const targetUrl = '/?view=community'
       try {
-        const popup = window.open(targetUrl, '_blank', 'noopener,noreferrer')
-        if (!popup || popup.closed) {
-          window.location.href = targetUrl
-        }
+        window.open(targetUrl, '_blank', 'noopener')
       } catch (error) {
         console.error('커뮤니티 대시보드를 새 창으로 여는 데 실패했습니다.', error)
-        window.location.href = targetUrl
       }
     })
   }
