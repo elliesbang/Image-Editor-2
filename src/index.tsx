@@ -2959,10 +2959,7 @@ app.get('/', async (c) => {
           </button>
           <header class="upgrade-modal__header">
             <p class="upgrade-modal__eyebrow">플랜 선택</p>
-            <h2 class="upgrade-modal__title" id="upgrade-modal-title">Ellie's Bang 구독 플랜</h2>
-            <p class="upgrade-modal__subtitle">
-              엘리의방 브랜드 컬러로 구성된 플랜에서 업로드 한도와 자동 전환 옵션을 확인하세요.
-            </p>
+            <h2 class="upgrade-modal__title modal-title" id="upgrade-modal-title">구독 플랜</h2>
           </header>
           <div class="upgrade-modal__content">
             <div class="upgrade-modal__plans" data-role="upgrade-plan-list"></div>

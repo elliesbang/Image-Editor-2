@@ -15,45 +15,41 @@ const SUBSCRIPTION_PLANS = Object.freeze({
   basic: { name: 'Basic', price: 9900, uploadLimit: 10, auto: false },
   standard: { name: 'Standard', price: 19900, uploadLimit: 20, auto: false },
   premium: { name: 'Premium', price: 39900, uploadLimit: 50, auto: false },
-  michina: { name: 'Michina', price: 0, uploadLimit: 50, auto: true },
+  michina: {
+    name: '미치나',
+    price: 0,
+    uploadLimit: 50,
+    auto: true,
+    priceLabel: '미치나 챌린지 전용 (관리자 승인)',
+    actionLabel: '미치나 챌린지 안내',
+  },
 })
 const SUBSCRIPTION_PLAN_ORDER = Object.freeze(['free', 'basic', 'standard', 'premium', 'michina'])
-const SUBSCRIPTION_PLAN_SUMMARY = Object.freeze({
-  free: '입문자를 위한 기본 편집 플랜 (한 번에 최대 3장 업로드)',
-  basic: '작업당 최대 10장 업로드와 확장 도구를 제공',
-  standard: '팀 작업을 위한 20장 동시 업로드와 고급 기능',
-  premium: '전문가용 50장 동시 업로드와 우선 지원',
-  michina: '미치나 챌린지 완주자를 위한 전용 혜택',
-})
-
 const SUBSCRIPTION_PLAN_FEATURES = Object.freeze({
   free: [
-    '한 번에 최대 3장 업로드',
-    '월 30장 다운로드 (1크레딧 = 1장)',
-    '기본 편집 도구 체험',
-    '키워드 분석 1회 체험 제공',
+    { text: '한 번에 최대 3장 업로드' },
+    { text: '월 30크레딧 제공 (다운로드 1회당 1크레딧 차감)', emphasis: true },
+    { text: '기본 편집 도구 체험' },
+    { text: '키워드 분석 1회 체험' },
   ],
   basic: [
-    '한 번에 최대 10장 업로드',
-    '다운로드 횟수 제한 없음',
-    'PNG → SVG 변환 5회 포함',
-    '키워드 분석 5회 제공',
+    { text: 'Free 플랜 기능 포함 +', emphasis: true },
+    { text: '한 번에 최대 10장 업로드' },
+    { text: '다운로드 횟수 제한 없음' },
+    { text: 'PNG → SVG 변환 5회' },
+    { text: '키워드 분석 20회' },
   ],
   standard: [
-    '한 번에 최대 20장 업로드',
-    '다운로드 횟수 제한 없음',
-    '자동 최적화 · 배치 변환 지원',
-    '키워드 분석 15회 제공',
+    { text: 'Basic 플랜 기능 포함 +', emphasis: true },
+    { text: '한 번에 최대 20장 업로드' },
+    { text: 'PNG → SVG 변환 30회' },
+    { text: '키워드 분석 50회' },
   ],
-  premium: [
-    '한 번에 최대 50장 업로드',
-    '우선 처리 + 다운로드 무제한',
-    '키워드 분석 50회 제공',
-  ],
+  premium: [{ text: '모든 기능 무제한 사용', emphasis: true }],
   michina: [
-    '한 번에 최대 50장 업로드',
-    '다운로드/편집 기능 무제한',
-    '관리자 승인 · 종료 시 자동 전환',
+    { text: '모든 기능 무제한 사용 (Premium 동일)', emphasis: true },
+    { text: '미치나 챌린지 신청 시 이용 가능', emphasis: true },
+    { text: '관리자 승인 후 이용 시작' },
   ],
 })
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
@@ -1348,76 +1344,75 @@ function renderUpgradePlans() {
   }
   container.innerHTML = ''
   const activePlan = state.user.subscriptionPlan || 'free'
-  SUBSCRIPTION_PLAN_ORDER.forEach((planKey) => {
+  const planKeys = SUBSCRIPTION_PLAN_ORDER
+
+  const plansWrapper = document.createElement('div')
+  plansWrapper.className = 'plans'
+
+  planKeys.forEach((planKey) => {
     const plan = SUBSCRIPTION_PLANS[planKey]
     if (!plan) return
 
     const card = document.createElement('article')
-    card.className = 'upgrade-plan-card'
+    card.className = `plan-card ${planKey}`
+    if (planKey === 'premium') {
+      card.classList.add('premium')
+    }
     if (activePlan === planKey) {
       card.dataset.state = 'active'
     }
 
     const name = document.createElement('h3')
-    name.className = 'upgrade-plan-card__name'
     name.textContent = plan.name
     card.appendChild(name)
 
     const price = document.createElement('p')
-    price.className = 'upgrade-plan-card__price'
-    const priceLabel = formatPlanPrice(plan.price)
-    price.innerHTML = `${priceLabel}<span>/월</span>`
+    price.className = 'price'
+    const customPriceLabel = typeof plan.priceLabel === 'string' ? plan.priceLabel.trim() : ''
+    if (customPriceLabel) {
+      price.textContent = customPriceLabel
+    } else {
+      const priceLabel = formatPlanPrice(plan.price)
+      price.textContent = `${priceLabel} / 월`
+    }
     card.appendChild(price)
 
-    const summary = document.createElement('p')
-    summary.className = 'upgrade-plan-card__summary'
-    summary.textContent = SUBSCRIPTION_PLAN_SUMMARY[planKey] || ''
-    card.appendChild(summary)
-
     const features = document.createElement('ul')
-    features.className = 'upgrade-plan-card__features'
     const planFeatures = SUBSCRIPTION_PLAN_FEATURES[planKey] || []
     planFeatures.forEach((feature) => {
       const item = document.createElement('li')
-      item.textContent = feature
+      if (feature && typeof feature === 'object' && 'text' in feature) {
+        if (feature.emphasis) {
+          const strong = document.createElement('strong')
+          strong.textContent = feature.text
+          item.appendChild(strong)
+        } else {
+          item.textContent = feature.text
+        }
+      } else if (typeof feature === 'string') {
+        item.textContent = feature
+      }
       features.appendChild(item)
     })
     card.appendChild(features)
 
-    const footer = document.createElement('div')
-    footer.className = 'upgrade-plan-card__footer'
-
-    if (planKey === 'michina') {
-      const badge = document.createElement('span')
-      badge.className = 'upgrade-plan-card__badge'
-      badge.textContent = '관리자 승인 전용'
-      footer.appendChild(badge)
-
-      if (activePlan === 'michina') {
-        const note = document.createElement('p')
-        note.className = 'upgrade-plan-card__note'
-        note.textContent = state.user.subscriptionAuto
-          ? '관리자 승인으로 적용된 플랜입니다.'
-          : '현재 플랜입니다.'
-        footer.appendChild(note)
-      }
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'plan-card__button'
+    if (activePlan === planKey) {
+      button.textContent = '현재 플랜'
+      button.disabled = true
     } else {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'btn btn--brand btn--sm upgrade-plan-card__button'
+      const actionLabel = typeof plan.actionLabel === 'string' ? plan.actionLabel : '업그레이드'
+      button.textContent = actionLabel
       button.dataset.plan = planKey
-      if (activePlan === planKey) {
-        button.textContent = '현재 플랜'
-        button.disabled = true
-      } else {
-        button.textContent = '업그레이드'
-      }
-      footer.appendChild(button)
     }
+    card.appendChild(button)
 
-    card.appendChild(footer)
-    container.appendChild(card)
+    plansWrapper.appendChild(card)
   })
+
+  container.appendChild(plansWrapper)
 }
 
 function setSubscriptionPlan(planKey, options = {}) {
@@ -1531,7 +1526,7 @@ function openUpgradeModal() {
   elements.upgradeModal.setAttribute('aria-hidden', 'false')
   syncBodyModalState()
   const focusTarget =
-    elements.upgradeModalDialog?.querySelector('.upgrade-plan-card__button:not([disabled])') ||
+    elements.upgradeModalDialog?.querySelector('.plan-card__button:not([disabled])') ||
     elements.upgradeModalDialog
   if (focusTarget instanceof HTMLElement) {
     window.requestAnimationFrame(() => focusTarget.focus())
@@ -1553,7 +1548,7 @@ function handlePlanUpgrade(planKey) {
     return
   }
   if (planKey === 'michina') {
-    setStatus('미치나 플랜은 관리자 승인 전용입니다.', 'info')
+    setStatus('미치나 플랜은 미치나 챌린지 신청 후 관리자 승인으로 이용할 수 있습니다.', 'info')
     return
   }
   if (state.admin.isLoggedIn) {
@@ -8513,20 +8508,27 @@ function attachEventListeners() {
   }
 
   if (elements.upgradeModal instanceof HTMLElement) {
-    elements.upgradeModal.addEventListener('click', (event) => {
-      const target = event.target
-      if (!(target instanceof HTMLElement)) {
-        return
-      }
-      if (target.dataset.action === 'close-upgrade') {
+    const closeButton = elements.upgradeModal.querySelector('[data-role="upgrade-modal-close"]')
+    if (closeButton instanceof HTMLButtonElement) {
+      closeButton.addEventListener('click', () => {
         closeUpgradeModal()
-      }
-    })
+      })
+    }
+
+    const backdrop = elements.upgradeModal.querySelector('[data-role="upgrade-modal-backdrop"]')
+    if (backdrop instanceof HTMLElement) {
+      backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) {
+          closeUpgradeModal()
+        }
+      })
+    }
   }
 
   if (elements.upgradePlanList instanceof HTMLElement) {
     elements.upgradePlanList.addEventListener('click', (event) => {
-      const target = event.target
+      const target =
+        event.target instanceof HTMLElement ? event.target.closest('.plan-card__button') : null
       if (target instanceof HTMLButtonElement && target.dataset.plan) {
         handlePlanUpgrade(target.dataset.plan)
       }
