@@ -302,6 +302,14 @@ main.page {
   gap: 12px;
 }
 
+.app-header__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  object-fit: cover;
+  border: 1px solid var(--border-strong, rgba(148, 163, 184, 0.4));
+}
+
 .app-header__user {
   font-size: 0.9rem;
   color: var(--text-muted);
