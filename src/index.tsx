@@ -151,69 +151,57 @@ function renderCommunityDashboardPage() {
   </head>
   <body>
     <header class="dashboard-header">💡 미치나 커뮤니티</header>
-    <div class="dashboard-layout">
-      <nav class="sidebar" aria-label="미치나 대시보드 메뉴">
-        <a href="#" class="sidebar__link is-active">참여 현황</a>
-        <a href="#" class="sidebar__link">통계 보기</a>
-        <a href="#" class="sidebar__link">과제 제출률</a>
-      </nav>
-      <main class="dashboard-content">
-        <section class="dashboard-card">
-          <h2 class="dashboard-card__title">미치나 8기 현황</h2>
-          <p class="dashboard-card__meta">현재 참여자: 128명</p>
-          <div class="dashboard-progress">
-            <span class="dashboard-progress__text" data-role="progress-text">0 / 15일차 완료</span>
-            <div class="dashboard-progress__bar">
-              <div class="dashboard-progress__fill" data-role="progress-bar"></div>
-            </div>
+    <main class="dashboard-container">
+      <section class="dashboard-card">
+        <h2>미치나 전체 챌린저 현황</h2>
+        <p class="dashboard-card__meta">전체 챌린저의 주차별 제출률을 확인하세요.</p>
+        <canvas id="overallProgressChart" aria-label="미치나 전체 챌린저 주차별 제출률" role="img"></canvas>
+      </section>
+
+      <section class="dashboard-card">
+        <h2>인기 키워드</h2>
+        <p class="dashboard-card__meta">#디자인 #AI #챌린지 #미리캔버스</p>
+        <p class="dashboard-section-copy">커뮤니티에서 가장 많이 언급되는 키워드를 확인해보세요.</p>
+      </section>
+
+      <section class="dashboard-card">
+        <h2>오늘의 미션 제출</h2>
+        <p class="dashboard-card__meta">각 일차는 하루에 한 번만 제출할 수 있어요.</p>
+        <form class="dashboard-form" data-role="submission-form">
+          <div class="form-field">
+            <label for="michina-day-select">도전 일차</label>
+            <select id="michina-day-select" data-role="day-select" aria-label="미션 일차 선택"></select>
           </div>
-        </section>
+          <div class="form-field">
+            <label for="michina-file-input">이미지 업로드</label>
+            <input id="michina-file-input" type="file" accept="image/*" data-role="file-input" />
+          </div>
+          <button type="submit">오늘 미션 제출</button>
+        </form>
+      </section>
 
-        <section class="dashboard-card">
-          <h2 class="dashboard-card__title">이번 주 과제 제출률</h2>
-          <p class="dashboard-card__meta">평균 제출률: 94%</p>
-          <p class="dashboard-section-copy">미치나 멤버들의 열정적인 참여가 이어지고 있어요!</p>
-        </section>
+      <section class="dashboard-card mission-status-card">
+        <h2>미션 완주 현황</h2>
+        <p id="missionStatus" class="mission-status">0 / 15일차 완료 · 0%</p>
+        <div class="progress-bar" aria-hidden="true">
+          <div class="progress-fill"></div>
+        </div>
+        <div class="status-details">
+          <p><strong>제출한 일차:</strong> <span id="submittedDays">-</span></p>
+          <p><strong>미제출 일차:</strong> <span id="unsubmittedDays">1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15</span></p>
+        </div>
+        <button type="button" class="certificate-button hidden" data-role="certificate-button">수료증 다시 보기</button>
+      </section>
 
-        <section class="dashboard-card">
-          <h2 class="dashboard-card__title">인기 키워드</h2>
-          <p class="dashboard-card__meta">#디자인 #AI #챌린지 #미리캔버스</p>
-          <p class="dashboard-section-copy">커뮤니티에서 가장 많이 언급되는 키워드를 확인해보세요.</p>
-        </section>
-
-        <section class="dashboard-card">
-          <h2 class="dashboard-card__title">오늘의 미션 제출</h2>
-          <p class="dashboard-card__meta">각 일차는 하루에 한 번만 제출할 수 있어요.</p>
-          <form class="dashboard-form" data-role="submission-form">
-            <div class="form-field">
-              <label for="michina-day-select">도전 일차</label>
-              <select id="michina-day-select" data-role="day-select" aria-label="미션 일차 선택"></select>
-            </div>
-            <div class="form-field">
-              <label for="michina-file-input">이미지 업로드</label>
-              <input id="michina-file-input" type="file" accept="image/*" data-role="file-input" />
-            </div>
-            <button type="submit">오늘 미션 제출</button>
-          </form>
-        </section>
-
-        <section class="dashboard-card">
-          <h2 class="dashboard-card__title">완료된 일차</h2>
-          <p class="dashboard-card__meta">제출한 일차는 아래 목록에서 확인할 수 있어요.</p>
-          <ul class="completed-list" data-role="completed-list"></ul>
-          <button type="button" class="upgrade-btn hidden" data-role="certificate-button">수료증 다시 보기</button>
-        </section>
-
-        <section class="dashboard-card">
-          <h2 class="dashboard-card__title">미션 진행 안내</h2>
-          <ul class="dashboard-section-copy" role="list">
-            <li>· 15일차까지 모두 제출하면 자동으로 수료증이 발급돼요.</li>
-            <li>· 공개 미리보기 모드는 이 기기에서만 진행률이 저장돼요.</li>
-            <li>· 필요할 때 언제든 “수료증 다시 보기” 버튼으로 PNG를 재다운로드할 수 있어요.</li>
-          </ul>
-        </section>
-      </main>
-    </div>
+      <section class="dashboard-card">
+        <h2>미션 진행 안내</h2>
+        <ul class="dashboard-section-copy" role="list">
+          <li>· 15일차까지 모두 제출하면 자동으로 수료증이 발급돼요.</li>
+          <li>· 공개 미리보기 모드는 이 기기에서만 진행률이 저장돼요.</li>
+          <li>· 필요할 때 언제든 “수료증 다시 보기” 버튼으로 PNG를 재다운로드할 수 있어요.</li>
+        </ul>
+      </section>
+    </main>
     <footer class="footer">© 엘리의방 | Ellie’s Bang</footer>
 
     <div class="certificate-canvas-wrapper" data-role="certificate-canvas">
@@ -225,6 +213,7 @@ function renderCommunityDashboardPage() {
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" integrity="sha384-PST0s43x0oMdHF2G28clmTa/sJ8KPxONQDX/PDQ3VwNa0nCE3awPJn9eo6HozXEI" crossorigin="anonymous"></script>
     <script type="module" src="/static/community-dashboard.js"></script>
   </body>
 </html>`

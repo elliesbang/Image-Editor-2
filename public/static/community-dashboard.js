@@ -152,9 +152,10 @@ document.addEventListener('DOMContentLoaded', () => {
     daySelect: document.querySelector('[data-role="day-select"]'),
     fileInput: document.querySelector('[data-role="file-input"]'),
     submissionForm: document.querySelector('[data-role="submission-form"]'),
-    progressText: document.querySelector('[data-role="progress-text"]'),
-    progressBar: document.querySelector('[data-role="progress-bar"]'),
-    completedList: document.querySelector('[data-role="completed-list"]'),
+    missionStatus: document.getElementById('missionStatus'),
+    progressFill: document.querySelector('.progress-fill'),
+    submittedDays: document.getElementById('submittedDays'),
+    unsubmittedDays: document.getElementById('unsubmittedDays'),
     certificateButton: document.querySelector('[data-role="certificate-button"]'),
   }
 
@@ -174,37 +175,31 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.daySelect.value = String(getNextAvailableDay(state))
   }
 
-  function renderCompletedDays() {
-    if (!elements.completedList) return
-    elements.completedList.innerHTML = ''
-    const completedDays = state.submissions
-      .map((entry, index) => (entry ? index + 1 : null))
-      .filter((day) => day !== null)
-
-    if (completedDays.length === 0) {
-      const emptyItem = document.createElement('li')
-      emptyItem.className = 'completed-list__item completed-list__item--empty'
-      emptyItem.textContent = '아직 제출된 미션이 없어요.'
-      elements.completedList.appendChild(emptyItem)
-      return
-    }
-
-    completedDays.forEach((day) => {
-      const item = document.createElement('li')
-      item.className = 'completed-list__item completed-list__item--filled'
-      item.textContent = `✅ ${day}일차 완료`
-      elements.completedList.appendChild(item)
-    })
-  }
-
   function updateProgress() {
     const completed = getCompletedCount(state)
     const ratio = Math.round((completed / TOTAL_DAYS) * 100)
-    if (elements.progressText) {
-      elements.progressText.textContent = `${completed} / ${TOTAL_DAYS}일차 완료`
+    if (elements.missionStatus) {
+      elements.missionStatus.textContent = `${completed} / ${TOTAL_DAYS}일차 완료 · ${ratio}%`
     }
-    if (elements.progressBar) {
-      elements.progressBar.style.width = `${Math.min(100, Math.max(0, ratio))}%`
+    if (elements.progressFill) {
+      elements.progressFill.style.width = `${Math.min(100, Math.max(0, ratio))}%`
+    }
+
+    const submittedDays = state.submissions
+      .map((entry, index) => (entry ? index + 1 : null))
+      .filter((day) => day !== null)
+
+    const unsubmittedDays = Array.from({ length: TOTAL_DAYS }, (_, index) => index + 1).filter(
+      (day) => !submittedDays.includes(day),
+    )
+
+    if (elements.submittedDays) {
+      elements.submittedDays.textContent = submittedDays.length > 0 ? submittedDays.join(', ') : '없음'
+    }
+
+    if (elements.unsubmittedDays) {
+      elements.unsubmittedDays.textContent =
+        unsubmittedDays.length > 0 ? unsubmittedDays.join(', ') : '없음'
     }
   }
 
@@ -263,7 +258,6 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.fileInput.value = ''
       elements.daySelect.value = String(getNextAvailableDay(state))
       updateProgress()
-      renderCompletedDays()
       updateCertificateButtonVisibility()
       await handleCompletion()
     } catch (error) {
@@ -287,11 +281,80 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   populateDayOptions()
-  renderCompletedDays()
   updateProgress()
   updateCertificateButtonVisibility()
 
   if (state.completedAt) {
     updateCertificateButtonVisibility()
   }
+
+  function initOverallProgressChart() {
+    const chartCanvas = document.getElementById('overallProgressChart')
+    if (!chartCanvas) {
+      return
+    }
+
+    if (typeof window.Chart !== 'function') {
+      console.error('Chart.js를 불러오지 못했습니다.')
+      return
+    }
+
+    const context = chartCanvas.getContext('2d')
+    if (!context) {
+      return
+    }
+
+    const labels = ['1주차', '2주차', '3주차', '4주차']
+    const data = [85, 78, 91, 88]
+
+    // eslint-disable-next-line no-new
+    new window.Chart(context, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: '제출률 (%)',
+            data,
+            backgroundColor: '#ffd331',
+            borderRadius: 8,
+            borderSkipped: false,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            max: 100,
+            ticks: {
+              callback: (value) => `${value}%`,
+              stepSize: 20,
+            },
+            grid: {
+              color: 'rgba(0, 0, 0, 0.05)',
+            },
+          },
+          x: {
+            grid: {
+              display: false,
+            },
+          },
+        },
+        plugins: {
+          legend: {
+            display: false,
+          },
+          tooltip: {
+            callbacks: {
+              label: (context) => `${context.parsed.y}%`,
+            },
+          },
+        },
+      },
+    })
+  }
+
+  initOverallProgressChart()
 })
