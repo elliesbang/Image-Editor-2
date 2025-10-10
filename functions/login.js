@@ -34,11 +34,47 @@ async function createJwt(payload, secret) {
   return `${encodedHeader}.${encodedPayload}.${signature}`
 }
 
+function normalizeSecret(value, label) {
+  if (typeof value !== 'string') {
+    console.warn(`[login] ${label} is not a string. Received:`, value)
+    return ''
+  }
+
+  const trimmed = value.trim()
+  const unquoted = trimmed.replace(/^['"]|['"]$/g, '')
+  let decoded = unquoted
+
+  try {
+    const uriDecoded = decodeURIComponent(unquoted)
+    if (uriDecoded !== unquoted) {
+      console.log(`[login] ${label} contained URL-encoded characters. Decoded value applied.`)
+      decoded = uriDecoded
+    }
+  } catch (error) {
+    console.warn(`[login] Failed to decode ${label} as URI component. Using unquoted value.`, error)
+  }
+
+  if (trimmed !== value) {
+    console.log(`[login] ${label} had surrounding whitespace removed.`)
+  }
+
+  if (unquoted !== trimmed) {
+    console.log(`[login] ${label} had wrapping quotes removed.`)
+  }
+
+  return decoded
+}
+
 export async function onRequestPost(context) {
   const { request, env } = context
   const { ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET } = env
 
-  if (!ADMIN_EMAIL || !ADMIN_PASSWORD || !SESSION_SECRET) {
+  // Root-cause guard: dashboard inputs may introduce whitespace/quotes/encoding issues.
+  const normalizedAdminEmail = normalizeSecret(ADMIN_EMAIL, 'ADMIN_EMAIL')
+  const normalizedAdminPassword = normalizeSecret(ADMIN_PASSWORD, 'ADMIN_PASSWORD')
+  const normalizedSessionSecret = normalizeSecret(SESSION_SECRET, 'SESSION_SECRET')
+
+  if (!normalizedAdminEmail || !normalizedAdminPassword || !normalizedSessionSecret) {
     return jsonResponse(
       { error: 'CONFIGURATION_MISSING', message: '관리자 인증 구성이 완료되지 않았습니다.' },
       { status: 500 },
@@ -53,13 +89,17 @@ export async function onRequestPost(context) {
   }
 
   const email = typeof body?.email === 'string' ? body.email.trim() : ''
-  const password = typeof body?.password === 'string' ? body.password : ''
+  const password = typeof body?.password === 'string' ? body.password.trim() : ''
 
   if (!email || !password) {
     return jsonResponse({ error: 'INVALID_CREDENTIALS' }, { status: 401 })
   }
 
-  if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
+  if (email !== normalizedAdminEmail || password !== normalizedAdminPassword) {
+    console.warn('[login] Invalid credentials attempt detected.', {
+      emailMatch: email === normalizedAdminEmail,
+      passwordMatch: password === normalizedAdminPassword,
+    })
     await new Promise((resolve) => setTimeout(resolve, 400))
     return jsonResponse(
       { error: 'INVALID_CREDENTIALS', message: '이메일 또는 비밀번호가 올바르지 않습니다.' },
@@ -79,7 +119,7 @@ export async function onRequestPost(context) {
     aud: 'admin-dashboard',
   }
 
-  const token = await createJwt(payload, SESSION_SECRET)
+  const token = await createJwt(payload, normalizedSessionSecret)
 
   return jsonResponse({ token, expiresIn })
 }
