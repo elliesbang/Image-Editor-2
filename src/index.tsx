@@ -2767,6 +2767,10 @@ app.get('/', async (c) => {
               <strong data-role="credit-count">0</strong> 크레딧
             </span>
           </div>
+          <div class="app-header__profile" data-role="user-profile" hidden>
+            <img class="app-header__avatar" data-role="user-avatar" alt="" hidden />
+            <span class="app-header__user" data-role="user-summary"></span>
+          </div>
           <a
             class="btn btn--ghost btn--sm"
             href={communityUrl}
