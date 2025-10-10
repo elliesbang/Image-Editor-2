@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>관리자 로그인</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 16px;
+        font-family: 'Pretendard', 'Noto Sans KR', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          sans-serif;
+        background: #f5eee9;
+        color: #404040;
+      }
+
+      .login-wrapper {
+        width: 100%;
+        max-width: 400px;
+      }
+
+      .login-card {
+        background: rgba(255, 255, 255, 0.82);
+        backdrop-filter: blur(6px);
+        border-radius: 16px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        padding: 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .login-card__header {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        text-align: center;
+      }
+
+      .login-card__title {
+        margin: 0;
+        font-size: 1.6rem;
+        font-weight: 700;
+      }
+
+      .login-card__description {
+        margin: 0;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: rgba(64, 64, 64, 0.8);
+      }
+
+      .login-card__form {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-weight: 600;
+        font-size: 0.9rem;
+      }
+
+      input[type='email'],
+      input[type='password'],
+      input[type='text'] {
+        width: 100%;
+        padding: 12px 14px;
+        border: 1px solid #ffe9a3;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        color: inherit;
+        background: #fffdf7;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: #ffd331;
+        box-shadow: 0 0 0 4px rgba(255, 211, 49, 0.3);
+      }
+
+      .input-group {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      .password-toggle {
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        font-size: 1.1rem;
+        line-height: 1;
+        padding: 4px;
+        color: #404040;
+      }
+
+      .password-toggle:focus-visible {
+        outline: 2px solid #ffd331;
+        border-radius: 6px;
+      }
+
+      .login-card__button {
+        margin-top: 8px;
+        padding: 14px 18px;
+        font-size: 1rem;
+        font-weight: 700;
+        border: none;
+        border-radius: 999px;
+        background: #ffd331;
+        color: #404040;
+        cursor: pointer;
+        transition: background 0.2s ease, transform 0.2s ease;
+        box-shadow: 0 8px 18px rgba(255, 211, 49, 0.25);
+      }
+
+      .login-card__button:hover {
+        background: #ffcc00;
+      }
+
+      .login-card__button:disabled {
+        cursor: wait;
+        opacity: 0.7;
+      }
+
+      .login-card__status {
+        min-height: 20px;
+        font-size: 0.9rem;
+        color: #d14343;
+        text-align: center;
+      }
+
+      .login-card__footer {
+        text-align: center;
+        font-size: 0.85rem;
+        color: rgba(64, 64, 64, 0.7);
+      }
+
+      @media (max-width: 480px) {
+        .login-card {
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrapper">
+      <section class="login-card" aria-labelledby="admin-login-title">
+        <header class="login-card__header">
+          <p class="login-card__badge" aria-hidden="true" style="font-weight:600;letter-spacing:0.05em;">
+            ADMIN ACCESS
+          </p>
+          <h1 class="login-card__title" id="admin-login-title">관리자 로그인</h1>
+          <p class="login-card__description">
+            관리자 전용 영역입니다. 등록된 이메일과 비밀번호를 입력해 대시보드를 열어주세요.
+          </p>
+        </header>
+        <form class="login-card__form" novalidate>
+          <label for="admin-email">
+            이메일
+            <input id="admin-email" name="email" type="email" autocomplete="email" required placeholder="admin@example.com" />
+          </label>
+          <label for="admin-password">
+            비밀번호
+            <div class="input-group">
+              <input
+                id="admin-password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+                placeholder="비밀번호를 입력하세요"
+              />
+              <button type="button" class="password-toggle" aria-label="비밀번호 표시" data-role="toggle-password">👁️</button>
+            </div>
+          </label>
+          <p class="login-card__status" data-role="status" aria-live="polite"></p>
+          <button type="submit" class="login-card__button" data-role="submit">로그인</button>
+        </form>
+        <p class="login-card__footer">보안을 위해 사용 후 반드시 로그아웃해주세요.</p>
+      </section>
+    </div>
+    <script>
+      const STORAGE_KEY = 'admin_token'
+
+      function setStatus(message) {
+        const status = document.querySelector('[data-role="status"]')
+        if (status) {
+          status.textContent = message || ''
+        }
+      }
+
+      function togglePasswordVisibility(button, input) {
+        const isHidden = input.type === 'password'
+        input.type = isHidden ? 'text' : 'password'
+        button.textContent = isHidden ? '🙈' : '👁️'
+        button.setAttribute('aria-label', isHidden ? '비밀번호 숨기기' : '비밀번호 표시')
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const form = document.querySelector('.login-card__form')
+        const emailInput = document.getElementById('admin-email')
+        const passwordInput = document.getElementById('admin-password')
+        const submitButton = document.querySelector('[data-role="submit"]')
+        const toggleButton = document.querySelector('[data-role="toggle-password"]')
+
+        if (toggleButton && passwordInput) {
+          toggleButton.addEventListener('click', () => togglePasswordVisibility(toggleButton, passwordInput))
+        }
+
+        form?.addEventListener('submit', async (event) => {
+          event.preventDefault()
+          setStatus('')
+
+          const email = (emailInput?.value || '').trim()
+          const password = passwordInput?.value || ''
+
+          if (!email || !password) {
+            setStatus('이메일 또는 비밀번호가 올바르지 않습니다.')
+            return
+          }
+
+          submitButton.disabled = true
+          submitButton.textContent = '로그인 중…'
+
+          try {
+            const response = await fetch('/api/login', {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({ email, password }),
+            })
+
+            const data = await response.json().catch(() => null)
+
+            if (!response.ok || !data?.token) {
+              throw new Error('INVALID_CREDENTIALS')
+            }
+
+            try {
+              window.localStorage.setItem(STORAGE_KEY, data.token)
+            } catch (error) {
+              console.warn('토큰을 저장하지 못했습니다.', error)
+            }
+
+            alert('관리자 로그인 완료!')
+            window.open('/?admin=1', '_blank', 'noopener')
+            setStatus('')
+          } catch (error) {
+            console.error('로그인에 실패했습니다.', error)
+            setStatus('이메일 또는 비밀번호가 올바르지 않습니다.')
+          } finally {
+            submitButton.disabled = false
+            submitButton.textContent = '로그인'
+          }
+        })
+      })
+    </script>
+  </body>
+</html>

@@ -52,6 +52,55 @@ const SUBSCRIPTION_PLAN_FEATURES = Object.freeze({
     { text: '관리자 승인 후 이용 시작' },
   ],
 })
+const ADMIN_JWT_STORAGE_KEY = 'admin_token'
+
+async function verifyAdminAccessIfNeeded() {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('admin') !== '1') {
+    return
+  }
+
+  let token = ''
+
+  try {
+    token = window.localStorage.getItem(ADMIN_JWT_STORAGE_KEY) || ''
+  } catch (error) {
+    console.warn('관리자 토큰을 불러오지 못했습니다.', error)
+  }
+
+  if (!token) {
+    window.location.replace('/admin-login')
+    return
+  }
+
+  try {
+    const response = await fetch('/api/verify', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      throw new Error(`VERIFY_FAILED_${response.status}`)
+    }
+
+    const result = await response.json().catch(() => null)
+    if (!result || result.valid !== true) {
+      throw new Error('VERIFY_INVALID')
+    }
+  } catch (error) {
+    console.warn('관리자 토큰 검증에 실패했습니다.', error)
+    window.location.replace('/admin-login')
+  }
+}
+
+verifyAdminAccessIfNeeded()
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
 const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
 const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
@@ -8864,9 +8913,9 @@ function attachEventListeners() {
       event.preventDefault()
       event.stopPropagation()
       try {
-        window.open('/?admin=1', '_blank', 'noopener')
+        window.open('/admin-login', '_blank', 'noopener')
       } catch (error) {
-        console.error('관리자 대시보드를 새 탭으로 여는 데 실패했습니다.', error)
+        console.error('관리자 로그인 페이지를 새 탭으로 여는 데 실패했습니다.', error)
       }
     })
   }
