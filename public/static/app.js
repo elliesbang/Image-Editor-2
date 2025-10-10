@@ -8473,6 +8473,76 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
   }
 }
 
+function cleanSvgBeforeDownload(svgText) {
+  if (typeof DOMParser !== 'function' || typeof XMLSerializer !== 'function') {
+    return typeof svgText === 'string' ? svgText.replace(/\n+/g, '').trim() : ''
+  }
+
+  try {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgText, 'image/svg+xml')
+    const parserError = doc.querySelector('parsererror')
+    if (parserError) {
+      throw new Error(parserError.textContent || 'Failed to parse SVG for cleanup.')
+    }
+
+    const svg = doc.documentElement
+    if (!svg || svg.nodeName.toLowerCase() !== 'svg') {
+      throw new Error('Invalid SVG root element during cleanup.')
+    }
+
+    const removableSelectors = ['image', 'rect', 'metadata', 'defs', 'title', 'desc']
+    removableSelectors.forEach((selector) => {
+      svg.querySelectorAll(selector).forEach((node) => node.remove())
+    })
+
+    svg.querySelectorAll('g[id]').forEach((group) => {
+      const id = group.getAttribute('id')
+      if (id && id.trim().toLowerCase().includes('background')) {
+        group.remove()
+      }
+    })
+
+    const walker = doc.createTreeWalker(svg, NodeFilter.SHOW_ELEMENT)
+    while (walker.nextNode()) {
+      const element = walker.currentNode
+      const attributes = Array.from(element.attributes)
+      attributes.forEach((attribute) => {
+        const name = attribute.name
+        if (name && name.toLowerCase().startsWith('stroke')) {
+          element.removeAttribute(name)
+        }
+      })
+
+      if (element.hasAttribute('style')) {
+        const style = element.getAttribute('style') || ''
+        const filtered = style
+          .split(';')
+          .map((rule) => rule.trim())
+          .filter((rule) => rule && !/^stroke(-|$)/i.test(rule.replace(/\s*/g, '')))
+        if (filtered.length > 0) {
+          element.setAttribute('style', filtered.join('; '))
+        } else {
+          element.removeAttribute('style')
+        }
+      }
+
+      if (element.tagName && element.tagName.toLowerCase() === 'g' && element.childNodes.length === 0) {
+        element.remove()
+      }
+    }
+
+    const serialized = new XMLSerializer().serializeToString(svg)
+    return serialized.replace(/\n+/g, '').trim()
+  } catch (error) {
+    console.warn('Failed to clean SVG before download', error)
+    if (typeof svgText === 'string') {
+      return svgText.replace(/\n+/g, '').trim()
+    }
+    return ''
+  }
+}
+
 async function createSanitizedSvgBlob(blob) {
   if (!(blob instanceof Blob)) {
     return { blob: new Blob(), strokeAdjusted: false, sanitized: false }
@@ -8480,8 +8550,9 @@ async function createSanitizedSvgBlob(blob) {
 
   const originalText = await blob.text()
   const cleaned = sanitizeSVG(originalText, { trackAdjustments: true })
+  const fullyCleaned = cleanSvgBeforeDownload(cleaned.svgText)
   return {
-    blob: new Blob([cleaned.svgText], { type: 'image/svg+xml' }),
+    blob: new Blob([fullyCleaned], { type: 'image/svg+xml' }),
     strokeAdjusted: Boolean(cleaned.strokeAdjusted),
     sanitized: true,
   }
