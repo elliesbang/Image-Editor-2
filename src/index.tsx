@@ -1,19 +1,11 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
-import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
 
 type Bindings = {
   OPENAI_API_KEY?: string
-  ADMIN_EMAIL?: string
-  ADMIN_PASSWORD_HASH?: string
-  SESSION_SECRET?: string
-  ADMIN_SESSION_VERSION?: string
-  ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
-  ADMIN_RATE_LIMIT_WINDOW_SECONDS?: string
-  ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
+  ADMIN_SECRET_KEY?: string
   CHALLENGE_KV?: KVNamespace
   CHALLENGE_KV_BACKUP?: KVNamespace
   GOOGLE_CLIENT_ID?: string
@@ -47,48 +39,6 @@ type ChallengeSummary = ChallengeParticipant & {
   missingDays: number
 }
 
-type AdminSessionPayload = {
-  sub: string
-  role: 'admin'
-  exp: number
-  iss: string
-  aud: string
-  ver: string
-  iat: number
-}
-
-type AdminConfig = {
-  email: string
-  passwordHash: string
-  sessionSecret: string
-  sessionVersion: string
-}
-
-type AdminRateLimitConfig = {
-  maxAttempts: number
-  windowSeconds: number
-  cooldownSeconds: number
-}
-
-type AdminConfigValidationResult = {
-  config: AdminConfig | null
-  issues: string[]
-}
-
-type RateLimitRecord = {
-  count: number
-  windowStart: number
-  windowEnd: number
-  blockedUntil?: number
-}
-
-type RateLimitStatus = {
-  blocked: boolean
-  remaining: number
-  resetAfterSeconds: number
-  retryAfterSeconds?: number
-}
-
 type MichinaPeriod = {
   start: string
   end: string
@@ -110,18 +60,10 @@ type MichinaUserRecord = {
   updatedAt: string
 }
 
-const ADMIN_SESSION_COOKIE = 'admin_session'
-const ADMIN_SESSION_ISSUER = 'easy-image-editor'
-const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
-const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
-const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
-const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
-const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
-const ADMIN_LOGIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL ?? ''
 
 const MICHINA_PERIOD_KEY = 'michina:period'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
@@ -662,299 +604,6 @@ function getFixedWindowBoundaries(now: number, windowSeconds: number) {
   }
 }
 
-function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
-  const issues: string[] = []
-
-  const emailRaw = env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
-  if (!emailRaw) {
-    issues.push('ADMIN_EMAIL is not configured')
-  } else if (!isValidEmail(emailRaw)) {
-    issues.push('ADMIN_EMAIL must be a valid email address')
-  }
-
-  const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
-  if (!passwordHashRaw) {
-    issues.push('ADMIN_PASSWORD_HASH is not configured')
-  } else if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-    issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
-  }
-
-  const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
-  if (!sessionSecretRaw) {
-    issues.push('SESSION_SECRET is not configured')
-  } else if (sessionSecretRaw.length < 32) {
-    issues.push('SESSION_SECRET must be at least 32 characters')
-  }
-
-  const sessionVersionRaw = env.ADMIN_SESSION_VERSION?.trim() ?? '1'
-  if (!sessionVersionRaw) {
-    issues.push('ADMIN_SESSION_VERSION must not be empty')
-  } else if (sessionVersionRaw.length > 32) {
-    issues.push('ADMIN_SESSION_VERSION must be 32 characters or fewer')
-  }
-
-  if (issues.length > 0) {
-    return { config: null, issues }
-  }
-
-  return {
-    config: {
-      email: emailRaw,
-      passwordHash: passwordHashRaw,
-      sessionSecret: sessionSecretRaw,
-      sessionVersion: sessionVersionRaw,
-    },
-    issues,
-  }
-}
-
-function getAdminConfig(env: Bindings): AdminConfig | null {
-  const validation = validateAdminEnvironment(env)
-  return validation.config
-}
-
-function getAdminRateLimitConfig(env: Bindings): AdminRateLimitConfig {
-  const windowSeconds = parsePositiveInteger(
-    env.ADMIN_RATE_LIMIT_WINDOW_SECONDS,
-    DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS,
-    10,
-    3600,
-  )
-  const cooldownSeconds = parsePositiveInteger(
-    env.ADMIN_RATE_LIMIT_COOLDOWN_SECONDS,
-    DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS,
-    windowSeconds,
-    7200,
-  )
-  const maxAttempts = parsePositiveInteger(
-    env.ADMIN_RATE_LIMIT_MAX_ATTEMPTS,
-    DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS,
-    1,
-    20,
-  )
-  return {
-    maxAttempts,
-    windowSeconds,
-    cooldownSeconds,
-  }
-}
-
-function buildRateLimitKey(identifier: string) {
-  return `${ADMIN_RATE_LIMIT_KEY_PREFIX}${identifier}`
-}
-
-async function readRateLimitRecord(env: Bindings, key: string): Promise<RateLimitRecord | null> {
-  const now = Date.now()
-
-  const sanitize = (record: Partial<RateLimitRecord> | null): RateLimitRecord | null => {
-    if (!record) {
-      return null
-    }
-    if (
-      typeof record.count !== 'number' ||
-      typeof record.windowStart !== 'number' ||
-      typeof record.windowEnd !== 'number'
-    ) {
-      return null
-    }
-    if (!Number.isFinite(record.windowStart) || !Number.isFinite(record.windowEnd)) {
-      return null
-    }
-    if (record.windowEnd <= record.windowStart) {
-      return null
-    }
-    const sanitized: RateLimitRecord = {
-      count: Math.max(0, Math.floor(record.count)),
-      windowStart: record.windowStart,
-      windowEnd: record.windowEnd,
-    }
-    if (typeof record.blockedUntil === 'number' && Number.isFinite(record.blockedUntil) && record.blockedUntil > now) {
-      sanitized.blockedUntil = record.blockedUntil
-    }
-    if (sanitized.windowEnd <= now && !sanitized.blockedUntil) {
-      return null
-    }
-    return sanitized
-  }
-
-  const kvStores: Array<{ store: KVNamespace; isPrimary: boolean }> = []
-  if (env.CHALLENGE_KV) {
-    kvStores.push({ store: env.CHALLENGE_KV, isPrimary: true })
-  }
-  if (env.CHALLENGE_KV_BACKUP) {
-    kvStores.push({ store: env.CHALLENGE_KV_BACKUP, isPrimary: false })
-  }
-
-  let kvRecord: RateLimitRecord | null = null
-  let kvSource: 'primary' | 'backup' | null = null
-
-  for (const { store, isPrimary } of kvStores) {
-    const raw = await store.get(key)
-    if (!raw) {
-      continue
-    }
-    let parsed: RateLimitRecord | null = null
-    try {
-      parsed = sanitize(JSON.parse(raw) as Partial<RateLimitRecord>)
-    } catch (error) {
-      parsed = null
-    }
-    if (!parsed) {
-      await store.delete(key).catch(() => {})
-      continue
-    }
-    kvRecord = parsed
-    kvSource = isPrimary ? 'primary' : 'backup'
-    break
-  }
-
-  if (kvRecord) {
-    if (kvSource === 'backup' && env.CHALLENGE_KV) {
-      await writeRateLimitRecord(env, key, kvRecord)
-    }
-    return kvRecord
-  }
-
-  const memoryRecord = rateLimitMemoryStore.get(key)
-  if (!memoryRecord) {
-    return null
-  }
-  const sanitizedMemory = sanitize(memoryRecord)
-  if (!sanitizedMemory) {
-    rateLimitMemoryStore.delete(key)
-    return null
-  }
-  rateLimitMemoryStore.set(key, sanitizedMemory)
-  return sanitizedMemory
-}
-
-async function writeRateLimitRecord(env: Bindings, key: string, record: RateLimitRecord) {
-  const now = Date.now()
-  const payload: RateLimitRecord = {
-    count: Math.max(0, Math.floor(record.count)),
-    windowStart: record.windowStart,
-    windowEnd: record.windowEnd,
-  }
-
-  if (typeof record.blockedUntil === 'number' && record.blockedUntil > now) {
-    payload.blockedUntil = record.blockedUntil
-  }
-
-  const expiryTarget = Math.max(payload.blockedUntil ?? 0, payload.windowEnd)
-  const ttlSeconds = Math.max(1, Math.ceil((expiryTarget - now) / 1000))
-  const serialized = JSON.stringify(payload)
-  const primary = env.CHALLENGE_KV
-  const backup = env.CHALLENGE_KV_BACKUP
-
-  if (primary) {
-    await primary.put(key, serialized, { expirationTtl: ttlSeconds })
-  }
-  if (backup) {
-    await backup.put(key, serialized, { expirationTtl: ttlSeconds })
-  }
-
-  if (!primary && !backup) {
-    rateLimitMemoryStore.set(key, { ...payload })
-  }
-}
-
-async function clearRateLimitRecord(env: Bindings, key: string) {
-  if (env.CHALLENGE_KV) {
-    await env.CHALLENGE_KV.delete(key)
-  }
-  if (env.CHALLENGE_KV_BACKUP) {
-    await env.CHALLENGE_KV_BACKUP.delete(key)
-  }
-  rateLimitMemoryStore.delete(key)
-}
-
-async function getAdminRateLimitStatus(env: Bindings, identifier: string, config: AdminRateLimitConfig): Promise<RateLimitStatus> {
-  const key = buildRateLimitKey(identifier)
-  const now = Date.now()
-  const record = await readRateLimitRecord(env, key)
-  if (!record) {
-    return {
-      blocked: false,
-      remaining: config.maxAttempts,
-      resetAfterSeconds: config.windowSeconds,
-    }
-  }
-
-  const blocked = typeof record.blockedUntil === 'number' && record.blockedUntil > now
-  const resetTarget = blocked ? record.blockedUntil! : record.windowEnd
-
-  if (!blocked && record.windowEnd <= now) {
-    await clearRateLimitRecord(env, key)
-    return {
-      blocked: false,
-      remaining: config.maxAttempts,
-      resetAfterSeconds: config.windowSeconds,
-    }
-  }
-
-  const remaining = blocked ? 0 : Math.max(0, config.maxAttempts - record.count)
-  const resetAfterSeconds = Math.max(1, Math.ceil((resetTarget - now) / 1000))
-
-  return {
-    blocked,
-    remaining,
-    resetAfterSeconds,
-    retryAfterSeconds: blocked ? resetAfterSeconds : undefined,
-  }
-}
-
-async function recordAdminLoginFailure(env: Bindings, identifier: string, config: AdminRateLimitConfig): Promise<RateLimitStatus> {
-  const key = buildRateLimitKey(identifier)
-  const now = Date.now()
-  const { windowStart, windowEnd } = getFixedWindowBoundaries(now, config.windowSeconds)
-
-  let record = await readRateLimitRecord(env, key)
-  if (!record || record.windowEnd <= now || record.windowStart !== windowStart) {
-    record = {
-      count: 0,
-      windowStart,
-      windowEnd,
-    }
-  }
-
-  record.count = Math.min(config.maxAttempts, record.count + 1)
-
-  if (record.count >= config.maxAttempts) {
-    const cooldownUntil = now + config.cooldownSeconds * 1000
-    record.blockedUntil = Math.max(record.blockedUntil ?? 0, windowEnd, cooldownUntil)
-  }
-
-  await writeRateLimitRecord(env, key, record)
-
-  const blocked = typeof record.blockedUntil === 'number' && record.blockedUntil > now
-  const resetTarget = blocked ? record.blockedUntil! : record.windowEnd
-  const remaining = blocked ? 0 : Math.max(0, config.maxAttempts - record.count)
-  const resetAfterSeconds = Math.max(1, Math.ceil((resetTarget - now) / 1000))
-
-  return {
-    blocked,
-    remaining,
-    resetAfterSeconds,
-    retryAfterSeconds: blocked ? resetAfterSeconds : undefined,
-  }
-}
-
-async function clearAdminRateLimit(env: Bindings, identifier: string) {
-  const key = buildRateLimitKey(identifier)
-  await clearRateLimitRecord(env, key)
-}
-
-function attachRateLimitHeaders(response: Response, config: AdminRateLimitConfig, status: RateLimitStatus) {
-  response.headers.set('X-RateLimit-Limit', String(config.maxAttempts))
-  response.headers.set('X-RateLimit-Remaining', String(Math.max(0, status.remaining)))
-  response.headers.set('X-RateLimit-Reset', String(Math.max(0, Math.ceil(status.resetAfterSeconds))))
-  response.headers.set('X-RateLimit-Window', String(config.windowSeconds))
-  response.headers.set('X-RateLimit-Cooldown', String(config.cooldownSeconds))
-  if (status.blocked && status.retryAfterSeconds) {
-    response.headers.set('Retry-After', String(Math.max(1, Math.ceil(status.retryAfterSeconds))))
-  }
-}
-
 function getClientIdentifier(c: Context<{ Bindings: Bindings }>) {
   const headerValue =
     c.req.header('cf-connecting-ip') ||
@@ -1421,81 +1070,20 @@ async function evaluateCompletions(env: Bindings) {
   return updated
 }
 
-async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
-  const config = getAdminConfig(c.env)
-  if (!config) {
-    return null
+function isAdminAuthorized(c: Context<{ Bindings: Bindings }>) {
+  const secret = c.env.ADMIN_SECRET_KEY?.trim()
+  if (!secret) {
+    return false
   }
-  const token = getCookie(c, ADMIN_SESSION_COOKIE)
-  if (!token) {
-    return null
+  const headerSecret = c.req.header('x-admin-secret')?.trim()
+  if (headerSecret && headerSecret === secret) {
+    return true
   }
-  try {
-    const payload = (await verify(token, config.sessionSecret)) as AdminSessionPayload
-    const nowSeconds = Math.floor(Date.now() / 1000)
-    if (payload.role !== 'admin' || !payload.sub) {
-      return null
-    }
-    if (payload.iss !== ADMIN_SESSION_ISSUER || payload.aud !== ADMIN_SESSION_AUDIENCE) {
-      return null
-    }
-    if (payload.ver !== config.sessionVersion) {
-      return null
-    }
-    if (payload.sub !== config.email) {
-      return null
-    }
-    if (typeof payload.iat !== 'number' || payload.iat > nowSeconds + 60) {
-      return null
-    }
-    if (typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
-      return null
-    }
-    return payload.sub
-  } catch (error) {
-    console.error('[auth] Failed to verify admin session', error)
-    clearAdminSession(c)
-    return null
+  const querySecret = c.req.query('admin_secret')?.trim()
+  if (querySecret && querySecret === secret) {
+    return true
   }
-}
-
-async function createAdminSession(
-  c: Context<{ Bindings: Bindings }>,
-  email: string,
-  config?: AdminConfig,
-): Promise<{ exp: number; iat: number }> {
-  const adminConfig = config ?? getAdminConfig(c.env)
-  if (!adminConfig) {
-    throw new Error('SESSION_SECRET_NOT_CONFIGURED')
-  }
-  const normalizedEmail = email.trim().toLowerCase()
-  const expiresInSeconds = 60 * 60 * 8
-  const issuedAt = Math.floor(Date.now() / 1000)
-  const exp = issuedAt + expiresInSeconds
-  const token = await sign(
-    {
-      sub: normalizedEmail,
-      role: 'admin',
-      exp,
-      iat: issuedAt,
-      iss: ADMIN_SESSION_ISSUER,
-      aud: ADMIN_SESSION_AUDIENCE,
-      ver: adminConfig.sessionVersion,
-    },
-    adminConfig.sessionSecret,
-  )
-  setCookie(c, ADMIN_SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'Strict',
-    secure: true,
-    path: '/',
-    maxAge: expiresInSeconds,
-  })
-  return { exp, iat: issuedAt }
-}
-
-function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
+  return false
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1532,411 +1120,8 @@ app.get('/seo-vision/', (c) => c.redirect('/static/seo-vision/index.html'))
 
 app.use(renderer)
 
-app.get('/api/auth/session', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
-})
-
-app.post('/api/auth/admin/login', async (c) => {
-  let payload: { email?: string; password?: string } | undefined
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const env = c.env
-  const validation = validateAdminEnvironment(env)
-  const adminConfig = validation.config
-  if (!adminConfig) {
-    const response = c.json(
-      {
-        error: 'ADMIN_AUTH_NOT_CONFIGURED',
-        issues: validation.issues,
-      },
-      500,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const rateLimitConfig = getAdminRateLimitConfig(env)
-  const identifier = getClientIdentifier(c)
-  const currentStatus = await getAdminRateLimitStatus(env, identifier, rateLimitConfig)
-  if (currentStatus.blocked) {
-    const retryAfter = currentStatus.retryAfterSeconds ?? rateLimitConfig.cooldownSeconds
-    const response = c.json({ error: 'RATE_LIMIT_EXCEEDED', retryAfter }, 429)
-    attachRateLimitHeaders(response, rateLimitConfig, currentStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
-  const password = typeof payload?.password === 'string' ? payload.password : ''
-
-  if (!isValidEmail(email) || !password) {
-    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
-    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
-    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
-      responseBody.retryAfter = failureStatus.retryAfterSeconds
-    }
-    const response = c.json(responseBody, 401)
-    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  if (email !== adminConfig.email) {
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
-    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
-    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
-      responseBody.retryAfter = failureStatus.retryAfterSeconds
-    }
-    const response = c.json(responseBody, 401)
-    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const computedHash = await sha256(password)
-  if (computedHash.toLowerCase() !== adminConfig.passwordHash) {
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
-    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
-    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
-      responseBody.retryAfter = failureStatus.retryAfterSeconds
-    }
-    const response = c.json(responseBody, 401)
-    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const sessionMeta = await createAdminSession(c, email, adminConfig)
-  await clearAdminRateLimit(env, identifier)
-  const successStatus: RateLimitStatus = {
-    blocked: false,
-    remaining: rateLimitConfig.maxAttempts,
-    resetAfterSeconds: rateLimitConfig.windowSeconds,
-  }
-  const response = c.json({
-    ok: true,
-    expiresAt: sessionMeta.exp,
-    issuedAt: sessionMeta.iat,
-    sessionVersion: adminConfig.sessionVersion,
-  })
-  attachRateLimitHeaders(response, rateLimitConfig, successStatus)
-  response.headers.set('Cache-Control', 'no-store')
-  return response
-})
-
-app.post('/api/auth/admin/logout', async (c) => {
-  clearAdminSession(c)
-  return c.json({ ok: true })
-})
-
-app.get('/api/michina/config', async (c) => {
-  const [period, challengers] = await Promise.all([getMichinaPeriodRecord(c.env), getMichinaChallengerRecord(c.env)])
-  return c.json({
-    period,
-    challengers: challengers?.challengers ?? [],
-    updatedAt: period?.updatedAt ?? challengers?.updatedAt ?? null,
-    challengersUpdatedAt: challengers?.updatedAt ?? null,
-    challengersUpdatedBy: challengers?.updatedBy ?? null,
-  })
-})
-
-app.get('/api/admin/michina/period', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
-    return c.json({ error: 'UNAUTHORIZED' }, 401)
-  }
-  const period = await getMichinaPeriodRecord(c.env)
-  return c.json({ period })
-})
-
-app.post('/api/admin/michina/period', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
-    return c.json({ error: 'UNAUTHORIZED' }, 401)
-  }
-  let payload: unknown
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    return c.json({ error: 'INVALID_JSON' }, 400)
-  }
-  const start = isValidDateString((payload as { start?: string }).start) ? (payload as { start: string }).start : ''
-  const end = isValidDateString((payload as { end?: string }).end) ? (payload as { end: string }).end : ''
-  if (!start || !end) {
-    return c.json({ error: 'INVALID_PERIOD' }, 400)
-  }
-  if (start > end) {
-    return c.json({ error: 'INVALID_RANGE' }, 400)
-  }
-  const record = await saveMichinaPeriodRecord(c.env, { start, end, updatedBy: adminEmail })
-  return c.json({ ok: true, period: record })
-})
-
-app.get('/api/admin/michina/challengers', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
-    return c.json({ error: 'UNAUTHORIZED' }, 401)
-  }
-  const record = await getMichinaChallengerRecord(c.env)
-  return c.json({
-    challengers: record?.challengers ?? [],
-    updatedAt: record?.updatedAt ?? null,
-    updatedBy: record?.updatedBy ?? null,
-  })
-})
-
-app.post('/api/admin/michina/challengers', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
-    return c.json({ error: 'UNAUTHORIZED' }, 401)
-  }
-  let payload: unknown
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    return c.json({ error: 'INVALID_JSON' }, 400)
-  }
-
-  const source: unknown = (payload as { challengers?: unknown; emails?: unknown }).challengers ??
-    (payload as { emails?: unknown }).emails ??
-    null;
-
-  let rawList: string[] = []
-  if (Array.isArray(source)) {
-    rawList = source as string[]
-  } else if (typeof source === 'string') {
-    rawList = source.split(/[\s,;\r\n]+/)
-  }
-
-  if (rawList.length === 0 && !(payload as { allowEmpty?: boolean }).allowEmpty) {
-    if (!Array.isArray(source)) {
-      return c.json({ error: 'NO_CHALLENGERS' }, 400)
-    }
-  }
-
-  const record = await saveMichinaChallengerRecord(c.env, rawList, { updatedBy: adminEmail })
-  return c.json({ ok: true, challengers: record.challengers, updatedAt: record.updatedAt, updatedBy: record.updatedBy ?? null })
-})
-
-app.post('/api/michina/role/sync', async (c) => {
-  let payload: unknown
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    return c.json({ error: 'INVALID_JSON' }, 400)
-  }
-  const email = normalizeEmailValue((payload as { email?: string }).email)
-  if (!email) {
-    return c.json({ error: 'INVALID_EMAIL' }, 400)
-  }
-  const name = typeof (payload as { name?: string }).name === 'string' ? (payload as { name: string }).name.trim() : ''
-  const roleRaw = typeof (payload as { role?: string }).role === 'string' ? (payload as { role: string }).role.trim().toLowerCase() : ''
-  const resolvedRole = roleRaw === 'michina' ? 'michina' : roleRaw === 'admin' ? 'admin' : roleRaw === 'guest' ? 'guest' : 'member'
-
-  const users = await getMichinaUsers(c.env)
-  const now = new Date().toISOString()
-  const existing = users.find((user) => user.email === email)
-  if (existing) {
-    if (name) {
-      existing.name = name
-    }
-    existing.role = resolvedRole
-    existing.updatedAt = now
-    if (!existing.joinedAt) {
-      existing.joinedAt = now
-    }
-  } else {
-    users.push({
-      name,
-      email,
-      role: resolvedRole,
-      joinedAt: now,
-      updatedAt: now,
-    })
-  }
-  await saveMichinaUsers(c.env, users)
-  return c.json({ ok: true })
-})
-
-app.get('/api/users', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
-    return c.json({ error: 'UNAUTHORIZED' }, 401)
-  }
-  const users = await getMichinaUsers(c.env)
-  return c.json({ users })
-})
-
-app.post('/api/auth/google', async (c) => {
-  let payload: { code?: string } | undefined
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
-  }
-
-  const code = typeof payload?.code === 'string' ? payload.code.trim() : ''
-  if (!code) {
-    return c.json({ error: 'AUTH_CODE_REQUIRED' }, 400)
-  }
-
-  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
-  const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
-  const redirectUri = resolveGoogleRedirectUri(c)
-
-  if (!clientId || !clientSecret) {
-    return c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 500)
-  }
-
-  try {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      }),
-    })
-
-    if (!tokenResponse.ok) {
-      const detail = await tokenResponse.text().catch(() => '')
-      return c.json(
-        { error: 'GOOGLE_TOKEN_EXCHANGE_FAILED', detail: detail.slice(0, 4000) },
-        502,
-      )
-    }
-
-    const tokenJson = (await tokenResponse.json()) as {
-      id_token?: string
-      expires_in?: number
-      scope?: string
-      token_type?: string
-      refresh_token?: string
-    }
-
-    const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
-    if (!idToken) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_MISSING' }, 502)
-    }
-
-    const idPayload = decodeGoogleIdToken(idToken)
-    if (!idPayload) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_INVALID' }, 502)
-    }
-
-    if (idPayload.aud !== clientId) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_AUDIENCE_MISMATCH' }, 401)
-    }
-
-    if (
-      idPayload.iss &&
-      idPayload.iss !== 'https://accounts.google.com' &&
-      idPayload.iss !== 'accounts.google.com'
-    ) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_ISSUER_INVALID' }, 401)
-    }
-
-    const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
-    if (!isValidEmail(email)) {
-      return c.json({ error: 'GOOGLE_EMAIL_INVALID' }, 400)
-    }
-
-    if (!isGoogleEmailVerified(idPayload.email_verified)) {
-      return c.json({ error: 'GOOGLE_EMAIL_NOT_VERIFIED' }, 403)
-    }
-
-    const expiresAt =
-      typeof idPayload.exp === 'number'
-        ? idPayload.exp
-        : typeof idPayload.exp === 'string'
-          ? Number(idPayload.exp)
-          : undefined
-
-    return c.json({
-      ok: true,
-      profile: {
-        email,
-        name: idPayload.name ?? idPayload.given_name ?? '',
-        picture: idPayload.picture ?? '',
-        expiresAt: expiresAt && Number.isFinite(expiresAt) ? expiresAt : null,
-      },
-    })
-  } catch (error) {
-    console.error('[auth/google] Unexpected error', error)
-    return c.json({ error: 'GOOGLE_AUTH_UNEXPECTED_ERROR' }, 502)
-  }
-})
-
-app.get('/auth/google/callback', (c) => {
-  return c.html(`<!DOCTYPE html>
-<html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <title>Google 인증 완료</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      body {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        display: grid;
-        place-items: center;
-        min-height: 100vh;
-        margin: 0;
-        background: #0f172a;
-        color: #f8fafc;
-      }
-      .card {
-        padding: 24px 32px;
-        border-radius: 18px;
-        background: rgba(15, 23, 42, 0.86);
-        border: 1px solid rgba(148, 163, 184, 0.24);
-        text-align: center;
-        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.4);
-      }
-      .card h1 {
-        margin: 0 0 12px;
-        font-size: 1.25rem;
-      }
-      .card p {
-        margin: 0;
-        font-size: 0.95rem;
-        color: rgba(226, 232, 240, 0.82);
-      }
-    </style>
-  </head>
-  <body>
-    <div class="card" role="alert" aria-live="polite">
-      <h1>Google 인증이 완료되었습니다.</h1>
-      <p>이 창은 잠시 후 자동으로 닫힙니다.</p>
-    </div>
-    <script>
-      setTimeout(() => {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({ type: 'google-auth-callback' }, '*')
-        }
-        window.close()
-      }, 600)
-    </script>
-  </body>
-</html>`)
-})
-
 app.post('/api/admin/challenge/import', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
 
@@ -1989,8 +1174,7 @@ app.post('/api/admin/challenge/import', async (c) => {
 })
 
 app.get('/api/admin/challenge/participants', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
   const participants = await listParticipants(c.env)
@@ -1998,8 +1182,7 @@ app.get('/api/admin/challenge/participants', async (c) => {
 })
 
 app.post('/api/admin/challenge/run-completion-check', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
   const updated = await evaluateCompletions(c.env)
@@ -2007,8 +1190,7 @@ app.post('/api/admin/challenge/run-completion-check', async (c) => {
 })
 
 app.get('/api/admin/challenge/completions', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
   const participants = await listParticipants(c.env)
@@ -2040,8 +1222,7 @@ app.get('/api/admin/challenge/completions', async (c) => {
 })
 
 app.post('/api/admin/challenge/backup', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
 
@@ -2072,8 +1253,7 @@ app.post('/api/admin/challenge/backup', async (c) => {
 })
 
 app.post('/api/admin/challenge/backup/snapshot', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
 
@@ -2738,6 +1918,10 @@ app.get('/', async (c) => {
   const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
+  const adminSecret = c.env.ADMIN_SECRET_KEY?.trim() || ''
+  const adminBootstrap = `globalThis.__ADMIN_SECRET_KEY__ = ${JSON.stringify(adminSecret)};`
+    .replace(/</g, '\\u003c')
+
   const appConfig = JSON.stringify(
     {
       googleClientId,
@@ -2753,6 +1937,7 @@ app.get('/', async (c) => {
       <script type="application/json" data-role="app-config">
         {appConfig}
       </script>
+      <script dangerouslySetInnerHTML={{ __html: adminBootstrap }}></script>
       <header class="app-header" data-role="app-header" aria-label="서비스 헤더">
         <div class="app-header__left">
           <a class="app-header__logo" href="/" aria-label="Easy Image Editor 홈">
@@ -2976,28 +2161,27 @@ app.get('/', async (c) => {
             등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.
           </p>
           <form class="admin-modal__form" data-role="admin-login-form" data-state="idle">
-            <label class="admin-modal__label" for="adminEmail">관리자 이메일</label>
-            <input
-              id="adminEmail"
-              name="adminEmail"
-              type="email"
-              required
-              autocomplete="email"
-              class="admin-modal__input"
-              data-role="admin-email"
-              placeholder="admin@example.com"
-            />
-            <label class="admin-modal__label" for="adminPassword">관리자 비밀번호</label>
-            <input
-              id="adminPassword"
-              name="adminPassword"
-              type="password"
-              required
-              autocomplete="current-password"
-              class="admin-modal__input"
-              data-role="admin-password"
-              placeholder="비밀번호"
-            />
+            <label class="admin-modal__label" for="adminSecret">관리자 시크릿 키</label>
+            <div class="admin-modal__secret">
+              <input
+                id="adminSecret"
+                name="adminSecret"
+                type="password"
+                required
+                autocomplete="off"
+                class="admin-modal__input"
+                data-role="admin-secret"
+                placeholder="시크릿 키를 입력하세요"
+              />
+              <button
+                type="button"
+                class="admin-modal__secret-toggle"
+                aria-label="시크릿 키 표시 전환"
+                data-role="admin-secret-toggle"
+              >
+                <i class="ri-eye-line" aria-hidden="true"></i>
+              </button>
+            </div>
             <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite"></p>
             <button class="btn btn--primary admin-modal__submit" type="submit">로그인</button>
           </form>
@@ -3506,749 +2690,6 @@ app.get('/cookies', (c) => {
   )
 })
 
-app.get('/login.html', (c) => {
-  const loginPage = `<!DOCTYPE html>
-<html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ellie Image Editor 관리자 로그인</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
-    <style>
-      :root {
-        color-scheme: light;
-        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      }
-
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        background: linear-gradient(180deg, #f5f3ff 0%, #ffffff 55%, #f9fafb 100%);
-        color: #111827;
-      }
-
-      header,
-      footer {
-        padding: 2.5rem 3rem;
-        background: rgba(255, 255, 255, 0.85);
-        backdrop-filter: blur(12px);
-      }
-
-      header {
-        border-bottom: 1px solid rgba(99, 102, 241, 0.12);
-      }
-
-      footer {
-        border-top: 1px solid rgba(99, 102, 241, 0.12);
-        font-size: 0.85rem;
-        color: #6b7280;
-        text-align: center;
-      }
-
-      main {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 3rem 1.5rem 4rem;
-      }
-
-      .login-card {
-        width: min(480px, 100%);
-        background: rgba(255, 255, 255, 0.95);
-        border-radius: 1.75rem;
-        padding: 2.5rem 2.25rem;
-        box-shadow: 0 35px 80px -45px rgba(79, 70, 229, 0.35);
-        border: 1px solid rgba(99, 102, 241, 0.16);
-        display: flex;
-        flex-direction: column;
-        gap: 1.75rem;
-      }
-
-      .login-card__title {
-        margin: 0;
-        font-size: 1.6rem;
-        color: #312e81;
-        letter-spacing: -0.01em;
-      }
-
-      .login-card__description {
-        margin: 0.25rem 0 0;
-        color: #4b5563;
-        font-size: 0.96rem;
-        line-height: 1.6;
-      }
-
-      .login-card__form {
-        display: flex;
-        flex-direction: column;
-        gap: 1.25rem;
-      }
-
-      .login-card__field {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }
-
-      .login-card__label {
-        font-size: 0.9rem;
-        font-weight: 600;
-        color: #4338ca;
-      }
-
-      .login-card__input {
-        width: 100%;
-        border-radius: 0.9rem;
-        border: 1px solid rgba(99, 102, 241, 0.28);
-        padding: 0.95rem 1.1rem;
-        font-size: 0.98rem;
-        transition: border 0.2s ease, box-shadow 0.2s ease;
-        outline: none;
-        background: rgba(255, 255, 255, 0.92);
-      }
-
-      .login-card__input:focus {
-        border-color: rgba(79, 70, 229, 0.6);
-        box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.14);
-      }
-
-      .login-card__submit {
-        border: none;
-        border-radius: 999px;
-        padding: 0.95rem 1.25rem;
-        font-size: 1rem;
-        font-weight: 600;
-        color: #fff;
-        background: linear-gradient(135deg, #7c3aed 0%, #6366f1 50%, #4f46e5 100%);
-        cursor: pointer;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-      }
-
-      .login-card__submit:hover,
-      .login-card__submit:focus-visible {
-        transform: translateY(-1px);
-        box-shadow: 0 18px 30px -20px rgba(79, 70, 229, 0.6);
-      }
-
-      .login-card__status {
-        min-height: 1.5rem;
-        margin: 0;
-        font-size: 0.9rem;
-        line-height: 1.4;
-        color: #4b5563;
-      }
-
-      .login-card__status[data-tone='info'] {
-        color: #4338ca;
-      }
-
-      .login-card__status[data-tone='success'] {
-        color: #047857;
-      }
-
-      .login-card__status[data-tone='warning'] {
-        color: #b45309;
-      }
-
-      .login-card__status[data-tone='danger'] {
-        color: #dc2626;
-      }
-
-      .login-meta {
-        font-size: 0.88rem;
-        color: #6b7280;
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-      }
-
-      .login-meta strong {
-        color: #4338ca;
-      }
-
-      .login-card__preview {
-        margin: 1.75rem 0 0;
-        padding: 1.2rem 1.15rem 1.35rem;
-        border-radius: 1.6rem;
-        border: 1px solid rgba(79, 70, 229, 0.18);
-        background: rgba(238, 242, 255, 0.65);
-        box-shadow: 0 24px 48px -32px rgba(79, 70, 229, 0.45);
-        display: grid;
-        gap: 0.85rem;
-      }
-
-      .login-card__preview[hidden] {
-        display: none;
-      }
-
-      .login-card__preview-image {
-        width: 100%;
-        display: block;
-        border-radius: 1rem;
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(59, 130, 246, 0.15));
-        box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.1);
-      }
-
-      .login-card__preview-caption {
-        margin: 0;
-        font-size: 0.82rem;
-        color: #4b5563;
-        text-align: center;
-      }
-
-      @media (max-width: 640px) {
-        header,
-        footer {
-          padding: 1.75rem 1.5rem;
-        }
-
-        .login-card {
-          padding: 2.15rem 1.75rem;
-          border-radius: 1.5rem;
-        }
-      }
-    </style>
-  </head>
-  <body class="admin-login-page">
-    <header>
-      <h1 style="margin:0;font-size:1.3rem;font-weight:600;color:#312e81;">Ellie Image Editor 관리자 센터</h1>
-    </header>
-    <div class="pointer-events-none fixed inset-x-0 top-5 flex justify-center px-4">
-      <div
-        data-role="admin-toast"
-        class="hidden w-full max-w-sm -translate-y-2 transform rounded-2xl bg-slate-900/90 px-5 py-4 text-sm font-medium text-white opacity-0 shadow-2xl ring-1 ring-black/10 backdrop-blur-lg transition"
-        role="status"
-        aria-live="assertive"
-      ></div>
-    </div>
-    <main>
-      <section class="login-card" aria-labelledby="admin-login-title">
-        <div>
-          <h2 class="login-card__title" id="admin-login-title">관리자 로그인</h2>
-          <p class="login-card__description">등록된 관리자 이메일과 비밀번호를 입력해 대시보드를 열어주세요.</p>
-        </div>
-        <form class="login-card__form" data-role="admin-login-form" data-state="idle">
-          <div class="login-card__field">
-            <label class="login-card__label" for="adminLoginEmail">이메일</label>
-            <input
-              id="adminLoginEmail"
-              class="login-card__input"
-              type="email"
-              name="email"
-              placeholder="ellie@elliesbang.kr"
-              autocomplete="email"
-              required
-              data-role="admin-login-email"
-            />
-          </div>
-          <div class="login-card__field">
-            <label class="login-card__label" for="adminLoginPassword">비밀번호</label>
-            <input
-              id="adminLoginPassword"
-              class="login-card__input"
-              type="password"
-              name="password"
-              placeholder="비밀번호를 입력하세요"
-              autocomplete="current-password"
-              required
-              data-role="admin-login-password"
-            />
-          </div>
-          <button class="login-card__submit" type="submit">대시보드 열기</button>
-        </form>
-        <p class="login-card__status" data-role="admin-login-status" aria-live="polite"></p>
-        <figure class="login-card__preview" data-role="admin-preview" aria-hidden="true" hidden>
-          <img
-            class="login-card__preview-image"
-            src="/static/admin-preview.svg"
-            alt="Ellie Image Editor 관리자 대시보드 미리보기"
-            loading="lazy"
-            decoding="async"
-          />
-          <figcaption class="login-card__preview-caption">
-            관리자 전용 대시보드 기능을 한눈에 살펴볼 수 있는 미리보기 화면입니다.
-          </figcaption>
-        </figure>
-        <div class="login-meta">
-          <span><strong>보안 안내:</strong> 관리자 인증 정보는 Cloudflare Pages 환경변수로 관리됩니다.</span>
-          <span>오류가 반복되면 서비스 운영자에게 문의해주세요.</span>
-        </div>
-      </section>
-    </main>
-    <footer>
-      <small>&copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.</small>
-    </footer>
-    <script type="module">
-      (() => {
-        const STORAGE_KEY = 'adminSessionState';
-        const SESSION_ID_KEY = 'adminSessionId';
-        const CHANNEL_NAME = 'admin-auth-channel';
-        const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
-        const DASHBOARD_URL = new URL('/admin-dashboard', window.location.origin).toString();
-
-        const elements = {
-          form: document.querySelector('[data-role="admin-login-form"]'),
-          email: document.querySelector('[data-role="admin-login-email"]'),
-          password: document.querySelector('[data-role="admin-login-password"]'),
-          status: document.querySelector('[data-role="admin-login-status"]'),
-          preview: document.querySelector('[data-role="admin-preview"]'),
-          toast: document.querySelector('[data-role="admin-toast"]'),
-        };
-
-        if (elements.email instanceof HTMLInputElement && ADMIN_EMAIL) {
-          elements.email.placeholder = ADMIN_EMAIL;
-        }
-
-        let toastTimer = null;
-        let broadcast = null;
-        let currentSessionId = '';
-
-        const TOAST_TONES = {
-          info: 'bg-indigo-600 text-white',
-          success: 'bg-emerald-600 text-white',
-          warning: 'bg-amber-400 text-slate-900',
-          danger: 'bg-rose-600 text-white',
-        };
-
-        function generateSessionId() {
-          return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : 'sess-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-        }
-
-        function getTabSessionId() {
-          try {
-            return window.sessionStorage?.getItem(SESSION_ID_KEY) || '';
-          } catch (error) {
-            console.warn('[admin-login] failed to read tab session id', error);
-            return '';
-          }
-        }
-
-        function setTabSessionId(value) {
-          try {
-            const storage = window.sessionStorage;
-            if (!storage) return;
-            if (!value) {
-              storage.removeItem(SESSION_ID_KEY);
-            } else {
-              storage.setItem(SESSION_ID_KEY, value);
-            }
-          } catch (error) {
-            console.warn('[admin-login] failed to store tab session id', error);
-          }
-        }
-
-        function readStoredSession() {
-          try {
-            const storage = window.localStorage;
-            if (!storage) return null;
-            const raw = storage.getItem(STORAGE_KEY);
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            if (!parsed || typeof parsed !== 'object') return null;
-            if (!parsed.loggedIn) return null;
-            const email = typeof parsed.email === 'string' ? parsed.email : '';
-            if (!email) return null;
-            const loginTime = Number(parsed.loginTime);
-            const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : '';
-            return {
-              loggedIn: true,
-              email,
-              loginTime: Number.isFinite(loginTime) ? loginTime : Date.now(),
-              sessionId,
-            };
-          } catch (error) {
-            console.warn('[admin-login] failed to parse stored session', error);
-            return null;
-          }
-        }
-
-        function isOwnedSession(session) {
-          if (!session || !session.sessionId) return false;
-          return session.sessionId === getTabSessionId();
-        }
-
-        function writeSession(email) {
-          const loginTime = Date.now();
-          const sessionId = generateSessionId();
-          try {
-            window.localStorage?.setItem(
-              STORAGE_KEY,
-              JSON.stringify({ loggedIn: true, email, loginTime, sessionId }),
-            );
-          } catch (error) {
-            console.warn('[admin-login] failed to persist session', error);
-          }
-          setTabSessionId(sessionId);
-          currentSessionId = sessionId;
-          return { loggedIn: true, email, loginTime, sessionId };
-        }
-
-        function setStatus(message, tone = 'info') {
-          if (!(elements.status instanceof HTMLElement)) {
-            return;
-          }
-          elements.status.textContent = message;
-          elements.status.dataset.tone = message ? tone : '';
-        }
-
-        function hideToast() {
-          if (!(elements.toast instanceof HTMLElement)) {
-            return;
-          }
-          window.clearTimeout(toastTimer);
-          elements.toast.classList.remove('opacity-100', 'translate-y-0');
-          elements.toast.classList.add('opacity-0', '-translate-y-2');
-          toastTimer = window.setTimeout(() => {
-            if (elements.toast) {
-              elements.toast.classList.add('hidden');
-            }
-          }, 220);
-        }
-
-        function showToast(message, tone = 'info', duration = 4200) {
-          if (!(elements.toast instanceof HTMLElement)) {
-            return;
-          }
-          window.clearTimeout(toastTimer);
-          const toneClass = TOAST_TONES[tone] || TOAST_TONES.info;
-          const baseClasses = [
-            'pointer-events-auto',
-            'w-full',
-            'max-w-sm',
-            'rounded-2xl',
-            'px-5',
-            'py-4',
-            'text-sm',
-            'font-semibold',
-            'shadow-2xl',
-            'ring-1',
-            'ring-black/10',
-            'backdrop-blur-lg',
-            'transition',
-            'transform',
-            'opacity-0',
-            '-translate-y-2',
-          ].join(' ');
-          elements.toast.className = baseClasses + ' ' + toneClass;
-          elements.toast.textContent = message;
-          elements.toast.classList.remove('hidden');
-          window.requestAnimationFrame(() => {
-            elements.toast.classList.remove('opacity-0', '-translate-y-2');
-            elements.toast.classList.add('opacity-100', 'translate-y-0');
-          });
-          toastTimer = window.setTimeout(() => {
-            hideToast();
-          }, duration);
-        }
-
-        function setFormLocked(locked) {
-          if (!(elements.form instanceof HTMLFormElement)) {
-            return;
-          }
-          elements.form.dataset.locked = locked ? 'true' : 'false';
-          if (locked) {
-            elements.form.dataset.state = 'locked';
-          } else if (elements.form.dataset.state === 'locked') {
-            elements.form.dataset.state = 'idle';
-          }
-          const controls = elements.form.querySelectorAll('input, button');
-          controls.forEach((control) => {
-            if (control instanceof HTMLInputElement || control instanceof HTMLButtonElement) {
-              control.disabled = locked;
-              if (locked) {
-                control.setAttribute('aria-disabled', 'true');
-              } else {
-                control.removeAttribute('aria-disabled');
-              }
-            }
-          });
-          if (!locked) {
-            if (elements.email instanceof HTMLInputElement) {
-              window.requestAnimationFrame(() => elements.email.focus());
-            }
-          }
-        }
-
-        function setPreviewVisibility(visible) {
-          if (!(elements.preview instanceof HTMLElement)) {
-            return;
-          }
-          elements.preview.hidden = !visible;
-          elements.preview.setAttribute('aria-hidden', visible ? 'false' : 'true');
-        }
-
-        function initializePreviewVisibility() {
-          let shouldShowPreview = false;
-          try {
-            const storage = window.sessionStorage;
-            if (storage) {
-              const flag = storage.getItem('adminPreviewRequested');
-              shouldShowPreview = flag === '1';
-              storage.removeItem('adminPreviewRequested');
-            }
-          } catch (error) {
-            console.warn('[admin-login] preview flag read failed', error);
-          }
-          setPreviewVisibility(shouldShowPreview);
-        }
-
-        function focusEmail() {
-          if (elements.email instanceof HTMLInputElement && elements.form?.dataset.locked !== 'true') {
-            elements.email.focus();
-          }
-        }
-
-        function openDashboard(target = 'new') {
-          if (target === 'self') {
-            window.location.replace(DASHBOARD_URL);
-            return;
-          }
-          const popup = window.open(DASHBOARD_URL, '_blank', 'noopener');
-          if (!popup || popup.closed) {
-            window.location.href = DASHBOARD_URL;
-          }
-        }
-
-        function ensureBroadcastChannel() {
-          if (broadcast || typeof BroadcastChannel === 'undefined') {
-            return;
-          }
-          try {
-            broadcast = new BroadcastChannel(CHANNEL_NAME);
-            broadcast.addEventListener('message', handleBroadcastMessage);
-          } catch (error) {
-            console.warn('[admin-login] failed to initialize channel', error);
-            broadcast = null;
-          }
-        }
-
-        function announceLogin(session) {
-          ensureBroadcastChannel();
-          if (!session) return;
-          try {
-            broadcast?.postMessage({ type: 'login', session });
-          } catch (error) {
-            console.warn('[admin-login] failed to broadcast login', error);
-          }
-        }
-
-        function forceLogout(message) {
-          currentSessionId = '';
-          setTabSessionId('');
-          setFormLocked(true);
-          setStatus(message, 'warning');
-          showToast(message, 'warning');
-        }
-
-        function handleSessionCleared(message) {
-          currentSessionId = '';
-          setTabSessionId('');
-          setFormLocked(false);
-          setStatus(message, 'info');
-          showToast(message, 'info');
-        }
-
-        function handleBroadcastMessage(event) {
-          const data = event?.data;
-          if (!data || typeof data !== 'object') return;
-          if (data.type === 'login' && data.session && !isOwnedSession(data.session)) {
-            forceLogout('다른 위치에서 로그인되었습니다.');
-          } else if (data.type === 'logout') {
-            handleSessionCleared('다른 위치에서 로그아웃되었습니다.');
-          }
-        }
-
-        function handleStorageEvent(event) {
-          if (!event || event.storageArea !== window.localStorage) return;
-          if (event.key === null) {
-            handleSessionCleared('다른 위치에서 로그아웃되었습니다.');
-            return;
-          }
-          if (event.key !== STORAGE_KEY) {
-            return;
-          }
-          if (!event.newValue) {
-            handleSessionCleared('다른 위치에서 로그아웃되었습니다.');
-            return;
-          }
-          try {
-            const session = JSON.parse(event.newValue);
-            if (!isOwnedSession(session)) {
-              forceLogout('다른 위치에서 로그인되었습니다.');
-            }
-          } catch (error) {
-            console.warn('[admin-login] failed to parse sync payload', error);
-          }
-        }
-
-        function restoreSessionIfOwned() {
-          const stored = readStoredSession();
-          if (!stored || stored.email !== ADMIN_EMAIL) {
-            return false;
-          }
-          if (isOwnedSession(stored)) {
-            currentSessionId = stored.sessionId || '';
-            setStatus('이전에 로그인한 세션을 복원했습니다. 대시보드를 여는 중입니다.', 'info');
-            showToast('이전에 로그인한 세션을 복원했습니다.', 'info');
-            openDashboard('self');
-            return true;
-          }
-          return false;
-        }
-
-        function checkExistingLock() {
-          const stored = readStoredSession();
-          if (stored && stored.email === ADMIN_EMAIL && !isOwnedSession(stored)) {
-            setFormLocked(true);
-            setStatus('이미 다른 위치에서 로그인되어 있습니다. 로그아웃 후 다시 시도해주세요.', 'warning');
-            showToast('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning');
-          }
-        }
-
-        currentSessionId = getTabSessionId();
-        ensureBroadcastChannel();
-        window.addEventListener('storage', handleStorageEvent);
-        initializePreviewVisibility();
-
-        if (restoreSessionIfOwned()) {
-          return;
-        }
-
-        checkExistingLock();
-
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', focusEmail, { once: true });
-        } else {
-          focusEmail();
-        }
-
-        if (
-          elements.form instanceof HTMLFormElement &&
-          elements.email instanceof HTMLInputElement &&
-          elements.password instanceof HTMLInputElement
-        ) {
-          elements.form.addEventListener('submit', (event) => {
-            event.preventDefault();
-            if (elements.form.dataset.state === 'loading' || elements.form.dataset.locked === 'true') {
-              return;
-            }
-
-            const email = elements.email.value.trim().toLowerCase();
-            const password = elements.password.value;
-
-            if (!email || !password) {
-              setStatus('이메일과 비밀번호를 모두 입력해 주세요.', 'warning');
-              showToast('이메일과 비밀번호를 모두 입력해 주세요.', 'warning');
-              return;
-            }
-
-            const existing = readStoredSession();
-            if (existing && existing.email === email) {
-              if (isOwnedSession(existing)) {
-                setStatus('이미 로그인된 세션이 활성화되어 있습니다.', 'warning');
-                showToast('이미 로그인된 세션이 활성화되어 있습니다.', 'warning');
-              } else {
-                setStatus('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning');
-                showToast('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning');
-              }
-              setFormLocked(true);
-              return;
-            }
-
-            const submitButton = elements.form.querySelector('button[type="submit"]');
-            if (submitButton instanceof HTMLButtonElement) {
-              submitButton.disabled = true;
-            }
-            elements.form.dataset.state = 'loading';
-            setStatus('관리자 자격을 확인하는 중입니다…', 'info');
-
-            fetch('/api/auth/admin/login', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'include',
-              body: JSON.stringify({ email, password }),
-            })
-              .then(async (response) => {
-                if (response.ok) {
-                  const session = writeSession(email);
-                  announceLogin(session);
-                  setStatus('인증이 완료되었습니다. 잠시 후 대시보드가 열립니다.', 'success');
-                  showToast('인증이 완료되었습니다. 대시보드를 준비하고 있습니다.', 'success');
-                  const popup = window.open(DASHBOARD_URL, '_blank', 'noopener');
-                  if (!popup || popup.closed) {
-                    openDashboard('self');
-                  }
-                  elements.form.reset();
-                  window.setTimeout(() => setStatus('', ''), 3000);
-                  return;
-                }
-
-                if (response.status === 401) {
-                  setStatus('이메일 또는 비밀번호가 올바르지 않습니다.', 'danger');
-                  showToast('관리자 자격이 올바르지 않습니다.', 'danger');
-                  elements.password.value = '';
-                  elements.password.focus();
-                  return;
-                }
-
-                if (response.status === 429) {
-                  const detail = await response.json().catch(() => ({}));
-                  const retryAfter = Number(detail?.retryAfter ?? 0);
-                  const seconds = Number.isFinite(retryAfter) ? Math.max(1, Math.ceil(retryAfter)) : 0;
-                  const message =
-                    seconds > 0
-                      ? '로그인 시도가 많아 잠시 후 다시 시도해주세요. (약 ' + seconds + '초 후 가능)'
-                      : '로그인 시도가 많아 잠시 후 다시 시도해주세요.';
-                  setStatus(message, 'warning');
-                  showToast(message, 'warning');
-                  return;
-                }
-
-                if (response.status === 500) {
-                  setStatus('관리자 인증 구성이 완료되지 않았습니다. 운영자에게 문의해주세요.', 'danger');
-                  showToast('관리자 인증 구성이 완료되지 않았습니다.', 'danger');
-                  return;
-                }
-
-                setStatus('로그인 중 오류(' + response.status + ')가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-                showToast('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-              })
-              .catch((error) => {
-                console.error('[admin-login] Unexpected error', error);
-                setStatus('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-                showToast('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-              })
-              .finally(() => {
-                if (submitButton instanceof HTMLButtonElement) {
-                  submitButton.disabled = false;
-                }
-                if (elements.form.dataset.state === 'loading') {
-                  elements.form.dataset.state = elements.form.dataset.locked === 'true' ? 'locked' : 'idle';
-                }
-              });
-          });
-        }
-      })();
-    </script>
-  </body>
-</html>`
-
-  const response = c.html(loginPage)
-  response.headers.set('Cache-Control', 'no-store')
-  return response
-})
-
 app.get('/dashboard.html', (c) => c.redirect('/admin-dashboard', 301))
 
 app.get('/admin-dashboard', (c) => {
@@ -4480,232 +2921,72 @@ app.get('/admin-dashboard', (c) => {
     </footer>
     <script type="module">
       (() => {
-        const STORAGE_KEY = 'adminSessionState';
-        const SESSION_ID_KEY = 'adminSessionId';
-        const CHANNEL_NAME = 'admin-auth-channel';
-        const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
-        const LOGIN_URL = new URL('/login.html', window.location.origin).toString();
-
+        const ADMIN_FLAG_KEY = 'admin';
+        const ADMIN_SECRET_KEY = 'adminSecret';
         const elements = {
           logout: document.querySelector('[data-role="logout"]'),
           toast: document.querySelector('[data-role="dashboard-toast"]'),
           welcome: document.querySelector('[data-role="welcome"]'),
           sessionInfo: document.querySelector('[data-role="session-info"]'),
+          cards: document.querySelectorAll('.dashboard-card'),
         };
 
-        let broadcast = null;
-        let toastTimer = null;
-
-        const TOAST_TONES = {
-          info: 'bg-indigo-600 text-white',
-          success: 'bg-emerald-600 text-white',
-          warning: 'bg-amber-400 text-slate-900',
-          danger: 'bg-rose-600 text-white',
-        };
-
-        function hideToast() {
-          if (!(elements.toast instanceof HTMLElement)) {
-            return;
-          }
-          window.clearTimeout(toastTimer);
-          elements.toast.classList.remove('opacity-100', 'translate-y-0');
-          elements.toast.classList.add('opacity-0', '-translate-y-2');
-          toastTimer = window.setTimeout(() => {
-            if (elements.toast) {
-              elements.toast.classList.add('hidden');
-            }
-          }, 220);
-        }
-
-        function showToast(message, tone = 'info', duration = 4200) {
-          if (!(elements.toast instanceof HTMLElement)) {
-            return;
-          }
-          window.clearTimeout(toastTimer);
-          const toneClass = TOAST_TONES[tone] || TOAST_TONES.info;
-          const baseClasses = [
-            'pointer-events-auto',
-            'w-full',
-            'max-w-sm',
-            'rounded-2xl',
-            'px-5',
-            'py-4',
-            'text-sm',
-            'font-semibold',
-            'shadow-2xl',
-            'ring-1',
-            'ring-black/10',
-            'backdrop-blur-lg',
-            'transition',
-            'transform',
-            'opacity-0',
-            '-translate-y-2',
-          ].join(' ');
-          elements.toast.className = baseClasses + ' ' + toneClass;
+        function showToast(message, tone = 'info') {
+          if (!(elements.toast instanceof HTMLElement)) return;
           elements.toast.textContent = message;
+          elements.toast.dataset.tone = tone;
           elements.toast.classList.remove('hidden');
-          window.requestAnimationFrame(() => {
-            elements.toast.classList.remove('opacity-0', '-translate-y-2');
-            elements.toast.classList.add('opacity-100', 'translate-y-0');
-          });
-          toastTimer = window.setTimeout(() => {
-            hideToast();
-          }, duration);
+          window.setTimeout(() => {
+            elements.toast?.classList.add('hidden');
+          }, 2200);
         }
 
-        function readStoredSession() {
+        function requireAdminFlag() {
           try {
-            const storage = window.localStorage;
-            if (!storage) return null;
-            const raw = storage.getItem(STORAGE_KEY);
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            if (!parsed || typeof parsed !== 'object') return null;
-            if (!parsed.loggedIn) return null;
-            const email = typeof parsed.email === 'string' ? parsed.email : '';
-            if (!email) return null;
-            const loginTime = Number(parsed.loginTime);
-            const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : '';
-            return {
-              loggedIn: true,
-              email,
-              loginTime: Number.isFinite(loginTime) ? loginTime : Date.now(),
-              sessionId,
-            };
+            return window.localStorage?.getItem(ADMIN_FLAG_KEY) === 'true';
           } catch (error) {
-            console.warn('[admin-dashboard] failed to parse stored session', error);
-            return null;
+            console.warn('[admin-dashboard] failed to read admin flag', error);
+            return false;
           }
         }
 
-        function getTabSessionId() {
+        function clearAdminState() {
           try {
-            return window.sessionStorage?.getItem(SESSION_ID_KEY) || '';
+            window.localStorage?.removeItem(ADMIN_FLAG_KEY);
+            window.localStorage?.removeItem(ADMIN_SECRET_KEY);
           } catch (error) {
-            console.warn('[admin-dashboard] failed to read tab session id', error);
-            return '';
+            console.warn('[admin-dashboard] failed to clear admin state', error);
           }
         }
 
-        function ensureBroadcastChannel() {
-          if (broadcast || typeof BroadcastChannel === 'undefined') {
-            return;
-          }
-          try {
-            broadcast = new BroadcastChannel(CHANNEL_NAME);
-            broadcast.addEventListener('message', handleBroadcastMessage);
-          } catch (error) {
-            console.warn('[admin-dashboard] failed to initialize channel', error);
-            broadcast = null;
-          }
-        }
-
-        function updateSessionDetails(session) {
+        function activateDashboard() {
           if (elements.welcome instanceof HTMLElement) {
-            elements.welcome.textContent = session.email + '님, Ellie Image Editor Dashboard에 오신 것을 환영합니다.';
+            elements.welcome.textContent = '관리자 모드가 활성화되었습니다.';
           }
           if (elements.sessionInfo instanceof HTMLElement) {
-            const formatted = new Intl.DateTimeFormat('ko', {
-              year: 'numeric',
-              month: '2-digit',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-            }).format(session.loginTime);
-            elements.sessionInfo.textContent = '로그인 시각: ' + formatted;
+            elements.sessionInfo.textContent = '시크릿 키 기반 인증이 완료되었습니다.';
+            elements.sessionInfo.dataset.tone = 'success';
           }
+          elements.cards?.forEach((card) => card.classList.add('is-active'));
         }
 
-        function redirectToLogin(message, tone = 'warning', delay = 1400) {
-          showToast(message, tone, Math.max(delay, 900));
-          if (elements.logout instanceof HTMLButtonElement) {
-            elements.logout.disabled = true;
-          }
+        if (!requireAdminFlag()) {
+          showToast('관리자 인증이 필요합니다. 홈으로 이동합니다.', 'warning');
           window.setTimeout(() => {
-            window.location.replace(LOGIN_URL);
-          }, Math.max(delay, 900));
-        }
-
-        function handleBroadcastMessage(event) {
-          const data = event?.data;
-          if (!data || typeof data !== 'object') return;
-          if (data.type === 'login') {
-            redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning');
-          } else if (data.type === 'logout') {
-            redirectToLogin('다른 위치에서 로그아웃되었습니다.', 'info');
-          }
-        }
-
-        function handleStorageEvent(event) {
-          if (!event || event.storageArea !== window.localStorage) return;
-          if (event.key === null) {
-            redirectToLogin('로그인 세션이 종료되었습니다.', 'info');
-            return;
-          }
-          if (event.key !== STORAGE_KEY) {
-            return;
-          }
-          if (!event.newValue) {
-            redirectToLogin('로그인 세션이 종료되었습니다.', 'info');
-            return;
-          }
-          try {
-            const session = JSON.parse(event.newValue);
-            if (!session || session.sessionId !== getTabSessionId()) {
-              redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning');
-            }
-          } catch (error) {
-            console.warn('[admin-dashboard] failed to parse sync payload', error);
-          }
-        }
-
-        const activeSession = readStoredSession();
-        if (!activeSession || activeSession.email !== ADMIN_EMAIL) {
-          redirectToLogin('관리자 세션을 확인할 수 없습니다. 다시 로그인해주세요.', 'warning', 1200);
+            window.location.href = '/';
+          }, 800);
           return;
         }
 
-        if (!activeSession.sessionId || activeSession.sessionId !== getTabSessionId()) {
-          redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning', 1200);
-          return;
-        }
-
-        updateSessionDetails(activeSession);
-        ensureBroadcastChannel();
-        window.addEventListener('storage', handleStorageEvent);
+        activateDashboard();
 
         if (elements.logout instanceof HTMLButtonElement) {
-          elements.logout.addEventListener('click', async () => {
-            if (elements.logout instanceof HTMLButtonElement) {
-              elements.logout.disabled = true;
-              elements.logout.textContent = '로그아웃 중…';
-            }
-            showToast('로그아웃을 진행하고 있습니다…', 'info');
-            try {
-              await fetch('/api/auth/admin/logout', { method: 'POST', credentials: 'include' });
-            } catch (error) {
-              console.warn('[admin-dashboard] logout request failed', error);
-            }
-            try {
-              window.localStorage?.clear();
-            } catch (error) {
-              console.warn('[admin-dashboard] failed to clear storage', error);
-            }
-            try {
-              window.sessionStorage?.removeItem(SESSION_ID_KEY);
-            } catch (error) {
-              console.warn('[admin-dashboard] failed to clear session id', error);
-            }
-            ensureBroadcastChannel();
-            try {
-              broadcast?.postMessage({ type: 'logout' });
-            } catch (error) {
-              console.warn('[admin-dashboard] failed to broadcast logout', error);
-            }
-            showToast('로그아웃되었습니다. 로그인 페이지로 이동합니다.', 'success', 1100);
+          elements.logout.addEventListener('click', () => {
+            clearAdminState();
+            showToast('관리자 인증이 해제되었습니다.', 'info');
             window.setTimeout(() => {
-              window.location.replace(LOGIN_URL);
-            }, 1100);
+              window.location.href = '/';
+            }, 600);
           });
         }
       })();
