@@ -69,7 +69,6 @@ const COMMUNITY_ROLE_STORAGE_KEY = 'role'
 const USER_IDENTITY_STORAGE_KEY = 'elliesbang:user'
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const GOOGLE_ALLOWED_ORIGIN = 'https://image-editor-3.pages.dev'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -637,6 +636,54 @@ function getAppConfig() {
     runtime.config = {}
   }
   return runtime.config
+}
+
+function resolveGoogleRedirectOrigin() {
+  const config = getAppConfig()
+  const redirectUri = typeof config.googleRedirectUri === 'string' ? config.googleRedirectUri.trim() : ''
+  if (!redirectUri) {
+    return ''
+  }
+  try {
+    const url = new URL(redirectUri)
+    return url.origin
+  } catch (error) {
+    console.warn('잘못된 Google redirect URI 구성입니다.', error)
+    return ''
+  }
+}
+
+function isGoogleLoginAllowedOnOrigin(origin) {
+  if (typeof origin !== 'string' || !origin) {
+    return false
+  }
+
+  const redirectOrigin = resolveGoogleRedirectOrigin()
+  if (!redirectOrigin) {
+    return true
+  }
+
+  try {
+    const current = new URL(origin)
+    const allowed = new URL(redirectOrigin)
+
+    if (current.protocol !== allowed.protocol) {
+      return current.hostname === 'localhost' || current.hostname === '127.0.0.1'
+    }
+
+    if (current.hostname === allowed.hostname) {
+      return true
+    }
+
+    if (current.hostname.endsWith(`.${allowed.hostname}`)) {
+      return true
+    }
+
+    return false
+  } catch (error) {
+    console.warn('Google 로그인 허용 도메인을 확인할 수 없습니다.', error)
+    return true
+  }
 }
 
 function waitForGoogleSdk(timeout = 8000) {
@@ -2055,8 +2102,8 @@ function setGoogleButtonState(state = 'idle', labelOverride) {
 
   button.setAttribute('aria-label', label)
 
-  const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
-  const shouldDisable = isPending || state === 'disabled' || state === 'error'
+  const isPending = state === 'loading' || state === 'initializing'
+  const shouldDisable = isPending || state === 'disabled'
 
   button.disabled = shouldDisable
   if (shouldDisable) {
@@ -2138,7 +2185,7 @@ function updateGoogleProviderAvailability() {
       setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
       announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
     } else {
-      setGoogleButtonState('error', `${seconds}초 후 다시 시도`)
+      setGoogleButtonState('disabled', `${seconds}초 후 다시 시도`)
     }
     return
   }
@@ -2292,7 +2339,7 @@ function startGoogleCooldown(durationMs, options = {}) {
     const label = autoRetry
       ? `자동 재시도까지 ${seconds}초${attemptLabel}`
       : `${seconds}초 후 다시 시도`
-    setGoogleButtonState(autoRetry ? 'retrying' : 'error', label)
+    setGoogleButtonState(autoRetry ? 'retrying' : 'disabled', label)
     if (autoRetry) {
       announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error', upcomingAttempt)
     } else {
@@ -4901,10 +4948,14 @@ async function handleGoogleLogin(event) {
   }
 
   const currentOrigin = window.location.origin
-  if (currentOrigin !== GOOGLE_ALLOWED_ORIGIN) {
-    alert('이 도메인에서는 Google 로그인을 사용할 수 없습니다.')
+  if (!isGoogleLoginAllowedOnOrigin(currentOrigin)) {
+    console.warn('Google 로그인을 사용할 수 없는 도메인에서 요청되었습니다.', {
+      origin: currentOrigin,
+      redirectOrigin: resolveGoogleRedirectOrigin(),
+    })
     setGoogleButtonState('idle')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setGoogleLoginHelper('현재 도메인에서는 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setStatus('현재 도메인에서는 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 진행해주세요.', 'info')
     return
   }
 
