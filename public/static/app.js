@@ -2154,8 +2154,8 @@ function updateGoogleProviderAvailability() {
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setGoogleButtonState('idle')
+    setGoogleLoginHelper('Google 로그인 구성을 준비 중입니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
   }
   if (runtime.google.codeClient) {
@@ -2177,7 +2177,8 @@ async function prefetchGoogleClient() {
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
-    setGoogleButtonState('disabled')
+    setGoogleButtonState('idle')
+    setGoogleLoginHelper('Google 로그인 구성을 준비 중입니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return null
   }
   if (runtime.google.codeClient) {
@@ -2200,8 +2201,8 @@ async function prefetchGoogleClient() {
     .catch((error) => {
       console.warn('Google client 초기화 실패', error)
       if (error instanceof Error && error.message === 'GOOGLE_CLIENT_ID_MISSING') {
-        setGoogleButtonState('disabled')
-        setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+        setGoogleButtonState('idle')
+        setGoogleLoginHelper('Google 로그인 구성을 준비 중입니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
       } else {
         setGoogleButtonState('error')
         setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
@@ -4894,8 +4895,8 @@ async function handleGoogleLogin(event) {
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
     setStatus('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setGoogleButtonState('idle')
+    setGoogleLoginHelper('Google 로그인 구성을 준비 중입니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
   }
 
