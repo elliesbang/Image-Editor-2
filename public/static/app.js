@@ -67,17 +67,17 @@ const CREDIT_COSTS = {
 }
 const COMMUNITY_ROLE_STORAGE_KEY = 'role'
 const USER_IDENTITY_STORAGE_KEY = 'elliesbang:user'
+const USER_SESSION_COOKIE_NAME = 'user'
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const GOOGLE_ALLOWED_ORIGIN = 'https://image-editor-3.pages.dev'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
-  initializing: 'Google 로그인 준비 중…',
-  loading: 'Google 계정을 확인하는 중…',
-  disabled: 'Google 로그인 준비 중',
+  initializing: 'Google 계정 연결을 확인하는 중…',
+  loading: 'Google 계정으로 이동하는 중…',
+  disabled: 'Google 계정으로 계속하기',
   error: 'Google 로그인 다시 시도',
-  retrying: 'Google 로그인 자동 재시도 준비 중…',
+  retrying: '잠시 후 자동으로 다시 시도합니다…',
 }
 
 const ENABLE_GOOGLE_LOGIN = true
@@ -2174,48 +2174,9 @@ async function prefetchGoogleClient() {
     disableGoogleLoginUI()
     return null
   }
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    setGoogleButtonState('disabled')
-    return null
-  }
-  if (runtime.google.codeClient) {
-    setGoogleButtonState('idle')
-    return runtime.google.codeClient
-  }
-  if (runtime.google.prefetchPromise) {
-    return runtime.google.prefetchPromise
-  }
-
-  setGoogleButtonState('initializing')
-
-  runtime.google.prefetchPromise = ensureGoogleClient()
-    .then((client) => {
-      runtime.google.retryCount = 0
-      setGoogleButtonState('idle')
-      setGoogleLoginHelper('Google 로그인을 사용할 준비가 되었습니다.', 'info')
-      return client
-    })
-    .catch((error) => {
-      console.warn('Google client 초기화 실패', error)
-      if (error instanceof Error && error.message === 'GOOGLE_CLIENT_ID_MISSING') {
-        setGoogleButtonState('disabled')
-        setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-      } else {
-        setGoogleButtonState('error')
-        setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
-        window.setTimeout(() => {
-          updateGoogleProviderAvailability()
-        }, 2400)
-      }
-      return null
-    })
-    .finally(() => {
-      runtime.google.prefetchPromise = null
-    })
-
-  return runtime.google.prefetchPromise
+  runtime.google.prefetchPromise = null
+  setGoogleButtonState('idle')
+  return null
 }
 
 function clearGoogleAutoRetry() {
@@ -3168,6 +3129,58 @@ function persistUserIdentity(email, role) {
   }
 }
 
+function readCookieValue(name) {
+  if (typeof document === 'undefined' || !name) {
+    return ''
+  }
+  try {
+    const source = document.cookie || ''
+    const segments = source.split(';')
+    for (const segment of segments) {
+      const trimmed = segment.trim()
+      if (trimmed.startsWith(`${name}=`)) {
+        return decodeURIComponent(trimmed.slice(name.length + 1))
+      }
+    }
+  } catch (error) {
+    console.warn('쿠키를 확인하지 못했습니다.', error)
+  }
+  return ''
+}
+
+function restoreUserSessionFromCookie() {
+  if (state.user.isLoggedIn) {
+    return false
+  }
+
+  const rawValue = readCookieValue(USER_SESSION_COOKIE_NAME)
+  if (!rawValue) {
+    return false
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue)
+    if (!parsed || typeof parsed !== 'object') {
+      return false
+    }
+    const email = typeof parsed.email === 'string' ? parsed.email.trim().toLowerCase() : ''
+    const picture = typeof parsed.picture === 'string' ? parsed.picture.trim() : ''
+    const rawName = typeof parsed.name === 'string' ? parsed.name.trim() : ''
+    const fallbackName = rawName || (email ? email.split('@')[0] : '')
+    applyLoginProfile({
+      name: fallbackName || '크리에이터',
+      email,
+      plan: 'freemium',
+      picture,
+      credits: FREEMIUM_INITIAL_CREDITS,
+    })
+    return true
+  } catch (error) {
+    console.warn('사용자 세션 쿠키를 확인하지 못했습니다.', error)
+    return false
+  }
+}
+
 function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, plan = 'freemium', picture = '' } = {}) {
   const normalizedName = typeof name === 'string' && name.trim().length > 0 ? name.trim() : '크리에이터'
   const normalizedPicture =
@@ -3228,6 +3241,14 @@ function applyCommunityRoleFromStorage() {
 
 
 function handleLogout() {
+  try {
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch((error) => {
+      console.warn('로그아웃 요청을 전송하지 못했습니다.', error)
+    })
+  } catch (error) {
+    console.warn('로그아웃 요청 중 오류가 발생했습니다.', error)
+  }
+
   revokeAdminAccessStorage()
   revokeAdminSessionState()
   state.admin.participants = []
@@ -3817,7 +3838,7 @@ function openAdminAuthPopup() {
 
   let popup = null
   try {
-    popup = window.open('/auth/google', 'admin-google-login', features)
+    popup = window.open('/auth/google?admin=1', 'admin-google-login', features)
   } catch (error) {
     console.warn('관리자 인증 창을 여는 중 오류가 발생했습니다.', error)
   }
@@ -3841,7 +3862,7 @@ function handleAdminGoogleLogin(event) {
     event.preventDefault()
   }
   if (!(elements.adminLoginForm instanceof HTMLElement)) {
-    window.location.href = '/auth/google'
+    window.location.href = '/auth/google?admin=1'
     return
   }
   if (elements.adminLoginForm.dataset.state === 'loading') {
@@ -3853,7 +3874,7 @@ function handleAdminGoogleLogin(event) {
 
   const popup = openAdminAuthPopup()
   if (!popup) {
-    window.location.href = '/auth/google'
+    window.location.href = '/auth/google?admin=1'
     return
   }
 
@@ -4879,7 +4900,7 @@ async function handleGoogleCodeResponse(response) {
   }
 }
 
-async function handleGoogleLogin(event) {
+function handleGoogleLogin(event) {
   if (event && typeof event.preventDefault === 'function') {
     event.preventDefault()
   }
@@ -4890,51 +4911,16 @@ async function handleGoogleLogin(event) {
     return
   }
 
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    setStatus('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
-
-  const currentOrigin = window.location.origin
-  if (currentOrigin !== GOOGLE_ALLOWED_ORIGIN) {
-    alert('이 도메인에서는 Google 로그인을 사용할 수 없습니다.')
-    setGoogleButtonState('idle')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
+  setGoogleButtonState('loading', 'Google 계정으로 이동하는 중…')
+  setGoogleLoginHelper('Google 로그인 페이지로 이동합니다.', 'info')
 
   try {
-    clearGoogleCooldown()
-    runtime.google.retryCount = 0
-    runtime.google.latestCredential = ''
-
-    setGoogleButtonState('loading', 'Google 로그인 준비 중…')
-    setStatus('Google 로그인 창을 열고 있습니다…', 'info', 0)
-
-    const codeClient = await ensureGoogleClient()
-    if (!codeClient || typeof codeClient.requestCode !== 'function') {
-      throw new Error('GOOGLE_SDK_UNAVAILABLE')
-    }
-
-    runtime.google.promptActive = true
-    const emailHint = state.user.email || state.auth.pendingEmail || ''
-    setGoogleLoginHelper('Google 로그인 창을 확인해주세요.', 'info')
-
-    codeClient.requestCode({
-      state: 'login',
-      hint: emailHint,
-      prompt: 'consent',
-    })
+    window.location.assign('/auth/google')
   } catch (error) {
-    runtime.google.promptActive = false
-    console.error('Google 로그인 초기화 중 오류', error)
-    setGoogleButtonState('error', 'Google 로그인 다시 시도')
-    setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
-    setStatus('Google 로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    console.warn('Google 로그인 페이지로 이동하지 못했습니다.', error)
+    setGoogleButtonState('idle')
+    setGoogleLoginHelper('Google 로그인 페이지로 이동하지 못했습니다. 잠시 후 다시 시도해주세요.', 'warning')
+    setStatus('Google 로그인 페이지로 이동하지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger')
   }
 }
 
@@ -9262,6 +9248,8 @@ function init() {
   const allowBypass = initialView !== 'home' && initialView !== 'admin'
   runtime.allowViewBypass = allowBypass
   state.view = initialView
+
+  restoreUserSessionFromCookie()
 
   const engineController = typeof AbortController !== 'undefined' ? new AbortController() : null
   if (engineController) {

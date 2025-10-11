@@ -120,6 +120,8 @@ const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
 const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
+const USER_SESSION_COOKIE = 'user'
+const USER_OAUTH_STATE_COOKIE = 'user_oauth_state'
 const MICHINA_PERIOD_KEY = 'michina:period'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
 const MICHINA_USERS_KEY = 'michina:users'
@@ -965,6 +967,20 @@ function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
   }
 }
 
+function buildGoogleAuthorizeUrl(clientId: string, redirectUri: string, state: string) {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    access_type: 'online',
+    prompt: 'select_account',
+    state,
+  })
+
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+}
+
 type GoogleIdTokenPayload = {
   aud?: string
   email?: string
@@ -1598,6 +1614,11 @@ app.post('/api/auth/admin/logout', async (c) => {
   return c.json({ ok: true })
 })
 
+app.post('/api/auth/logout', async (c) => {
+  deleteCookie(c, USER_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'None' })
+  return c.json({ ok: true })
+})
+
 app.get('/api/michina/config', async (c) => {
   const [period, challengers] = await Promise.all([getMichinaPeriodRecord(c.env), getMichinaChallengerRecord(c.env)])
   return c.json({
@@ -1737,199 +1758,19 @@ app.get('/api/users', async (c) => {
 })
 
 app.get('/auth/google', async (c) => {
-  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
-  const redirectUri = resolveGoogleRedirectUri(c)
+  const isAdminRequest = (c.req.query('admin') || '').trim() === '1'
 
-  if (!clientId) {
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: 'Google 로그인 구성 오류',
-        message: 'Google OAuth 클라이언트가 구성되지 않았습니다. 관리자에게 문의해 주세요.',
-        scriptContent:
-          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'google_client_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing google client', error); } } window.location.replace('/'); }, 1800);",
-      }),
-      500,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
+  if (isAdminRequest) {
+    const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+    const redirectUri = resolveGoogleRedirectUri(c)
 
-  const state = generateRandomState()
-  setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
-    httpOnly: true,
-    sameSite: 'Lax',
-    secure: true,
-    path: '/',
-    maxAge: 600,
-  })
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'openid email profile',
-    access_type: 'online',
-    prompt: 'select_account',
-    state,
-  })
-
-  const authorizeUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
-  return c.redirect(authorizeUrl, 302)
-})
-
-app.get('/api/auth/callback/google', async (c) => {
-  const storedState = getCookie(c, ADMIN_OAUTH_STATE_COOKIE) ?? ''
-  deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'Lax', secure: true })
-
-  const stateParam = (c.req.query('state') || '').trim()
-  if (!stateParam || !storedState || stateParam !== storedState) {
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: '로그인 세션이 만료되었습니다',
-        message: '인증 요청이 만료되었습니다. 다시 로그인해주세요.',
-        scriptContent:
-          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'state_mismatch' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about state mismatch', error); } } window.location.replace('/'); }, 1400);",
-      }),
-      400,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const code = (c.req.query('code') || '').trim()
-  if (!code) {
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: '인증 코드가 전달되지 않았습니다',
-        message: 'Google 로그인에서 인증 코드를 확인하지 못했습니다.',
-        scriptContent:
-          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'code_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing code', error); } } window.location.replace('/'); }, 1600);",
-      }),
-      400,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
-  const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
-  const redirectUri = resolveGoogleRedirectUri(c)
-
-  if (!clientId || !clientSecret) {
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: 'Google 로그인 구성 오류',
-        message: 'Google OAuth 자격 증명이 올바르게 구성되지 않았습니다.',
-        scriptContent:
-          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'google_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about config error', error); } } window.location.replace('/'); }, 1600);",
-      }),
-      500,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  try {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      }),
-    })
-
-    if (!tokenResponse.ok) {
-      const detail = await tokenResponse.text().catch(() => '')
+    if (!clientId) {
       const response = c.html(
         renderAdminOAuthPage({
-          title: 'Google 인증에 실패했습니다',
-          message: 'Google 인증 서버 응답이 원활하지 않습니다. 잠시 후 다시 시도해주세요.',
-          scriptContent: `window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'token_exchange_failed', detail: ${JSON.stringify('Token exchange failed')} }, window.location.origin); } catch (error) { console.warn('failed to notify opener about token failure', error); } } window.location.replace('/'); }, 1600);`,
-        }),
-        502,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    const tokenJson = (await tokenResponse.json()) as { id_token?: string }
-    const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
-    if (!idToken) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: 'ID 토큰을 확인하지 못했습니다',
-          message: 'Google에서 유효한 로그인 정보를 전달하지 않았습니다.',
+          title: 'Google 로그인 구성 오류',
+          message: 'Google OAuth 클라이언트가 구성되지 않았습니다. 관리자에게 문의해 주세요.',
           scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'id_token_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing id token', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        502,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    const idPayload = decodeGoogleIdToken(idToken)
-    if (!idPayload || idPayload.aud !== clientId) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '인증 정보를 확인할 수 없습니다',
-          message: 'Google 인증 정보가 올바르지 않습니다.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'id_token_invalid' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about invalid token', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        401,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    if (
-      idPayload.iss &&
-      idPayload.iss !== 'https://accounts.google.com' &&
-      idPayload.iss !== 'accounts.google.com'
-    ) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '인증 제공자를 확인하지 못했습니다',
-          message: 'Google 인증 정보의 발급자가 올바르지 않습니다.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'issuer_invalid' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about issuer', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        401,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
-    if (!isValidEmail(email) || !isGoogleEmailVerified(idPayload.email_verified)) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: 'Google 계정 정보를 확인하지 못했습니다',
-          message: '본인 확인이 완료된 Google 계정만 관리자 인증에 사용할 수 있습니다.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'email_not_verified' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about verification', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        403,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    const adminEmail = c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
-    if (!adminEmail) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '관리자 이메일이 구성되지 않았습니다',
-          message: '환경변수 ADMIN_EMAIL을 설정한 후 다시 시도해주세요.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'admin_email_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about admin email', error); } } window.location.replace('/'); }, 1600);",
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'google_client_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing google client', error); } } window.location.replace('/'); }, 1800);",
         }),
         500,
       )
@@ -1937,9 +1778,204 @@ app.get('/api/auth/callback/google', async (c) => {
       return response
     }
 
-    if (email !== adminEmail) {
-      clearAdminSession(c)
-      const scriptContent = `(() => {
+    const state = `admin:${generateRandomState()}`
+    setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: true,
+      path: '/',
+      maxAge: 600,
+    })
+
+    return c.redirect(buildGoogleAuthorizeUrl(clientId, redirectUri, state), 302)
+  }
+
+  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+  const redirectUri = resolveGoogleRedirectUri(c)
+
+  if (!clientId) {
+    return c.text('Google OAuth 클라이언트가 구성되지 않았습니다.', 500)
+  }
+
+  const state = `user:${generateRandomState()}`
+  setCookie(c, USER_OAUTH_STATE_COOKIE, state, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: true,
+    path: '/',
+    maxAge: 600,
+  })
+
+  return c.redirect(buildGoogleAuthorizeUrl(clientId, redirectUri, state), 302)
+})
+
+app.get('/api/auth/callback/google', async (c) => {
+  const stateParam = (c.req.query('state') || '').trim()
+  const adminStoredState = getCookie(c, ADMIN_OAUTH_STATE_COOKIE) ?? ''
+
+  if (adminStoredState || stateParam.startsWith('admin:')) {
+    deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'Lax', secure: true })
+
+    const storedState = adminStoredState
+
+    if (!stateParam || !storedState || stateParam !== storedState) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '로그인 세션이 만료되었습니다',
+          message: '인증 요청이 만료되었습니다. 다시 로그인해주세요.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'state_mismatch' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about state mismatch', error); } } window.location.replace('/'); }, 1400);",
+        }),
+        400,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+
+    const code = (c.req.query('code') || '').trim()
+    if (!code) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '인증 코드가 전달되지 않았습니다',
+          message: 'Google 로그인에서 인증 코드를 확인하지 못했습니다.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'code_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing code', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        400,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+
+    const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+    const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
+    const redirectUri = resolveGoogleRedirectUri(c)
+
+    if (!clientId || !clientSecret) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: 'Google 로그인 구성 오류',
+          message: 'Google OAuth 자격 증명이 올바르게 구성되지 않았습니다.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'google_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about config error', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        500,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+
+    try {
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }),
+      })
+
+      if (!tokenResponse.ok) {
+        const detail = await tokenResponse.text().catch(() => '')
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: 'Google 인증에 실패했습니다',
+            message: 'Google 인증 서버 응답이 원활하지 않습니다. 잠시 후 다시 시도해주세요.',
+            scriptContent: `window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'token_exchange_failed', detail: ${JSON.stringify('Token exchange failed')} }, window.location.origin); } catch (error) { console.warn('failed to notify opener about token failure', error); } } window.location.replace('/'); }, 1600);`,
+          }),
+          502,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
+
+      const tokenJson = (await tokenResponse.json()) as { id_token?: string }
+      const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
+      if (!idToken) {
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: 'ID 토큰을 확인하지 못했습니다',
+            message: 'Google에서 유효한 로그인 정보를 전달하지 않았습니다.',
+            scriptContent:
+              "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'id_token_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing id token', error); } } window.location.replace('/'); }, 1600);",
+          }),
+          502,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
+
+      const idPayload = decodeGoogleIdToken(idToken)
+      if (!idPayload || idPayload.aud !== clientId) {
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: '인증 정보를 확인할 수 없습니다',
+            message: 'Google 인증 정보가 올바르지 않습니다.',
+            scriptContent:
+              "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'id_token_invalid' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about invalid token', error); } } window.location.replace('/'); }, 1600);",
+          }),
+          401,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
+
+      if (
+        idPayload.iss &&
+        idPayload.iss !== 'https://accounts.google.com' &&
+        idPayload.iss !== 'accounts.google.com'
+      ) {
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: '인증 제공자를 확인하지 못했습니다',
+            message: 'Google 인증 정보의 발급자가 올바르지 않습니다.',
+            scriptContent:
+              "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'issuer_invalid' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about issuer', error); } } window.location.replace('/'); }, 1600);",
+          }),
+          401,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
+
+      const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
+      if (!isValidEmail(email) || !isGoogleEmailVerified(idPayload.email_verified)) {
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: 'Google 계정 정보를 확인하지 못했습니다',
+            message: '본인 확인이 완료된 Google 계정만 관리자 인증에 사용할 수 있습니다.',
+            scriptContent:
+              "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'email_not_verified' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about verification', error); } } window.location.replace('/'); }, 1600);",
+          }),
+          403,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
+
+      const adminEmail = c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
+      if (!adminEmail) {
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: '관리자 이메일이 구성되지 않았습니다',
+            message: '환경변수 ADMIN_EMAIL을 설정한 후 다시 시도해주세요.',
+            scriptContent:
+              "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'admin_email_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about admin email', error); } } window.location.replace('/'); }, 1600);",
+          }),
+          500,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
+
+      if (email !== adminEmail) {
+        clearAdminSession(c)
+        const scriptContent = `(() => {
   const message = ${JSON.stringify('관리자 전용 접근 권한이 없습니다.')};
   const origin = window.location.origin;
   try {
@@ -1981,38 +2017,38 @@ app.get('/api/auth/callback/google', async (c) => {
     window.location.replace('/');
   }
 })();`
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '관리자 권한이 필요합니다',
-          message: '해당 Google 계정은 관리자 전용 영역에 접근할 수 없습니다.',
-          scriptContent,
-        }),
-        403,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: '관리자 권한이 필요합니다',
+            message: '해당 Google 계정은 관리자 전용 영역에 접근할 수 없습니다.',
+            scriptContent,
+          }),
+          403,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
 
-    const adminConfig = getAdminConfig(c.env)
-    if (!adminConfig) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '관리자 세션을 생성하지 못했습니다',
-          message: '세션 구성이 누락되었습니다. 관리자에게 문의해주세요.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'session_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about session config', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        500,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
+      const adminConfig = getAdminConfig(c.env)
+      if (!adminConfig) {
+        const response = c.html(
+          renderAdminOAuthPage({
+            title: '관리자 세션을 생성하지 못했습니다',
+            message: '세션 구성이 누락되었습니다. 관리자에게 문의해주세요.',
+            scriptContent:
+              "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'session_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about session config', error); } } window.location.replace('/'); }, 1600);",
+          }),
+          500,
+        )
+        response.headers.set('Cache-Control', 'no-store')
+        return response
+      }
 
-    const loginTime = Date.now()
-    const sessionId = generateRandomState()
-    await createAdminSession(c, email, adminConfig)
+      const loginTime = Date.now()
+      const sessionId = generateRandomState()
+      await createAdminSession(c, email, adminConfig)
 
-    const scriptContent = `(() => {
+      const scriptContent = `(() => {
   const payload = ${JSON.stringify({ email, sessionId, loginTime })};
   const origin = window.location.origin;
   try {
@@ -2054,37 +2090,129 @@ app.get('/api/auth/callback/google', async (c) => {
   }
 })();`
 
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: '관리자 인증이 완료되었습니다',
-        message: '관리자 대시보드로 이동합니다.',
-        scriptContent,
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '관리자 인증이 완료되었습니다',
+          message: '관리자 대시보드로 이동합니다.',
+          scriptContent,
+        }),
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    } catch (error) {
+      console.error('[auth/google] Unexpected error', error)
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: 'Google 인증 중 오류가 발생했습니다',
+          message: '잠시 후 다시 시도해주세요.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'unexpected_error' }, window.location.origin); } catch (notifyError) { console.warn('failed to notify opener about unexpected error', notifyError); } } window.location.replace('/'); }, 1600);",
+        }),
+        502,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+  }
+
+  const userStoredState = getCookie(c, USER_OAUTH_STATE_COOKIE) ?? ''
+  deleteCookie(c, USER_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'Lax', secure: true })
+
+  if (!stateParam || !userStoredState || stateParam !== userStoredState) {
+    return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+  }
+
+  const code = (c.req.query('code') || '').trim()
+  if (!code) {
+    return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+  }
+
+  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+  const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
+  const redirectUri = resolveGoogleRedirectUri(c)
+
+  if (!clientId || !clientSecret) {
+    return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+  }
+
+  try {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
       }),
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
+    })
+
+    if (!tokenResponse.ok) {
+      return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+    }
+
+    const tokenJson = (await tokenResponse.json().catch(() => null)) as { id_token?: string } | null
+    const idToken = typeof tokenJson?.id_token === 'string' ? tokenJson.id_token : ''
+    if (!idToken) {
+      return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+    }
+
+    const idPayload = decodeGoogleIdToken(idToken)
+    if (!idPayload || idPayload.aud !== clientId) {
+      return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+    }
+
+    if (
+      idPayload.iss &&
+      idPayload.iss !== 'https://accounts.google.com' &&
+      idPayload.iss !== 'accounts.google.com'
+    ) {
+      return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+    }
+
+    const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
+    if (!isValidEmail(email) || !isGoogleEmailVerified(idPayload.email_verified)) {
+      return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+    }
+
+    const resolvedName =
+      typeof idPayload.name === 'string' && idPayload.name.trim().length > 0
+        ? idPayload.name.trim()
+        : typeof idPayload.given_name === 'string' && idPayload.given_name.trim().length > 0
+          ? idPayload.given_name.trim()
+          : ''
+
+    const picture = typeof idPayload.picture === 'string' ? idPayload.picture.trim() : ''
+    const profile = {
+      email,
+      name: resolvedName || (email ? email.split('@')[0] : 'Google 사용자'),
+      picture,
+    }
+
+    try {
+      setCookie(c, USER_SESSION_COOKIE, JSON.stringify(profile), {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'None',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 7,
+      })
+    } catch (error) {
+      console.error('[auth/google] Failed to persist user session', error)
+      return c.text('로그인 세션을 생성하지 못했습니다.', 500)
+    }
+
+    return c.redirect('/')
   } catch (error) {
-    console.error('[auth/google] Unexpected error', error)
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: 'Google 인증 중 오류가 발생했습니다',
-        message: '잠시 후 다시 시도해주세요.',
-        scriptContent:
-          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'unexpected_error' }, window.location.origin); } catch (notifyError) { console.warn('failed to notify opener about unexpected error', notifyError); } } window.location.replace('/'); }, 1600);",
-      }),
-      502,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
+    console.error('[auth/google] Failed to complete user OAuth flow', error)
+    return c.text('로그인 세션을 생성하지 못했습니다.', 500)
   }
 })
 
 app.post('/api/admin/challenge/import', async (c) => {
-  const adminEmail = await requireAdminSession(c)
-  if (!adminEmail) {
-    return c.json({ error: 'UNAUTHORIZED' }, 401)
-  }
-
   let payload: {
     participants?: Array<string | { email?: string; name?: string; endDate?: string }>
     endDate?: string
