@@ -120,6 +120,13 @@ const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
 const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
+const ADMIN_COOKIE_BASE_OPTIONS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'None' as const,
+  path: '/',
+}
+const ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 const MICHINA_PERIOD_KEY = 'michina:period'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
 const MICHINA_USERS_KEY = 'michina:users'
@@ -1525,7 +1532,7 @@ async function createAdminSession(
     throw new Error('SESSION_SECRET_NOT_CONFIGURED')
   }
   const normalizedEmail = email.trim().toLowerCase()
-  const expiresInSeconds = 60 * 60 * 8
+  const expiresInSeconds = ADMIN_SESSION_MAX_AGE_SECONDS
   const issuedAt = Math.floor(Date.now() / 1000)
   const exp = issuedAt + expiresInSeconds
   const token = await sign(
@@ -1541,17 +1548,14 @@ async function createAdminSession(
     adminConfig.sessionSecret,
   )
   setCookie(c, ADMIN_SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'Strict',
-    secure: true,
-    path: '/',
-    maxAge: expiresInSeconds,
+    ...ADMIN_COOKIE_BASE_OPTIONS,
+    maxAge: ADMIN_SESSION_MAX_AGE_SECONDS,
   })
   return { exp, iat: issuedAt }
 }
 
 function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
+  deleteCookie(c, ADMIN_SESSION_COOKIE, ADMIN_COOKIE_BASE_OPTIONS)
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1756,11 +1760,8 @@ app.get('/auth/google', async (c) => {
 
   const state = generateRandomState()
   setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
-    httpOnly: true,
-    sameSite: 'Lax',
-    secure: true,
-    path: '/',
-    maxAge: 600,
+    ...ADMIN_COOKIE_BASE_OPTIONS,
+    maxAge: ADMIN_SESSION_MAX_AGE_SECONDS,
   })
 
   const params = new URLSearchParams({
@@ -1779,10 +1780,27 @@ app.get('/auth/google', async (c) => {
 
 app.get('/api/auth/callback/google', async (c) => {
   const storedState = getCookie(c, ADMIN_OAUTH_STATE_COOKIE) ?? ''
-  deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'Lax', secure: true })
+  deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, ADMIN_COOKIE_BASE_OPTIONS)
 
   const stateParam = (c.req.query('state') || '').trim()
-  if (!stateParam || !storedState || stateParam !== storedState) {
+  if (!storedState) {
+    return c.redirect('/?expired=true', 302)
+  }
+  if (!stateParam) {
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: '로그인 세션이 만료되었습니다',
+        message: '인증 요청이 만료되었습니다. 다시 로그인해주세요.',
+        scriptContent:
+          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'state_mismatch' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about state mismatch', error); } } window.location.replace('/'); }, 1400);",
+      }),
+      400,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  if (stateParam !== storedState) {
     const response = c.html(
       renderAdminOAuthPage({
         title: '로그인 세션이 만료되었습니다',
