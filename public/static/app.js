@@ -52,55 +52,10 @@ const SUBSCRIPTION_PLAN_FEATURES = Object.freeze({
     { text: '관리자 승인 후 이용 시작' },
   ],
 })
-const ADMIN_JWT_STORAGE_KEY = 'admin_token'
-
-async function verifyAdminAccessIfNeeded() {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  const params = new URLSearchParams(window.location.search)
-  if (params.get('admin') !== '1') {
-    return
-  }
-
-  let token = ''
-
-  try {
-    token = window.localStorage.getItem(ADMIN_JWT_STORAGE_KEY) || ''
-  } catch (error) {
-    console.warn('관리자 토큰을 불러오지 못했습니다.', error)
-  }
-
-  if (!token) {
-    window.location.replace('/admin-login')
-    return
-  }
-
-  try {
-    const response = await fetch('/api/verify', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      cache: 'no-store',
-    })
-
-    if (!response.ok) {
-      throw new Error(`VERIFY_FAILED_${response.status}`)
-    }
-
-    const result = await response.json().catch(() => null)
-    if (!result || result.valid !== true) {
-      throw new Error('VERIFY_INVALID')
-    }
-  } catch (error) {
-    console.warn('관리자 토큰 검증에 실패했습니다.', error)
-    window.location.replace('/admin-login')
-  }
-}
-
-verifyAdminAccessIfNeeded()
+const ADMIN_ACCESS_STORAGE_KEY = 'admin'
+const ADMIN_SECRET_KEY = typeof window !== 'undefined' && typeof window.__ADMIN_SECRET_KEY__ === 'string'
+  ? window.__ADMIN_SECRET_KEY__
+  : ''
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
 const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
 const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
@@ -869,8 +824,9 @@ const elements = {
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
   adminModal: document.querySelector('[data-role="admin-modal"]'),
   adminLoginForm: document.querySelector('[data-role="admin-login-form"]'),
-  adminEmailInput: document.querySelector('[data-role="admin-email"]'),
-  adminPasswordInput: document.querySelector('[data-role="admin-password"]'),
+  adminSecretInput: document.querySelector('[data-role="admin-secret"]'),
+  adminSecretToggle: document.querySelector('[data-role="admin-secret-toggle"]'),
+  adminSecretIcon: document.querySelector('[data-role="admin-secret-icon"]'),
   adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
   adminModalSubtitle: document.querySelector('[data-role="admin-modal-subtitle"]'),
   adminModalActions: document.querySelector('[data-role="admin-modal-actions"]'),
@@ -1817,36 +1773,17 @@ function handleAdminBroadcastMessage(event) {
 
 function handleAdminStorageEvent(event) {
   if (!event || event.storageArea !== window.localStorage) return
-  if (event.key === null) {
-    handleRemoteAdminLogout('다른 위치에서 로그아웃되었습니다.')
+  if (event.key && event.key !== ADMIN_ACCESS_STORAGE_KEY) {
     return
   }
-  if (event.key !== ADMIN_SESSION_STORAGE_KEY) {
-    return
-  }
-  if (!event.newValue) {
-    handleRemoteAdminLogout('다른 위치에서 로그아웃되었습니다.')
-    return
-  }
-  try {
-    const session = JSON.parse(event.newValue)
-    if (!isOwnedAdminSession(session)) {
-      handleRemoteAdminLogout('다른 위치에서 로그인되었습니다.')
-    }
-  } catch (error) {
-    console.warn('관리자 세션 동기화 정보 파싱에 실패했습니다.', error)
-  }
+  syncAdminSession()
 }
 
 function initializeAdminAuthSync() {
-  ensureAdminAuthChannel()
   if (typeof window !== 'undefined') {
     window.addEventListener('storage', handleAdminStorageEvent)
   }
-  const stored = getStoredAdminSession()
-  if (stored && stored.sessionId && isOwnedAdminSession(stored)) {
-    runtime.admin.sessionId = stored.sessionId
-  }
+  syncAdminSession()
 }
 
 function getAdminDashboardUrl() {
@@ -3261,17 +3198,10 @@ function applyCommunityRoleFromStorage() {
   return false
 }
 
-async function handleLogout() {
-  const sessionId = runtime.admin.sessionId
-  try {
-    await fetch('/api/auth/admin/logout', { method: 'POST', credentials: 'include' })
-  } catch (error) {
-    // ignore network errors
-  }
-  notifyAdminLogout(sessionId)
-  clearAdminSessionStorage()
-  state.admin.isLoggedIn = false
-  state.admin.email = ''
+
+function handleLogout() {
+  revokeAdminAccessStorage()
+  revokeAdminSessionState()
   state.admin.participants = []
   state.user.isLoggedIn = false
   state.user.name = ''
@@ -3307,56 +3237,10 @@ async function handleLogout() {
   renderUpgradePlans()
   setStatus('로그아웃되었습니다. 언제든 다시 로그인하여 편집을 이어가세요.', 'info')
   resetLoginFlow()
-  clearAdminCooldown()
   updateAdminUI()
 }
 
-function clearAdminCooldown(restoreForm = true) {
-  if (runtime.admin.cooldownTimer) {
-    window.clearTimeout(runtime.admin.cooldownTimer)
-  }
-  runtime.admin.cooldownTimer = null
-  runtime.admin.cooldownUntil = 0
-  if (!restoreForm) {
-    return
-  }
-  if (elements.adminLoginForm instanceof HTMLFormElement && elements.adminLoginForm.dataset.state === 'cooldown') {
-    elements.adminLoginForm.dataset.state = 'idle'
-  }
-  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm?.querySelector('button[type="submit"]')]
-  controls.forEach((control) => {
-    if (control instanceof HTMLElement) {
-      control.removeAttribute('disabled')
-    }
-  })
-}
 
-function startAdminCooldown(durationMs = 15000) {
-  if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
-  const normalized = Math.max(3000, durationMs)
-  clearAdminCooldown(false)
-  const end = Date.now() + normalized
-  runtime.admin.cooldownUntil = end
-  elements.adminLoginForm.dataset.state = 'cooldown'
-  const controls = [elements.adminEmailInput, elements.adminPasswordInput, elements.adminLoginForm.querySelector('button[type="submit"]')]
-  controls.forEach((control) => {
-    if (control instanceof HTMLElement) {
-      control.setAttribute('disabled', 'true')
-    }
-  })
-  const update = () => {
-    const remaining = Math.max(0, runtime.admin.cooldownUntil - Date.now())
-    if (remaining <= 0) {
-      clearAdminCooldown()
-      setAdminMessage('다시 시도할 수 있습니다. 정확한 관리자 자격을 입력해주세요.', 'info')
-      return
-    }
-    const seconds = Math.max(1, Math.ceil(remaining / 1000))
-    setAdminMessage(`보안 보호를 위해 ${seconds}초 뒤에 다시 시도할 수 있습니다.`, 'warning')
-    runtime.admin.cooldownTimer = window.setTimeout(update, 1000)
-  }
-  update()
-}
 
 function setAdminMessage(message = '', tone = 'info') {
   if (!(elements.adminLoginMessage instanceof HTMLElement)) return
@@ -3365,25 +3249,61 @@ function setAdminMessage(message = '', tone = 'info') {
   elements.adminLoginMessage.dataset.tone = tone
 }
 
+function isAdminAccessGranted() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  try {
+    return window.localStorage?.getItem(ADMIN_ACCESS_STORAGE_KEY) === 'true'
+  } catch (error) {
+    console.warn('관리자 상태를 확인하지 못했습니다.', error)
+    return false
+  }
+}
+
+function persistAdminAccess() {
+  try {
+    window.localStorage?.setItem(ADMIN_ACCESS_STORAGE_KEY, 'true')
+  } catch (error) {
+    console.warn('관리자 상태를 저장하지 못했습니다.', error)
+  }
+}
+
+function revokeAdminAccessStorage() {
+  try {
+    window.localStorage?.removeItem(ADMIN_ACCESS_STORAGE_KEY)
+  } catch (error) {
+    console.warn('관리자 상태를 초기화하지 못했습니다.', error)
+  }
+}
+
 function openAdminModal() {
   if (!(elements.adminModal instanceof HTMLElement)) return
   const isAdmin = state.admin.isLoggedIn
+
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.dataset.state = 'idle'
+  }
+
+  if (elements.adminSecretInput instanceof HTMLInputElement) {
+    elements.adminSecretInput.value = ''
+    elements.adminSecretInput.type = 'password'
+    elements.adminSecretInput.removeAttribute('aria-invalid')
+  }
+  if (elements.adminSecretToggle instanceof HTMLButtonElement) {
+    elements.adminSecretToggle.dataset.state = 'hidden'
+    elements.adminSecretToggle.setAttribute('aria-pressed', 'false')
+  }
+  if (elements.adminSecretIcon instanceof HTMLElement) {
+    elements.adminSecretIcon.classList.remove('ri-eye-line')
+    elements.adminSecretIcon.classList.add('ri-eye-off-line')
+  }
 
   if (isAdmin) {
     setAdminMessage('', 'info')
     setStatus('관리자 모드가 활성화되어 있습니다. 필요한 작업을 선택하세요.', 'info')
   } else {
-    setAdminMessage('등록된 관리자만 접근할 수 있습니다.', 'muted')
-    if (elements.adminLoginForm instanceof HTMLFormElement) {
-      elements.adminLoginForm.dataset.state = 'idle'
-      elements.adminLoginForm.reset()
-    }
-    if (elements.adminPasswordInput instanceof HTMLInputElement) {
-      elements.adminPasswordInput.value = ''
-    }
-    if (elements.adminEmailInput instanceof HTMLInputElement) {
-      elements.adminEmailInput.value = state.admin.email || ''
-    }
+    setAdminMessage('발급받은 시크릿 키를 입력해 관리자 권한을 활성화하세요.', 'muted')
   }
 
   updateAdminModalState()
@@ -3403,8 +3323,8 @@ function openAdminModal() {
         return
       }
     }
-    if (elements.adminEmailInput instanceof HTMLInputElement) {
-      elements.adminEmailInput.focus()
+    if (elements.adminSecretInput instanceof HTMLInputElement) {
+      elements.adminSecretInput.focus()
     }
   })
 }
@@ -3414,6 +3334,15 @@ function closeAdminModal() {
   elements.adminModal.classList.remove('is-active')
   elements.adminModal.setAttribute('aria-hidden', 'true')
   syncBodyModalState()
+}
+
+function applyAdminPrivileges() {
+  state.admin.isLoggedIn = true
+  state.admin.email = 'admin@local'
+  state.admin.participants = state.admin.participants || []
+  applyLoginProfile({ name: '관리자', email: 'admin@local', plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
+  refreshAccessStates()
+  updateAdminUI()
 }
 
 function revokeAdminSessionState() {
@@ -3438,50 +3367,13 @@ function revokeAdminSessionState() {
   }
 }
 
-async function syncAdminSession() {
-  try {
-    const response = await fetch('/api/auth/session', {
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      credentials: 'include',
-    })
-    if (!response.ok) {
-      revokeAdminSessionState()
-      return
-    }
-    const payload = await response.json().catch(() => ({}))
-    if (payload && payload.admin) {
-      const email = typeof payload.email === 'string' ? payload.email : ''
-      let session = getStoredAdminSession()
-      if (!session || session.email !== email || !session.sessionId) {
-        session = persistAdminSessionState(email, generateAdminSessionId())
-        notifyAdminLogin(session)
-      } else if (!isOwnedAdminSession(session)) {
-        handleRemoteAdminLogout('이미 로그인된 다른 세션이 있어 현재 창에서 관리자 모드를 사용할 수 없습니다.')
-        return
-      } else {
-        setCurrentTabAdminSessionId(session.sessionId)
-        runtime.admin.sessionId = session.sessionId
-      }
-
-      state.admin.isLoggedIn = true
-      state.admin.email = email
-      applyLoginProfile({ name: '관리자', email, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
-      updateAdminUI()
-      if (runtime.initialView === 'admin') {
-        setView('admin', { force: true })
-      }
-      await fetchAdminParticipants()
-      announceAdminDashboardAccess()
-    } else {
-      clearAdminSessionStorage({ preserveGlobal: true })
-      revokeAdminSessionState()
-    }
-  } catch (error) {
-    console.warn('관리자 세션 확인 중 오류', error)
+function syncAdminSession() {
+  if (isAdminAccessGranted()) {
+    applyAdminPrivileges()
+  } else {
+    revokeAdminSessionState()
   }
 }
-
 function formatDateLabel(value) {
   if (!value) return '-'
   const date = new Date(value)
@@ -3553,7 +3445,7 @@ function updateAdminModalState() {
   if (elements.adminModalSubtitle instanceof HTMLElement) {
     elements.adminModalSubtitle.textContent = isAdmin
       ? '관리자 모드가 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있어요.'
-      : '등록된 관리자만 접근할 수 있습니다. 자격 증명을 안전하게 입력하세요.'
+      : '발급받은 시크릿 키를 입력하면 관리자 권한이 활성화됩니다.'
   }
 }
 
@@ -3654,6 +3546,22 @@ function announceAdminDashboardAccess(options = {}) {
   }
   if (hasShownAdminDashboardPrompt && !options.force) {
     return
+  }
+
+  if (elements.adminSecretToggle instanceof HTMLButtonElement) {
+    elements.adminSecretToggle.addEventListener('click', () => {
+      if (!(elements.adminSecretInput instanceof HTMLInputElement)) {
+        return
+      }
+      const isHidden = elements.adminSecretInput.type === 'password'
+      elements.adminSecretInput.type = isHidden ? 'text' : 'password'
+      if (elements.adminSecretIcon instanceof HTMLElement) {
+        elements.adminSecretIcon.classList.toggle('ri-eye-line', isHidden)
+        elements.adminSecretIcon.classList.toggle('ri-eye-off-line', !isHidden)
+      }
+      elements.adminSecretToggle.dataset.state = isHidden ? 'visible' : 'hidden'
+      elements.adminSecretToggle.setAttribute('aria-pressed', isHidden ? 'true' : 'false')
+    })
   }
 
   const prompt = getOrCreateAdminDashboardPrompt()
@@ -3838,160 +3746,53 @@ async function fetchAdminParticipants() {
   }
 }
 
-async function handleAdminLogin(event) {
+
+function handleAdminLogin(event) {
   event.preventDefault()
   if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
   if (elements.adminLoginForm.dataset.state === 'loading') return
 
-  if (runtime.admin.cooldownUntil && Date.now() < runtime.admin.cooldownUntil) {
-    const seconds = Math.max(1, Math.ceil((runtime.admin.cooldownUntil - Date.now()) / 1000))
-    setAdminMessage(`보안 보호를 위해 ${seconds}초 뒤에 다시 시도할 수 있습니다.`, 'warning')
+  if (!ADMIN_SECRET_KEY) {
+    setAdminMessage('관리자 시크릿 키가 구성되지 않았습니다. 환경변수를 확인하세요.', 'danger')
+    window.alert('관리자 시크릿 키가 구성되지 않았습니다.')
     return
   }
 
-  clearAdminCooldown()
+  const secret = elements.adminSecretInput instanceof HTMLInputElement ? elements.adminSecretInput.value.trim() : ''
 
-  const email = elements.adminEmailInput instanceof HTMLInputElement ? elements.adminEmailInput.value.trim().toLowerCase() : ''
-  const password = elements.adminPasswordInput instanceof HTMLInputElement ? elements.adminPasswordInput.value : ''
-
-  if (!isValidEmail(email)) {
-    setAdminMessage('유효한 관리자 이메일을 입력해주세요.', 'danger')
-    if (elements.adminEmailInput instanceof HTMLInputElement) {
-      elements.adminEmailInput.setAttribute('aria-invalid', 'true')
-      elements.adminEmailInput.focus()
-    }
-    return
-  }
-  if (!password) {
-    setAdminMessage('비밀번호를 입력해주세요.', 'danger')
-    if (elements.adminPasswordInput instanceof HTMLInputElement) {
-      elements.adminPasswordInput.setAttribute('aria-invalid', 'true')
-      elements.adminPasswordInput.focus()
+  if (!secret) {
+    setAdminMessage('시크릿 키를 입력해주세요.', 'danger')
+    if (elements.adminSecretInput instanceof HTMLInputElement) {
+      elements.adminSecretInput.setAttribute('aria-invalid', 'true')
+      elements.adminSecretInput.focus()
     }
     return
   }
 
-  const existingSession = getStoredAdminSession()
-  if (existingSession && existingSession.loggedIn && existingSession.email === email) {
-    if (isOwnedAdminSession(existingSession)) {
-      setAdminMessage('이미 로그인된 세션이 활성화되어 있습니다. 대시보드에서 계속 진행해주세요.', 'warning')
-    } else {
-      setAdminMessage('이미 로그인 중인 계정입니다. 로그아웃 후 다시 시도해주세요.', 'warning')
+  if (secret !== ADMIN_SECRET_KEY) {
+    setAdminMessage('잘못된 관리자 키입니다.', 'danger')
+    if (elements.adminSecretInput instanceof HTMLInputElement) {
+      elements.adminSecretInput.setAttribute('aria-invalid', 'true')
+      elements.adminSecretInput.select()
     }
+    window.alert('잘못된 관리자 키입니다.')
     return
-  }
-
-  if (elements.adminEmailInput instanceof HTMLInputElement) {
-    elements.adminEmailInput.removeAttribute('aria-invalid')
-  }
-  if (elements.adminPasswordInput instanceof HTMLInputElement) {
-    elements.adminPasswordInput.removeAttribute('aria-invalid')
   }
 
   elements.adminLoginForm.dataset.state = 'loading'
-  setAdminMessage('관리자 자격을 확인하는 중입니다…', 'info')
+  setAdminMessage('관리자 권한을 활성화하는 중입니다…', 'info')
 
-  const submitButton = elements.adminLoginForm.querySelector('button[type="submit"]')
-  if (submitButton instanceof HTMLButtonElement) {
-    submitButton.disabled = true
+  persistAdminAccess()
+  applyAdminPrivileges()
+  if (elements.adminSecretInput instanceof HTMLInputElement) {
+    elements.adminSecretInput.removeAttribute('aria-invalid')
   }
-
-  try {
-    const response = await fetch('/api/auth/admin/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, password }),
-    })
-    if (!response.ok) {
-      if (response.status === 401) {
-        setAdminMessage('관리자 인증에 실패했습니다. 이메일 또는 비밀번호를 확인하세요.', 'danger')
-        if (elements.adminEmailInput instanceof HTMLInputElement) {
-          elements.adminEmailInput.setAttribute('aria-invalid', 'true')
-        }
-        if (elements.adminPasswordInput instanceof HTMLInputElement) {
-          elements.adminPasswordInput.setAttribute('aria-invalid', 'true')
-          elements.adminPasswordInput.value = ''
-          elements.adminPasswordInput.focus()
-        }
-        runtime.admin.retryCount += 1
-        if (runtime.admin.retryCount >= 3) {
-          startAdminCooldown(20000)
-          runtime.admin.retryCount = 0
-        }
-      } else if (response.status === 429) {
-        const detail = await response.json().catch(() => ({}))
-        const retryAfterSeconds = Number(detail?.retryAfter ?? 0)
-        const boundedSeconds = Number.isFinite(retryAfterSeconds) ? Math.max(1, Math.ceil(retryAfterSeconds)) : 0
-        const message =
-          boundedSeconds > 0
-            ? `로그인 시도가 너무 많습니다. 약 ${boundedSeconds}초 후 다시 시도해주세요.`
-            : '로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.'
-        setAdminMessage(message, 'danger')
-        const cooldownMs = boundedSeconds > 0 ? boundedSeconds * 1000 : 20000
-        startAdminCooldown(Math.max(15000, cooldownMs))
-        runtime.admin.retryCount = 0
-      } else if (response.status === 500) {
-        setAdminMessage('관리자 인증이 구성되지 않았습니다. 서버 환경 변수를 확인하세요.', 'danger')
-        startAdminCooldown(12000)
-        runtime.admin.retryCount = 0
-      } else {
-        setAdminMessage(`관리자 로그인 중 오류(${response.status})가 발생했습니다.`, 'danger')
-        runtime.admin.retryCount += 1
-        if (runtime.admin.retryCount >= 2) {
-          startAdminCooldown(12000)
-          runtime.admin.retryCount = 0
-        }
-      }
-      return
-    }
-    const payload = await response.json().catch(() => ({}))
-    const sessionEmail = typeof payload?.email === 'string' ? payload.email : email
-    runtime.admin.retryCount = 0
-    clearAdminCooldown()
-    state.admin.isLoggedIn = true
-    state.admin.email = sessionEmail
-    const session = persistAdminSessionState(sessionEmail, generateAdminSessionId(), Date.now())
-    notifyAdminLogin(session)
-    applyLoginProfile({ name: '관리자', email: sessionEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
-    refreshAccessStates()
-    closeAdminModal()
-    announceAdminDashboardAccess({ force: true })
-    await fetchAdminParticipants()
-    updateAdminUI()
-    if (elements.adminPasswordInput instanceof HTMLInputElement) {
-      elements.adminPasswordInput.value = ''
-      elements.adminPasswordInput.removeAttribute('aria-invalid')
-    }
-    if (elements.adminEmailInput instanceof HTMLInputElement) {
-      elements.adminEmailInput.removeAttribute('aria-invalid')
-    }
-  } catch (error) {
-    console.error('관리자 로그인 중 오류', error)
-    setAdminMessage('네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-    runtime.admin.retryCount += 1
-    if (runtime.admin.retryCount >= 2) {
-      startAdminCooldown(10000)
-      runtime.admin.retryCount = 0
-    }
-  } finally {
-    if (elements.adminLoginForm instanceof HTMLFormElement && elements.adminLoginForm.dataset.state !== 'cooldown') {
-      elements.adminLoginForm.dataset.state = 'idle'
-      const submit = elements.adminLoginForm.querySelector('button[type="submit"]')
-      if (submit instanceof HTMLButtonElement) {
-        submit.disabled = false
-      }
-      const controls = [elements.adminEmailInput, elements.adminPasswordInput]
-      controls.forEach((control) => {
-        if (control instanceof HTMLElement) {
-          control.removeAttribute('disabled')
-        }
-      })
-    }
-  }
+  closeAdminModal()
+  window.alert('관리자 인증이 완료되었습니다!')
+  window.location.href = '/?admin=1'
 }
 
-async function handleAdminImport(event) {
+async async function handleAdminImport(event) {
   event.preventDefault()
   if (!state.admin.isLoggedIn) {
     setStatus('관리자 로그인 후 사용할 수 있습니다.', 'danger')
@@ -8965,11 +8766,7 @@ function attachEventListeners() {
     elements.adminFooterLink.addEventListener('click', (event) => {
       event.preventDefault()
       event.stopPropagation()
-      try {
-        window.open('/admin-login', '_blank', 'noopener')
-      } catch (error) {
-        console.error('관리자 로그인 페이지를 새 탭으로 여는 데 실패했습니다.', error)
-      }
+      openAdminModal()
     })
   }
 
@@ -8987,25 +8784,7 @@ function attachEventListeners() {
   if (elements.adminLoginButton instanceof HTMLElement) {
     elements.adminLoginButton.addEventListener('click', (event) => {
       event.preventDefault()
-      const loginUrl = (() => {
-        try {
-          return new URL('/login.html', window.location.origin).toString()
-        } catch (error) {
-          console.warn('관리자 로그인 경로 계산 실패', error)
-          return '/login.html'
-        }
-      })()
-
-      try {
-        window.sessionStorage?.setItem('adminPreviewRequested', '1')
-      } catch (error) {
-        console.warn('관리자 미리보기 상태 저장 실패', error)
-      }
-
-      const popup = window.open(loginUrl, '_blank', 'noopener')
-      if (!popup || popup.closed) {
-        window.location.href = loginUrl
-      }
+      openAdminModal()
     })
   }
 

@@ -2494,6 +2494,12 @@ body.is-modal-open {
   display: none;
 }
 
+.admin-modal__input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
 .admin-modal__label {
   font-size: 0.85rem;
   color: var(--text-muted);
@@ -2509,9 +2515,36 @@ body.is-modal-open {
   font-size: 0.95rem;
 }
 
+.admin-modal__input-group .admin-modal__input {
+  padding-right: 44px;
+}
+
 .admin-modal__input:focus-visible {
   outline: 2px solid rgba(254, 245, 104, 0.65);
   outline-offset: 3px;
+}
+
+.admin-modal__toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-primary);
+  border-radius: 999px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.admin-modal__toggle:hover,
+.admin-modal__toggle:focus-visible {
+  background: rgba(148, 163, 184, 0.28);
+  outline: none;
 }
 
 .admin-modal__helper {
