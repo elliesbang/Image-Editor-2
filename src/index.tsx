@@ -200,7 +200,7 @@ function renderCommunityDashboardPage() {
         </ul>
       </section>
     </main>
-    <footer class="footer">© 엘리의방 | Ellie’s Bang</footer>
+    <footer class="footer">© 엘리의방 | elliesbang</footer>
 
     <div class="certificate-canvas-wrapper" data-role="certificate-canvas">
       <div class="certificate-template" data-role="certificate-template">
@@ -3229,7 +3229,7 @@ app.get('/', async (c) => {
             <button type="button" data-role="footer-admin">관리자 전용</button>
           </nav>
         </div>
-        <p class="site-footer__note">© {currentYear} Ellie’s Bang. 모든 권리 보유.</p>
+        <p class="site-footer__note">© {currentYear} elliesbang. 모든 권리 보유.</p>
       </footer>
 
       <div class="cookie-banner" data-role="cookie-banner" aria-hidden="true">
@@ -3344,7 +3344,7 @@ app.get('/privacy', (c) => {
         <p class="legal-page__contact">
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
-        <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
+        <p class="legal-page__copyright">© {currentYear} elliesbang. All rights reserved.</p>
         <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
       </footer>
     </main>
@@ -3422,7 +3422,7 @@ app.get('/terms', (c) => {
         <p class="legal-page__contact">
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
-        <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
+        <p class="legal-page__copyright">© {currentYear} elliesbang. All rights reserved.</p>
         <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
       </footer>
     </main>
@@ -3497,7 +3497,7 @@ app.get('/cookies', (c) => {
         <p class="legal-page__contact">
           문의: <a href="mailto:ellie@elliesbang.kr">ellie@elliesbang.kr</a>
         </p>
-        <p class="legal-page__copyright">© {currentYear} Ellie’s Bang. All rights reserved.</p>
+        <p class="legal-page__copyright">© {currentYear} elliesbang. All rights reserved.</p>
         <a class="legal-page__back" href="/">← 에디터로 돌아가기</a>
       </footer>
     </main>
