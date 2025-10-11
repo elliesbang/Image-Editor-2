@@ -1586,6 +1586,13 @@ app.use('/static/*', serveStatic({ root: './public' }))
 app.get('/seo-vision', (c) => c.redirect('/static/seo-vision/index.html'))
 app.get('/seo-vision/', (c) => c.redirect('/static/seo-vision/index.html'))
 
+app.get('/api/seo-vision/google-client', (c) => {
+  const clientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
+  const response = c.json({ clientId: clientId || null })
+  response.headers.set('Cache-Control', 'no-store, max-age=0')
+  return response
+})
+
 app.use(renderer)
 
 app.get('/api/auth/session', async (c) => {
