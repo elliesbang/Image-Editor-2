@@ -69,7 +69,6 @@ const COMMUNITY_ROLE_STORAGE_KEY = 'role'
 const USER_IDENTITY_STORAGE_KEY = 'elliesbang:user'
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const GOOGLE_ALLOWED_ORIGIN = 'https://image-editor-3.pages.dev'
 const GOOGLE_SIGNIN_TEXT = {
   default: 'Google 계정으로 계속하기',
   idle: 'Google 계정으로 계속하기',
@@ -765,7 +764,7 @@ async function ensureGoogleClient() {
     const redirectUri =
       typeof config.googleRedirectUri === 'string' && config.googleRedirectUri.trim().length > 0
         ? config.googleRedirectUri.trim()
-        : `${window.location.origin}/auth/google/callback`
+        : `${window.location.origin}/api/auth/callback/google`
 
     runtime.google.codeClient = oauth2.initCodeClient({
       client_id: clientId,
@@ -2117,7 +2116,7 @@ function disableGoogleLoginUI() {
   if (elements.googleLoginSpinner instanceof HTMLElement) {
     elements.googleLoginSpinner.hidden = true
   }
-  setGoogleLoginHelper('현재 이메일 로그인만 지원합니다.', 'info')
+  setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다.', 'info')
 }
 
 function updateGoogleProviderAvailability() {
@@ -2155,7 +2154,7 @@ function updateGoogleProviderAvailability() {
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
     setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setGoogleLoginHelper('Google 로그인 구성이 완료되지 않았습니다. 관리자에게 문의해주세요.', 'warning')
     return
   }
   if (runtime.google.codeClient) {
@@ -2201,7 +2200,7 @@ async function prefetchGoogleClient() {
       console.warn('Google client 초기화 실패', error)
       if (error instanceof Error && error.message === 'GOOGLE_CLIENT_ID_MISSING') {
         setGoogleButtonState('disabled')
-        setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+        setGoogleLoginHelper('Google 로그인 구성이 완료되지 않았습니다. 관리자에게 문의해주세요.', 'warning')
       } else {
         setGoogleButtonState('error')
         setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
@@ -4795,8 +4794,8 @@ async function handleGoogleCodeResponse(response) {
         helperTone = 'warning'
         helperState = 'idle'
       } else if (GOOGLE_CONFIGURATION_ERRORS.has(error.message)) {
-        message = '현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.'
-        helperTone = 'info'
+        message = 'Google 로그인 구성이 완료되지 않았습니다. 관리자에게 문의해주세요.'
+        helperTone = 'warning'
         helperState = 'disabled'
       } else if (GOOGLE_POPUP_DISMISSED_ERRORS.has(error.message)) {
         message = 'Google 로그인 창이 닫혔습니다. 다시 시도해주세요.'
@@ -4843,24 +4842,16 @@ async function handleGoogleLogin(event) {
 
   if (!ENABLE_GOOGLE_LOGIN) {
     disableGoogleLoginUI()
-    setStatus('현재 이메일 로그인만 지원합니다.', 'info')
+    setStatus('현재 Google 로그인을 사용할 수 없습니다.', 'info')
     return
   }
 
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
   if (!clientId) {
-    setStatus('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setStatus('Google 로그인 구성이 완료되지 않았습니다. 관리자에게 문의해주세요.', 'warning')
     setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
-
-  const currentOrigin = window.location.origin
-  if (currentOrigin !== GOOGLE_ALLOWED_ORIGIN) {
-    alert('이 도메인에서는 Google 로그인을 사용할 수 없습니다.')
-    setGoogleButtonState('idle')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    setGoogleLoginHelper('Google 로그인 구성이 완료되지 않았습니다. 관리자에게 문의해주세요.', 'warning')
     return
   }
 
