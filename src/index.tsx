@@ -119,7 +119,7 @@ const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://image-editor-3.pages.dev/api/auth/callback/google'
 const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
 const ADMIN_COOKIE_BASE_OPTIONS = {
   httpOnly: true,
@@ -964,13 +964,7 @@ function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
   if (configured) {
     return configured
   }
-  try {
-    const url = new URL(c.req.url)
-    return `${url.origin}/api/auth/callback/google`
-  } catch (error) {
-    console.warn('[auth/google] Failed to derive redirect URI from request URL', error)
-    return DEFAULT_GOOGLE_REDIRECT_URI
-  }
+  return DEFAULT_GOOGLE_REDIRECT_URI
 }
 
 type GoogleIdTokenPayload = {
@@ -2061,15 +2055,15 @@ app.get('/api/auth/callback/google', async (c) => {
     }
     window.setTimeout(() => {
       try {
-        window.opener.location.href = '/admin-dashboard';
+        window.opener.location.href = '/';
       } catch (error) {
-        window.opener.location.replace('/admin-dashboard');
+        window.opener.location.replace('/');
       }
       window.close();
     }, 500);
   } else {
     window.setTimeout(() => {
-      window.location.replace('/admin-dashboard');
+      window.location.replace('/');
     }, 500);
   }
 })();`
@@ -2077,7 +2071,7 @@ app.get('/api/auth/callback/google', async (c) => {
     const response = c.html(
       renderAdminOAuthPage({
         title: '관리자 인증이 완료되었습니다',
-        message: '관리자 대시보드로 이동합니다.',
+        message: '홈 화면으로 이동합니다.',
         scriptContent,
       }),
     )
