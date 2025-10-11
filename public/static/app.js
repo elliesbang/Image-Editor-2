@@ -56,7 +56,7 @@ const ADMIN_ACCESS_STORAGE_KEY = 'admin'
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
 const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
 const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
-const ADMIN_DASHBOARD_PATH = '/admin-dashboard'
+const ADMIN_DASHBOARD_PATH = '/dashboard'
 const CREDIT_COSTS = {
   operation: 1,
   resize: 1,
@@ -582,7 +582,6 @@ function assertEngineReady() {
 let googleSdkPromise = null
 let hasAnnouncedAdminNav = false
 let adminNavHighlightTimer = null
-let adminAuthWindow = null
 let hasShownAdminDashboardPrompt = false
 
 function hasUnlimitedAccess() {
@@ -826,7 +825,8 @@ const elements = {
   adminLoginButton: document.querySelector('[data-role="admin-login"]'),
   adminModal: document.querySelector('[data-role="admin-modal"]'),
   adminLoginForm: document.querySelector('[data-role="admin-login-form"]'),
-  adminGoogleButton: document.querySelector('[data-role="admin-google-login"]'),
+  adminSecretInput: document.querySelector('[data-role="admin-secret-input"]'),
+  adminSecretSubmit: document.querySelector('[data-role="admin-secret-submit"]'),
   adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
   adminModalSubtitle: document.querySelector('[data-role="admin-modal-subtitle"]'),
   adminModalActions: document.querySelector('[data-role="admin-modal-actions"]'),
@@ -3282,13 +3282,16 @@ function updateAdminLoginState(state, message, tone = 'info') {
   if (elements.adminLoginForm instanceof HTMLElement) {
     elements.adminLoginForm.dataset.state = state
   }
-  if (elements.adminGoogleButton instanceof HTMLButtonElement) {
-    const disabled = state === 'loading'
-    elements.adminGoogleButton.disabled = disabled
+  const disabled = state === 'loading'
+  if (elements.adminSecretInput instanceof HTMLInputElement) {
+    elements.adminSecretInput.disabled = disabled
+  }
+  if (elements.adminSecretSubmit instanceof HTMLButtonElement) {
+    elements.adminSecretSubmit.disabled = disabled
     if (disabled) {
-      elements.adminGoogleButton.setAttribute('aria-disabled', 'true')
+      elements.adminSecretSubmit.setAttribute('aria-disabled', 'true')
     } else {
-      elements.adminGoogleButton.removeAttribute('aria-disabled')
+      elements.adminSecretSubmit.removeAttribute('aria-disabled')
     }
   }
   if (typeof message === 'string') {
@@ -3344,7 +3347,7 @@ function openAdminModal() {
     setAdminMessage('관리자 모드가 이미 활성화되어 있습니다.', 'info')
     setStatus('관리자 모드가 활성화되어 있습니다. 필요한 작업을 선택하세요.', 'info')
   } else {
-    setAdminMessage('Google 로그인 버튼을 선택해 관리자 인증을 진행하세요.', 'muted')
+    setAdminMessage('관리자 시크릿 키를 입력한 뒤 확인 버튼을 선택하세요.', 'muted')
   }
 
   updateAdminModalState()
@@ -3364,8 +3367,12 @@ function openAdminModal() {
         return
       }
     }
-    if (elements.adminGoogleButton instanceof HTMLButtonElement) {
-      elements.adminGoogleButton.focus()
+    if (elements.adminSecretInput instanceof HTMLInputElement) {
+      elements.adminSecretInput.focus()
+      return
+    }
+    if (elements.adminSecretSubmit instanceof HTMLButtonElement) {
+      elements.adminSecretSubmit.focus()
     }
   })
 }
@@ -3493,7 +3500,7 @@ function updateAdminModalState() {
   if (elements.adminModalSubtitle instanceof HTMLElement) {
     elements.adminModalSubtitle.textContent = isAdmin
       ? '관리자 모드가 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있어요.'
-      : '관리자 전용 Google 계정으로 로그인하면 관리자 권한이 활성화됩니다.'
+      : '관리자 시크릿 키를 입력하면 관리자 권한이 활성화됩니다.'
   }
 }
 
@@ -3795,123 +3802,73 @@ function generateId() {
     .join('')
 }
 
-function focusAdminWindow(popup) {
-  if (!popup) return
-  try {
-    popup.focus()
-  } catch (error) {
-    console.warn('관리자 인증 창 포커스를 맞추지 못했습니다.', error)
-  }
-}
-
-function openAdminAuthPopup() {
-  const width = 520
-  const height = 640
-  const dualScreenLeft = window.screenLeft ?? window.screenX ?? 0
-  const dualScreenTop = window.screenTop ?? window.screenY ?? 0
-  const screenWidth = window.innerWidth ?? document.documentElement.clientWidth ?? screen.width
-  const screenHeight = window.innerHeight ?? document.documentElement.clientHeight ?? screen.height
-  const left = dualScreenLeft + Math.max(0, (screenWidth - width) / 2)
-  const top = dualScreenTop + Math.max(0, (screenHeight - height) / 2)
-  const features = `width=${Math.round(width)},height=${Math.round(height)},left=${Math.round(left)},top=${Math.round(top)},resizable=yes,scrollbars=yes,status=no`
-
-  let popup = null
-  try {
-    popup = window.open('/auth/google', 'admin-google-login', features)
-  } catch (error) {
-    console.warn('관리자 인증 창을 여는 중 오류가 발생했습니다.', error)
-  }
-
-  if (!popup) {
-    return null
-  }
-
-  focusAdminWindow(popup)
-  return popup
-}
-
-function resetAdminLoginInteraction() {
-  updateAdminLoginState('idle', 'Google 로그인 버튼을 선택해 관리자 인증을 진행하세요.', 'muted')
-  adminAuthWindow = null
-  updateAdminModalState()
-}
-
-function handleAdminGoogleLogin(event) {
+async function handleAdminSecretSubmit(event) {
   if (event && typeof event.preventDefault === 'function') {
     event.preventDefault()
   }
-  if (!(elements.adminLoginForm instanceof HTMLElement)) {
-    window.location.href = '/auth/google'
+  if (!(elements.adminLoginForm instanceof HTMLFormElement)) {
     return
   }
   if (elements.adminLoginForm.dataset.state === 'loading') {
-    focusAdminWindow(adminAuthWindow)
     return
   }
-
-  updateAdminLoginState('loading', 'Google 로그인 창을 열고 있습니다…', 'info')
-
-  const popup = openAdminAuthPopup()
-  if (!popup) {
-    window.location.href = '/auth/google'
-    return
-  }
-
-  adminAuthWindow = popup
-  window.setTimeout(() => {
-    if (adminAuthWindow && adminAuthWindow.closed) {
-      resetAdminLoginInteraction()
-      setStatus('Google 로그인 창이 닫혔습니다. 다시 시도해주세요.', 'warning')
+  const input = elements.adminSecretInput
+  const secretKey = input instanceof HTMLInputElement ? input.value.trim() : ''
+  if (!secretKey) {
+    updateAdminLoginState('idle', '시크릿 키를 입력해주세요.', 'warning')
+    if (input instanceof HTMLInputElement) {
+      input.focus()
     }
-  }, 1200)
-}
-
-function handleAdminOAuthMessage(event) {
-  if (!event || !event.data || typeof event.data !== 'object') {
-    return
-  }
-  if (event.origin !== window.location.origin) {
-    return
-  }
-  const { type } = event.data
-  if (!type) {
     return
   }
 
-  if (adminAuthWindow && !adminAuthWindow.closed) {
-    try {
-      adminAuthWindow.close()
-    } catch (error) {
-      console.warn('관리자 인증 창을 닫는 중 오류가 발생했습니다.', error)
+  updateAdminLoginState('loading', '시크릿 키를 확인하고 있습니다…', 'info')
+
+  try {
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secretKey }),
+      credentials: 'include',
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || !payload?.success) {
+      const message =
+        typeof payload?.message === 'string' ? payload.message : '관리자 인증에 실패했습니다.'
+      updateAdminLoginState('idle', message, response.status === 401 ? 'danger' : 'warning')
+      if (input instanceof HTMLInputElement) {
+        input.value = ''
+        input.focus()
+      }
+      return
     }
-    adminAuthWindow = null
-  }
 
-  if (type === 'admin-oauth-success') {
-    const email = typeof event.data.email === 'string' ? event.data.email : 'admin@local'
-    const sessionId = typeof event.data.sessionId === 'string' ? event.data.sessionId : generateId()
-    const loginTime = Number(event.data.loginTime) || Date.now()
     persistAdminAccess()
+    const email =
+      typeof payload?.email === 'string' && payload.email.trim().length > 0
+        ? payload.email.trim()
+        : state.admin.email || state.user.email || 'admin@local'
+    const sessionId = generateId()
+    const loginTime = Date.now()
     const session = persistAdminSessionState(email, sessionId, loginTime)
     applyAdminPrivileges(email)
     notifyAdminLogin(session)
-    updateAdminLoginState('success', '관리자 인증이 완료되었습니다!', 'success')
-    closeAdminModal()
+    if (elements.adminLoginForm instanceof HTMLFormElement) {
+      elements.adminLoginForm.reset()
+    }
+    updateAdminLoginState('success', payload.message || '관리자 인증이 완료되었습니다!', 'success')
     setStatus('관리자 인증이 완료되었습니다. 관리자 대시보드로 이동합니다.', 'success')
-    return
-  }
-
-  if (type === 'admin-oauth-denied') {
-    resetAdminLoginInteraction()
-    setStatus('관리자 전용 접근 권한이 없습니다.', 'danger')
-    return
-  }
-
-  if (type === 'admin-oauth-error') {
-    const message = typeof event.data.message === 'string' ? event.data.message : 'Google 인증을 진행할 수 없습니다. 다시 시도해주세요.'
-    resetAdminLoginInteraction()
-    setStatus(message, 'warning')
-    setAdminMessage(message, 'danger')
+    window.setTimeout(() => {
+      closeAdminModal()
+      const redirectUrl = typeof payload?.redirect === 'string' ? payload.redirect : getAdminDashboardUrl()
+      window.location.href = redirectUrl
+    }, 600)
+  } catch (error) {
+    console.error('관리자 인증 요청 중 오류가 발생했습니다.', error)
+    updateAdminLoginState('idle', '관리자 인증 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    if (input instanceof HTMLInputElement) {
+      input.focus()
+    }
   }
 }
 
@@ -8979,8 +8936,8 @@ function attachEventListeners() {
     })
   }
 
-  if (elements.adminGoogleButton instanceof HTMLButtonElement) {
-    elements.adminGoogleButton.addEventListener('click', handleAdminGoogleLogin)
+  if (elements.adminLoginForm instanceof HTMLFormElement) {
+    elements.adminLoginForm.addEventListener('submit', handleAdminSecretSubmit)
   }
 
   elements.navButtons?.forEach((button) => {
@@ -9122,8 +9079,6 @@ function attachEventListeners() {
   if (elements.adminLogoutButton instanceof HTMLButtonElement) {
     elements.adminLogoutButton.addEventListener('click', handleLogout)
   }
-
-  window.addEventListener('message', handleAdminOAuthMessage)
 
   if (elements.loginEmailInput instanceof HTMLInputElement) {
     elements.loginEmailInput.addEventListener('input', () => {

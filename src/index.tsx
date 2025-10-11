@@ -10,6 +10,7 @@ type Bindings = {
   ADMIN_EMAIL?: string
   SESSION_SECRET?: string
   ADMIN_SESSION_VERSION?: string
+  ADMIN_SECRET_KEY?: string
   ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
   ADMIN_RATE_LIMIT_WINDOW_SECONDS?: string
   ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
@@ -1479,6 +1480,12 @@ async function evaluateCompletions(env: Bindings) {
 
 async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
   const config = getAdminConfig(c.env)
+  const fallbackEmail =
+    config?.email ?? c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? 'admin@local'
+  const adminCookie = getCookie(c, 'admin')
+  if (adminCookie === 'true') {
+    return fallbackEmail
+  }
   if (!config) {
     return null
   }
@@ -1552,6 +1559,7 @@ async function createAdminSession(
 
 function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
   deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
+  deleteCookie(c, 'admin', { path: '/', secure: true, sameSite: 'strict' })
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1591,6 +1599,40 @@ app.use(renderer)
 app.get('/api/auth/session', async (c) => {
   const adminEmail = await requireAdminSession(c)
   return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
+})
+
+app.post('/api/admin/login', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const configuredKey = c.env.ADMIN_SECRET_KEY?.trim()
+  if (!configuredKey) {
+    return c.json({ success: false, message: '관리자 인증 키가 구성되지 않았습니다.' }, 500)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ success: false, message: '잘못된 요청입니다.' }, 400)
+  }
+  const secretKey =
+    typeof (payload as { secretKey?: unknown }).secretKey === 'string'
+      ? ((payload as { secretKey: string }).secretKey || '').trim()
+      : ''
+  if (!secretKey) {
+    return c.json({ success: false, message: '시크릿 키를 입력해주세요.' }, 400)
+  }
+  if (secretKey !== configuredKey) {
+    return c.json({ success: false, message: '잘못된 키입니다.' }, 401)
+  }
+  const adminConfig = getAdminConfig(c.env)
+  const resolvedEmail = adminConfig?.email ?? c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? 'admin@local'
+  setCookie(c, 'admin', 'true', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 60 * 60 * 2,
+  })
+  return c.json({ success: true, message: '관리자 인증 완료', redirect: '/dashboard', email: resolvedEmail })
 })
 
 app.post('/api/auth/admin/logout', async (c) => {
@@ -3128,15 +3170,29 @@ app.get('/', async (c) => {
             </button>
           </header>
           <p class="admin-modal__subtitle" data-role="admin-modal-subtitle">
-            관리자 전용 Google 계정으로 로그인해 관리자 대시보드에 접근하세요.
+            관리자 시크릿 키를 입력해 관리자 대시보드에 접근하세요.
           </p>
-          <div class="admin-modal__form" data-role="admin-login-form" data-state="idle">
-            <button class="btn btn--primary admin-modal__submit" type="button" data-role="admin-google-login">
-              <i class="ri-google-fill" aria-hidden="true"></i>
-              Google 계정으로 로그인
+          <form class="admin-modal__form" data-role="admin-login-form" data-state="idle">
+            <label class="admin-modal__label" for="adminSecretKey">관리자 시크릿 키</label>
+            <div class="admin-modal__input-group">
+              <input
+                id="adminSecretKey"
+                name="secretKey"
+                type="password"
+                autocomplete="off"
+                placeholder="시크릿 키를 입력하세요"
+                class="admin-modal__input"
+                data-role="admin-secret-input"
+                required
+                minlength={4}
+              />
+            </div>
+            <button class="btn btn--primary admin-modal__submit" type="submit" data-role="admin-secret-submit">
+              <i class="ri-key-2-line" aria-hidden="true"></i>
+              확인
             </button>
             <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite"></p>
-          </div>
+          </form>
           <div class="admin-modal__actions" data-role="admin-modal-actions" hidden>
             <p class="admin-modal__note">
               관리자 모드가 이미 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있습니다.
@@ -3642,7 +3698,12 @@ app.get('/cookies', (c) => {
   )
 })
 
-app.get('/admin-dashboard', (c) => {
+app.get('/dashboard', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.redirect('/')
+  }
+  const ADMIN_LOGIN_EMAIL = adminEmail
   const dashboardPage = `<!DOCTYPE html>
 <html lang="ko">
   <head>
@@ -4108,6 +4169,8 @@ app.get('/admin-dashboard', (c) => {
   response.headers.set('Cache-Control', 'no-store')
   return response
 })
+
+app.get('/admin-dashboard', (c) => c.redirect('/dashboard'))
 
 app.get('/api/health', (c) => c.json({ status: 'ok' }))
 
