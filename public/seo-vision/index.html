@@ -6,7 +6,7 @@
     <title>이미지 기반 SEO 최적화 한국어 키워드 분석</title>
     <meta
       name="description"
-      content="GPT-5 Vision을 활용해 이미지에서 바로 사용할 수 있는 한국어 SEO 키워드 25개와 대표 제목을 생성하세요."
+      content="GPT-4o를 활용해 이미지에서 바로 사용할 수 있는 한국어 SEO 키워드 25개와 대표 제목을 생성하세요."
     />
     <style>
       :root {
@@ -171,13 +171,19 @@
 
       .action-bar {
         display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .action-row {
+        display: flex;
         flex-wrap: wrap;
         gap: 12px;
         align-items: center;
         justify-content: space-between;
       }
 
-      .analyze-button {
+      .upgrade-btn {
         flex: 1;
         min-width: 140px;
         padding: 14px 18px;
@@ -190,7 +196,7 @@
         transition: opacity 0.2s ease, transform 0.2s ease;
       }
 
-      .analyze-button[disabled] {
+      .upgrade-btn[disabled] {
         opacity: 0.55;
         cursor: not-allowed;
         transform: none;
@@ -271,12 +277,10 @@
       }
 
       .error-banner {
-        background: rgba(217, 45, 32, 0.12);
-        border: 1px solid rgba(217, 45, 32, 0.3);
+        display: none;
         color: var(--danger);
-        padding: 12px 16px;
-        border-radius: 12px;
         font-weight: 600;
+        font-size: 0.95rem;
       }
 
       .loading-spinner {
@@ -317,7 +321,7 @@
     <header>
       <h1>이미지 기반 SEO 최적화 한국어 키워드 분석</h1>
       <p>
-        이미지를 업로드하거나 결과물 갤러리에서 선택하면 GPT-5 Vision이 스타일·색감·소재·감정·분위기를 반영한
+        이미지를 업로드하거나 결과물 갤러리에서 선택하면 GPT-4o가 스타일·색감·소재·감정·분위기를 반영한
         한국어 키워드 25개와 대표 제목을 자동으로 제안합니다.
       </p>
     </header>
@@ -341,10 +345,12 @@
           <div class="gallery" id="gallery" aria-live="polite"></div>
         </div>
         <div class="action-bar">
-          <button type="button" class="analyze-button" id="analyze-button" disabled>선택한 이미지 분석</button>
-          <div class="status-text" id="analyze-status"></div>
+          <div id="error-banner" class="error-banner" role="alert" aria-live="assertive"></div>
+          <div class="action-row">
+            <button type="button" class="upgrade-btn" id="analyze-button" disabled>키워드 분석</button>
+            <div class="status-text" id="analyze-status"></div>
+          </div>
         </div>
-        <div id="error-banner" class="error-banner" style="display: none;">분석 기능이 일시적으로 중지되었습니다.</div>
       </section>
       <section class="panel" aria-labelledby="result-panel-title">
         <div class="result-card" id="result-card" style="display: none;">
@@ -365,6 +371,432 @@
         </div>
       </section>
     </main>
-    <script type="module" src="/static/seo-vision/app.js"></script>
+    <script type="module">
+      const sampleImages = [
+        {
+          id: 'sample-1',
+          type: 'sample',
+          name: '봄 플로럴 프로모션',
+          src: 'https://images.unsplash.com/photo-1498931299472-f7a63a5a1cfa?auto=format&fit=crop&w=900&q=80',
+        },
+        {
+          id: 'sample-2',
+          type: 'sample',
+          name: '미니멀 패키지 모형',
+          src: 'https://images.unsplash.com/photo-1618005198919-d3d4b5a92eee?auto=format&fit=crop&w=900&q=80',
+        },
+        {
+          id: 'sample-3',
+          type: 'sample',
+          name: '파스텔 브랜딩 카드',
+          src: 'https://images.unsplash.com/photo-1618005198900-81f472679f9e?auto=format&fit=crop&w=900&q=80',
+        },
+      ]
+
+      const galleryEl = document.getElementById('gallery')
+      const dropzoneEl = document.getElementById('dropzone')
+      const fileInputEl = document.getElementById('file-input')
+      const fileTriggerButton = document.getElementById('file-trigger')
+      const analyzeButton = document.getElementById('analyze-button')
+      const analyzeStatusEl = document.getElementById('analyze-status')
+      const errorBannerEl = document.getElementById('error-banner')
+      const resultCardEl = document.getElementById('result-card')
+      const resultPlaceholderEl = document.getElementById('result-placeholder')
+      const resultTitleEl = document.getElementById('result-panel-title')
+      const resultDescriptionEl = document.getElementById('result-description')
+      const keywordListEl = document.getElementById('keyword-list')
+      const copyButton = document.getElementById('copy-button')
+      const copyToast = document.getElementById('copy-toast')
+
+      const defaultResultTitle = resultTitleEl?.textContent?.trim() || '대표 제목 미생성'
+      const defaultResultDescription =
+        resultDescriptionEl?.textContent?.trim()
+        || '분석을 실행하면 이미지의 핵심 포인트를 반영한 대표 제목과 키워드가 여기에 표시됩니다.'
+
+      let galleryItems = [...sampleImages]
+      let selectedId = null
+      let copyToastTimer = null
+      let latestKeywords = []
+      let errorTimer = null
+
+      function normalizeText(value) {
+        return String(value ?? '')
+          .replace(/\s+/g, ' ')
+          .trim()
+      }
+
+      function setAnalyzeStatus(message = '', tone = 'default') {
+        if (!analyzeStatusEl) return
+        analyzeStatusEl.textContent = message
+        if (tone === 'error') {
+          analyzeStatusEl.style.color = 'var(--danger)'
+        } else if (tone === 'success') {
+          analyzeStatusEl.style.color = 'var(--success)'
+        } else if (tone === 'muted') {
+          analyzeStatusEl.style.color = 'var(--text-secondary)'
+        } else {
+          analyzeStatusEl.style.color = ''
+        }
+      }
+
+      function clearErrorBanner() {
+        if (errorTimer) {
+          clearTimeout(errorTimer)
+          errorTimer = null
+        }
+        if (errorBannerEl) {
+          errorBannerEl.textContent = ''
+          errorBannerEl.style.display = 'none'
+        }
+      }
+
+      function showErrorBanner(message) {
+        if (!errorBannerEl) return
+        clearErrorBanner()
+        errorBannerEl.textContent = message
+        errorBannerEl.style.display = 'block'
+        errorTimer = setTimeout(() => {
+          clearErrorBanner()
+        }, 4000)
+      }
+
+      function resetResults() {
+        latestKeywords = []
+        keywordListEl.innerHTML = ''
+        resultTitleEl.textContent = defaultResultTitle
+        resultDescriptionEl.textContent = defaultResultDescription
+        resultCardEl.style.display = 'none'
+        resultPlaceholderEl.style.display = 'block'
+      }
+
+      function deriveErrorMessage(status, data) {
+        const message = typeof data?.message === 'string' ? data.message.trim() : ''
+        if (message) {
+          if (/API\s*키|인증/i.test(message)) {
+            return 'API 키 인증 오류 또는 연결 실패'
+          }
+          return message
+        }
+
+        const errorCode = typeof data?.error === 'string' ? data.error : ''
+        if (status === 401 || status === 403) {
+          return 'API 키 인증 오류 또는 연결 실패'
+        }
+        if (/API_KEY|UNAUTHORIZED|AUTH/i.test(errorCode)) {
+          return 'API 키 인증 오류 또는 연결 실패'
+        }
+        return '분석 기능이 일시적으로 중지되었습니다.'
+      }
+
+      function renderGallery() {
+        galleryEl.innerHTML = ''
+        if (galleryItems.length === 0) {
+          const empty = document.createElement('p')
+          empty.className = 'status-text'
+          empty.textContent = '표시할 이미지가 없습니다. 이미지를 업로드해 주세요.'
+          galleryEl.appendChild(empty)
+          return
+        }
+
+        for (const item of galleryItems) {
+          const wrapper = document.createElement('button')
+          wrapper.type = 'button'
+          wrapper.className = 'gallery-item'
+          wrapper.dataset.id = item.id
+
+          if (item.id === selectedId) {
+            wrapper.classList.add('is-selected')
+          }
+
+          const img = document.createElement('img')
+          img.src = item.src
+          img.alt = `${item.name} 미리보기`
+          img.loading = 'lazy'
+          wrapper.appendChild(img)
+
+          const label = document.createElement('span')
+          label.textContent = item.name
+          wrapper.appendChild(label)
+
+          wrapper.addEventListener('click', () => {
+            selectGalleryItem(item.id)
+          })
+
+          galleryEl.appendChild(wrapper)
+        }
+      }
+
+      function selectGalleryItem(id) {
+        selectedId = id
+        const buttons = galleryEl.querySelectorAll('.gallery-item')
+        buttons.forEach((button) => {
+          if (button.dataset.id === id) {
+            button.classList.add('is-selected')
+          } else {
+            button.classList.remove('is-selected')
+          }
+        })
+        analyzeButton.disabled = !id
+        clearErrorBanner()
+      }
+
+      async function handleFiles(files) {
+        const validFiles = Array.from(files).filter((file) => file.type.startsWith('image/'))
+        if (validFiles.length === 0) {
+          setAnalyzeStatus('이미지 형식의 파일만 업로드할 수 있습니다.', 'error')
+          return
+        }
+
+        clearErrorBanner()
+        setAnalyzeStatus('이미지를 불러오고 있습니다...', 'muted')
+
+        const reads = validFiles.map(
+          (file) =>
+            new Promise((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => {
+                resolve({
+                  id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  type: 'upload',
+                  name: normalizeText(file.name) || '업로드 이미지',
+                  src: reader.result,
+                })
+              }
+              reader.onerror = () => reject(reader.error)
+              reader.readAsDataURL(file)
+            }),
+        )
+
+        try {
+          const results = await Promise.all(reads)
+          galleryItems = [...results, ...galleryItems]
+          renderGallery()
+          selectGalleryItem(results[0].id)
+          setAnalyzeStatus(`${results.length}개의 이미지가 추가되었습니다.`, 'success')
+        } catch (error) {
+          console.error('이미지 읽기 오류', error)
+          setAnalyzeStatus('이미지를 불러오지 못했습니다.', 'error')
+        }
+      }
+
+      function resetCopyToast() {
+        copyToast.classList.remove('is-visible')
+        if (copyToastTimer) {
+          clearTimeout(copyToastTimer)
+          copyToastTimer = null
+        }
+      }
+
+      async function analyzeSelectedImage() {
+        if (!selectedId) return
+        const target = galleryItems.find((item) => item.id === selectedId)
+        if (!target) return
+
+        analyzeButton.disabled = true
+        setAnalyzeStatus('🔍 키워드 분석 중...', 'muted')
+        clearErrorBanner()
+        resetCopyToast()
+
+        const payload = {
+          name: target.name,
+        }
+
+        if (target.type === 'upload') {
+          payload.image = target.src
+        } else if (target.type === 'sample') {
+          payload.imageUrl = target.src
+        }
+
+        try {
+          const response = await fetch('/functions/analyzeImage', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          })
+
+          const rawText = await response.text()
+          let data = null
+
+          if (rawText) {
+            try {
+              data = JSON.parse(rawText)
+            } catch (parseError) {
+              console.error('분석 실패', { label: 'ResponseParseError', detail: rawText, error: parseError })
+            }
+          }
+
+          if (!response.ok) {
+            const message = deriveErrorMessage(response.status, data)
+            console.error('분석 실패', {
+              label: response.status === 401 || response.status === 403 ? 'Unauthorized' : `HTTP_${response.status}`,
+              status: response.status,
+              detail: data ?? rawText,
+            })
+            showErrorBanner(message)
+            setAnalyzeStatus(message, 'error')
+            resetResults()
+            return
+          }
+
+          if (!data || typeof data !== 'object') {
+            console.error('분석 실패', { label: 'EmptyBody', detail: rawText })
+            const message = '분석 기능이 일시적으로 중지되었습니다.'
+            showErrorBanner(message)
+            setAnalyzeStatus(message, 'error')
+            resetResults()
+            return
+          }
+
+          if (data.error) {
+            const message = deriveErrorMessage(response.status, data)
+            console.error('분석 실패', { label: data.error, detail: data })
+            showErrorBanner(message)
+            setAnalyzeStatus(message, 'error')
+            resetResults()
+            return
+          }
+
+          const title = normalizeText(data.title) || '대표 제목을 생성하지 못했습니다.'
+          const keywords = Array.isArray(data.keywords)
+            ? data.keywords.map(normalizeText).filter(Boolean)
+            : []
+
+          latestKeywords = keywords
+
+          resultTitleEl.textContent = title
+          resultDescriptionEl.textContent = `선택한 이미지를 기반으로 추출된 한국어 키워드 ${keywords.length}개입니다.`
+
+          keywordListEl.innerHTML = ''
+          for (const keyword of keywords) {
+            const li = document.createElement('li')
+            li.className = 'keyword-chip'
+            li.textContent = keyword
+            keywordListEl.appendChild(li)
+          }
+
+          resultPlaceholderEl.style.display = 'none'
+          resultCardEl.style.display = 'flex'
+          setAnalyzeStatus('분석이 완료되었습니다.', 'success')
+        } catch (error) {
+          console.error('분석 실패', { label: 'FetchError', detail: error })
+          const message = '분석 기능이 일시적으로 중지되었습니다.'
+          showErrorBanner(message)
+          setAnalyzeStatus(message, 'error')
+          resetResults()
+        } finally {
+          analyzeButton.disabled = !selectedId
+        }
+      }
+
+      async function handleCopyKeywords() {
+        if (!latestKeywords.length) {
+          resetCopyToast()
+          return
+        }
+
+        const text = latestKeywords.join(', ')
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text)
+          } else {
+            const textarea = document.createElement('textarea')
+            textarea.value = text
+            textarea.style.position = 'fixed'
+            textarea.style.opacity = '0'
+            document.body.appendChild(textarea)
+            textarea.select()
+            document.execCommand('copy')
+            document.body.removeChild(textarea)
+          }
+
+          resetCopyToast()
+          copyToast.classList.add('is-visible')
+          copyToastTimer = setTimeout(() => {
+            copyToast.classList.remove('is-visible')
+          }, 2000)
+        } catch (error) {
+          console.error('복사 실패', error)
+          setAnalyzeStatus('키워드를 복사하지 못했습니다.', 'error')
+        }
+      }
+
+      function setupDropzone() {
+        const activate = (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          dropzoneEl.classList.add('is-dragover')
+        }
+
+        const deactivate = (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          dropzoneEl.classList.remove('is-dragover')
+        }
+
+        ;['dragenter', 'dragover'].forEach((type) => {
+          dropzoneEl.addEventListener(type, activate)
+        })
+        ;['dragleave', 'drop'].forEach((type) => {
+          dropzoneEl.addEventListener(type, deactivate)
+        })
+
+        dropzoneEl.addEventListener('drop', (event) => {
+          const files = event.dataTransfer?.files
+          if (files?.length) {
+            handleFiles(files)
+          }
+        })
+
+        dropzoneEl.addEventListener('click', () => {
+          fileInputEl.click()
+        })
+
+        dropzoneEl.addEventListener('keypress', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            fileInputEl.click()
+          }
+        })
+      }
+
+      function setupFileInput() {
+        fileInputEl.addEventListener('change', (event) => {
+          const files = event.target?.files
+          if (files?.length) {
+            handleFiles(files)
+            fileInputEl.value = ''
+          }
+        })
+      }
+
+      function setupSampleSelection() {
+        renderGallery()
+        if (galleryItems.length > 0) {
+          selectGalleryItem(galleryItems[0].id)
+        }
+      }
+
+      function init() {
+        setupSampleSelection()
+        setupDropzone()
+        setupFileInput()
+
+        fileTriggerButton.addEventListener('click', () => {
+          fileInputEl.click()
+        })
+
+        analyzeButton.addEventListener('click', () => {
+          analyzeSelectedImage()
+        })
+
+        copyButton.addEventListener('click', () => {
+          handleCopyKeywords()
+        })
+      }
+
+      init()
+    </script>
   </body>
 </html>

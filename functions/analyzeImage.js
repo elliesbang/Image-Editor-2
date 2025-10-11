@@ -55,7 +55,59 @@ function jsonResponse(body, init = {}) {
     headers.set('content-type', 'application/json; charset=utf-8')
   }
   headers.set('cache-control', 'no-store')
+  if (!headers.has('Access-Control-Allow-Origin')) {
+    headers.set('Access-Control-Allow-Origin', '*')
+  }
   return new Response(JSON.stringify(body), { ...init, headers })
+}
+
+function resolveOpenAIApiKey(env) {
+  if (!env || typeof env !== 'object') {
+    return { key: '', source: 'unavailable' }
+  }
+
+  const candidateNames = [
+    'OPENAI_API_KEY',
+    'openai_api_key',
+    'openaiApiKey',
+    'openaiApi',
+    'OPENAI_APIKEY',
+    'OPENAI_KEY',
+    'openaiKey',
+    'GPT5_VISION_API_KEY',
+    'gpt5VisionApiKey',
+    'apiKey',
+    'API_KEY',
+  ]
+
+  for (const name of candidateNames) {
+    const value = env[name]
+    if (typeof value === 'string' && value.trim()) {
+      const trimmed = value.trim()
+      if (!env.OPENAI_API_KEY) {
+        try {
+          // eslint-disable-next-line no-param-reassign
+          env.OPENAI_API_KEY = trimmed
+        } catch (_) {
+          // ignore assignment errors on read-only bindings
+        }
+      }
+      return { key: trimmed, source: name }
+    }
+  }
+
+  return { key: '', source: 'missing' }
+}
+
+function buildErrorResponse({ error, message, requestId, status = 502 }) {
+  return jsonResponse(
+    {
+      error,
+      message,
+      requestId,
+    },
+    { status },
+  )
 }
 
 function normalizeKeyword(value) {
@@ -137,9 +189,29 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'INVALID_IMAGE_DATA_URL' }, { status: 400 })
   }
 
-  const apiKey = env.OPENAI_API_KEY || env.GPT5_VISION_API_KEY
+  const requestId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`
+
+  const { key: apiKey, source: keySource } = resolveOpenAIApiKey(env)
+
   if (!apiKey) {
-    return jsonResponse({ error: 'API_KEY_MISSING' }, { status: 500 })
+    console.error('[functions/analyzeImage] API Key가 로드되지 않았습니다.', {
+      source: keySource,
+    })
+    return buildErrorResponse({
+      error: 'API_KEY_MISSING',
+      message: 'API 키 인증 오류 또는 연결 실패',
+      requestId,
+      status: 401,
+    })
+  }
+
+  if (keySource !== 'OPENAI_API_KEY') {
+    console.log('[functions/analyzeImage] Resolved OPENAI_API_KEY from alternate binding', {
+      source: keySource,
+    })
   }
 
   const systemPrompt = `너는 한국어 SEO 전문가이자 비주얼 디자이너야. 사용자가 전달한 이미지를 보고 디자인 플랫폼(미리캔버스, 캔바, 툴디 등)에 업로드했을 때 검색 노출에 유리한 25개의 한국어 키워드를 도출해. 키워드는 명사 또는 형용사 위주로 구성하고, 스타일·색감·소재·감정·분위기·카테고리 등을 폭넓게 포괄해야 해. 모든 출력은 한국어여야 한다.`
@@ -189,10 +261,6 @@ export async function onRequestPost(context) {
     contentBlocks.push({ type: 'input_image', image_url: { url: imageUrl } })
   }
 
-  const requestId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`)
-
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -201,7 +269,7 @@ export async function onRequestPost(context) {
         authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-5-vision',
+        model: 'gpt-4o',
         temperature: 0.5,
         top_p: 0.9,
         messages: [
@@ -215,39 +283,89 @@ export async function onRequestPost(context) {
       }),
     })
 
-    if (!response.ok) {
-      const detail = await response.text()
-      console.error('[functions/analyzeImage] OpenAI request failed', response.status, detail)
-      return jsonResponse({ error: 'OPENAI_REQUEST_FAILED', requestId }, { status: 502 })
+    const responseText = await response.text()
+    let result
+
+    if (responseText) {
+      try {
+        result = JSON.parse(responseText)
+      } catch (parseError) {
+        console.error('[functions/analyzeImage] Failed to parse OpenAI response body', parseError, responseText)
+      }
     }
 
-    const result = await response.json()
+    if (!response.ok) {
+      const isUnauthorized = response.status === 401 || response.status === 403
+      const messageFromBody = typeof result?.message === 'string' ? result.message.trim() : ''
+      const message = messageFromBody
+        || (isUnauthorized ? 'API 키 인증 오류 또는 연결 실패' : '분석 기능이 일시적으로 중지되었습니다.')
+
+      console.error('[functions/analyzeImage] OpenAI request failed', {
+        status: response.status,
+        label: isUnauthorized ? 'Unauthorized' : `HTTP_${response.status}`,
+        detail: responseText || null,
+        requestId,
+      })
+
+      return buildErrorResponse({
+        error: isUnauthorized ? 'OPENAI_UNAUTHORIZED' : 'OPENAI_REQUEST_FAILED',
+        message,
+        requestId,
+        status: isUnauthorized ? 401 : 502,
+      })
+    }
+
+    if (!result) {
+      console.error('[functions/analyzeImage] Empty response payload', { responseText, requestId })
+      return buildErrorResponse({
+        error: 'OPENAI_EMPTY_RESPONSE',
+        message: '분석 기능이 일시적으로 중지되었습니다.',
+        requestId,
+      })
+    }
+
     const messageContent = result?.choices?.[0]?.message?.content
 
     if (!messageContent) {
-      console.error('[functions/analyzeImage] Missing message content', result)
-      return jsonResponse({ error: 'OPENAI_EMPTY_RESPONSE', requestId }, { status: 502 })
+      console.error('[functions/analyzeImage] Missing message content', { result, requestId })
+      return buildErrorResponse({
+        error: 'OPENAI_EMPTY_RESPONSE',
+        message: '분석 기능이 일시적으로 중지되었습니다.',
+        requestId,
+      })
     }
 
     let parsed
     if (typeof messageContent === 'string') {
       try {
         parsed = JSON.parse(messageContent)
-      } catch (error) {
-        console.error('[functions/analyzeImage] Failed to parse string content', error, messageContent)
-        return jsonResponse({ error: 'OPENAI_RESPONSE_INVALID', requestId }, { status: 502 })
+      } catch (parseError) {
+        console.error('[functions/analyzeImage] Failed to parse string content', parseError, messageContent)
+        return buildErrorResponse({
+          error: 'OPENAI_RESPONSE_INVALID',
+          message: '분석 기능이 일시적으로 중지되었습니다.',
+          requestId,
+        })
       }
     } else if (Array.isArray(messageContent)) {
       const text = messageContent.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('\n')
       try {
         parsed = JSON.parse(text)
-      } catch (error) {
-        console.error('[functions/analyzeImage] Failed to parse segmented content', error, text)
-        return jsonResponse({ error: 'OPENAI_RESPONSE_INVALID', requestId }, { status: 502 })
+      } catch (parseError) {
+        console.error('[functions/analyzeImage] Failed to parse segmented content', parseError, text)
+        return buildErrorResponse({
+          error: 'OPENAI_RESPONSE_INVALID',
+          message: '분석 기능이 일시적으로 중지되었습니다.',
+          requestId,
+        })
       }
     } else {
-      console.error('[functions/analyzeImage] Unsupported content format', messageContent)
-      return jsonResponse({ error: 'OPENAI_RESPONSE_INVALID', requestId }, { status: 502 })
+      console.error('[functions/analyzeImage] Unsupported content format', { messageContent, requestId })
+      return buildErrorResponse({
+        error: 'OPENAI_RESPONSE_INVALID',
+        message: '분석 기능이 일시적으로 중지되었습니다.',
+        requestId,
+      })
     }
 
     const rawTitle = typeof parsed?.title === 'string' ? parsed.title.trim() : ''
@@ -261,10 +379,17 @@ export async function onRequestPost(context) {
       keywords,
       requestId: typeof result?.id === 'string' ? result.id : requestId,
       provider: 'openai',
-      model: typeof result?.model === 'string' ? result.model : 'gpt-5-vision',
+      model: typeof result?.model === 'string' ? result.model : 'gpt-4o',
     })
   } catch (error) {
-    console.error('[functions/analyzeImage] Unexpected error', error)
-    return jsonResponse({ error: 'OPENAI_UNHANDLED_ERROR', requestId }, { status: 500 })
+    const isNetworkError = error?.name === 'TypeError' || /fetch/i.test(error?.message || '')
+    const label = isNetworkError ? 'FetchError' : error?.name || 'UnhandledError'
+    console.error('[functions/analyzeImage] Unexpected error', { label, error, requestId })
+    return buildErrorResponse({
+      error: 'OPENAI_UNHANDLED_ERROR',
+      message: isNetworkError ? '분석 기능이 일시적으로 중지되었습니다.' : '분석 기능이 일시적으로 중지되었습니다.',
+      requestId,
+      status: isNetworkError ? 502 : 500,
+    })
   }
 }
