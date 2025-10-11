@@ -2381,46 +2381,76 @@ app.get('/api/challenge/certificate', async (c) => {
 })
 
 const OPENAI_KEYWORD_FALLBACK_POOL: string[] = [
-  '이미지',
-  '사진',
-  '디자인',
   '그래픽',
   '브랜딩',
   '콘텐츠',
-  '마케팅',
   '소셜미디어',
   '프로모션',
   '브랜드',
-  '광고',
   '썸네일',
   '배너',
-  '포스터',
   '프레젠테이션',
   '템플릿',
   '고화질',
-  '투명 배경',
   '크롭',
-  '배경 제거',
   '비주얼',
   '크리에이티브',
   '트렌디',
   '감각적인',
   '현대적인',
-  '컬러 팔레트',
   '하이라이트',
   '제품 촬영',
   '모델 컷',
   'SNS 콘텐츠',
-  '웹디자인',
   'e커머스',
   '프리미엄',
-  '상업용',
   '브랜드 아이덴티티',
   '컨셉 아트',
   '라이프스타일',
   '무드 보드',
   '스토리텔링',
+  '프로덕트',
+  '소셜 캠페인',
+  '브랜드 캠페인',
+  '비주얼 아이덴티티',
+  '랜딩페이지',
+  '콘텐츠 전략',
+  '온라인 쇼핑',
+  '트렌드',
+  '스타일링',
+  '크리에이터',
+  '비즈니스',
+  '세일즈',
+  '프리미엄 감성',
+  '하이라이트 조명',
+  '브랜드 스토리',
+  '라이프스타일 무드',
 ]
+
+const BANNED_KEYWORD_FRAGMENTS: string[] = [
+  '비율',
+  '톤',
+  '팔레트',
+  '색상코드',
+  '픽셀',
+  '배경',
+  '구도',
+  '정렬',
+  '디자인',
+  '상품',
+  '포스터',
+  '마케팅',
+  '광고',
+  '이미지',
+  'ai',
+  '일러스트',
+  '파일',
+  '사진',
+]
+
+const BANNED_KEYWORD_LABEL = BANNED_KEYWORD_FRAGMENTS.map((fragment) =>
+  fragment === 'ai' ? 'AI' : fragment,
+).join(', ')
 
 const KEYWORD_TEXT_SPLIT_PATTERN = /[,\n，、·•|\/\\;:()\[\]{}<>!?！？]+/
 
@@ -2494,6 +2524,8 @@ const buildKeywordListFromOpenAI = (
     const normalized = normalizeKeywordCandidate(value)
     if (!normalized) return
     if (normalized.length > 48) return
+    const normalizedLower = normalized.toLowerCase()
+    if (BANNED_KEYWORD_FRAGMENTS.some((fragment) => normalizedLower.includes(fragment))) return
     if (seen.has(normalized)) return
     seen.add(normalized)
     keywords.push(normalized)
@@ -2574,6 +2606,12 @@ app.post('/api/analyze', async (c) => {
 }
 조건:
 - keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
+- 키워드는 명사 또는 짧은 구로 작성하고, 눈에 보이는 사물·인물·공간·색감·질감·문자·기호 중심으로 선정합니다.
+- 여러 장의 이미지가 함께 제공되면 하나의 세트로 보고 공통된 시각 요소를 반영합니다.
+- 원본과 편집된 결과물이 함께 보이면 모두 참고해 공통 맥락을 도출합니다.
+- 추상적 감정어나 해석형 단어는 최대 5개까지만 포함합니다.
+- 아래 금지어는 절대 포함하지 않습니다: ${BANNED_KEYWORD_LABEL}.
+- 숫자나 특수기호는 실제 시각 요소로 확인될 때에만 그대로 사용합니다.
 - 제목은 한국어로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
 - 요약은 이미지의 메시지, 분위기, 활용처를 한 문장으로 설명합니다.
 - 필요 시 색상, 분위기, 활용 매체 등을 키워드에 조합합니다.`

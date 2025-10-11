@@ -1,54 +1,82 @@
 const FALLBACK_KEYWORDS = [
-  '이미지',
-  '사진',
-  '디자인',
   '그래픽',
   '브랜딩',
   '콘텐츠',
-  '마케팅',
-  '소셜 미디어',
+  '소셜미디어',
   '프로모션',
   '브랜드',
-  '광고',
   '썸네일',
   '배너',
-  '포스터',
   '프레젠테이션',
   '템플릿',
   '고화질',
-  '투명 배경',
-  '배경 제거',
   '크롭',
   '비주얼',
   '크리에이티브',
   '트렌디',
   '감각적인',
   '현대적인',
-  '컬러 팔레트',
+  '하이라이트',
   '제품 촬영',
-  '브랜드 아이덴티티',
+  '모델 컷',
   'SNS 콘텐츠',
-  '웹디자인',
   'e커머스',
   '프리미엄',
-  '스토리텔링',
-  '모델 컷',
-  '프로덕트',
+  '브랜드 아이덴티티',
+  '컨셉 아트',
+  '라이프스타일',
   '무드 보드',
+  '스토리텔링',
+  '프로덕트',
+  '소셜 캠페인',
+  '브랜드 캠페인',
+  '비주얼 아이덴티티',
+  '랜딩페이지',
+  '콘텐츠 전략',
+  '온라인 쇼핑',
   '트렌드',
   '스타일링',
   '크리에이터',
   '비즈니스',
   '세일즈',
-  '디지털 마케팅',
-  '브랜드 캠페인',
-  '온라인 쇼핑',
-  '이커머스',
-  '소셜 캠페인',
-  '비주얼 아이덴티티',
-  '랜딩페이지',
-  '콘텐츠 전략',
+  '프리미엄 감성',
+  '하이라이트 조명',
+  '브랜드 스토리',
+  '라이프스타일 무드',
 ]
+
+const BANNED_KEYWORD_FRAGMENTS = [
+  '비율',
+  '톤',
+  '팔레트',
+  '색상코드',
+  '픽셀',
+  '배경',
+  '구도',
+  '정렬',
+  '디자인',
+  '상품',
+  '포스터',
+  '마케팅',
+  '광고',
+  '이미지',
+  'ai',
+  '일러스트',
+  '파일',
+  '사진',
+]
+
+const BANNED_KEYWORD_LABEL = BANNED_KEYWORD_FRAGMENTS.map((fragment) =>
+  fragment === 'ai' ? 'AI' : fragment,
+).join(', ')
+
+const KEYWORD_RULE_PROMPT =
+  '여러 장의 장면이 함께 제공되면 하나의 세트로 보고 공통된 시각 요소를 반영해. ' +
+  '원본과 편집된 결과물이 함께 보이면 모두 참고해 공통 맥락을 정리해. ' +
+  '눈에 보이는 사물·인물·공간·색감·질감·문자·기호 중심으로 한글 키워드를 작성하고, ' +
+  '추상적 감정이나 해석형 표현은 최대 5개까지만 포함해. ' +
+  `다음 금지어는 절대 포함하지 마: ${BANNED_KEYWORD_LABEL}. ` +
+  '숫자나 특수기호는 실제 시각 요소로 확인될 때에만 그대로 사용해.'
 
 const KEYWORD_COUNT = 25
 
@@ -75,6 +103,8 @@ function cleanKeyword(value) {
 function addKeywordUnique(list, value, seen) {
   const keyword = cleanKeyword(value)
   if (!keyword || keyword.length > 48) return
+  const lower = keyword.toLowerCase()
+  if (BANNED_KEYWORD_FRAGMENTS.some((fragment) => lower.includes(fragment))) return
   if (seen.has(keyword)) return
   seen.add(keyword)
   list.push(keyword)
@@ -289,7 +319,7 @@ export async function onRequestPost(context) {
               {
                 parts: [
                   {
-                    text: '이 이미지를 분석해 연관된 핵심 키워드 50개를 한국어로 생성해줘. 쉼표로 구분해서.',
+                    text: `${KEYWORD_RULE_PROMPT} 눈에 보이는 요소를 기반으로 한국어 키워드 50개를 생성하고 쉼표로 구분해.`,
                   },
                   {
                     inline_data: {
@@ -330,14 +360,14 @@ export async function onRequestPost(context) {
       if (gemini.success) {
         userContent.push({
           type: 'text',
-          text: `다음 키워드를 참고해서 중복 없이 핵심적인 SEO 키워드 25개와 자연스럽고 매력적인 제목 1개를 한국어로 작성해줘. 키워드는 번호와 함께 줄바꿈으로 구분해줘: ${gemini.keywords
+          text: `다음 키워드를 참고해서 중복 없이 핵심적인 SEO 키워드 25개와 자연스럽고 매력적인 제목 1개를 한국어로 작성해줘. ${KEYWORD_RULE_PROMPT} 키워드는 번호와 함께 줄바꿈으로 구분해줘: ${gemini.keywords
             .slice(0, 50)
             .join(', ')}`,
         })
       } else {
         userContent.push({
           type: 'text',
-          text: '이 이미지를 분석해 핵심 SEO 키워드 25개와 자연스러운 SEO 제목 1개를 한국어로 작성해줘. 키워드는 번호와 함께 줄바꿈으로 구분해줘.',
+          text: `이 이미지를 분석해 핵심 SEO 키워드 25개와 자연스러운 SEO 제목 1개를 한국어로 작성해줘. ${KEYWORD_RULE_PROMPT} 키워드는 번호와 함께 줄바꿈으로 구분해줘.`,
         })
       }
       userContent.push({
@@ -360,8 +390,7 @@ export async function onRequestPost(context) {
           messages: [
             {
               role: 'system',
-              content:
-                '너는 미리캔버스 SEO 전문가야. 이미지를 기반으로 중복 없는 핵심 SEO 키워드 25개와 간결하면서 매력적인 한국어 SEO 제목 1개를 만들어야 해. 응답은 명확하게 키워드와 제목을 구분해서 제공해.',
+              content: `너는 미리캔버스 SEO 전문가야. ${KEYWORD_RULE_PROMPT} 이미지를 기반으로 중복 없는 핵심 SEO 키워드 25개와 간결하면서 매력적인 한국어 SEO 제목 1개를 반드시 만들어. 응답은 명확하게 키워드와 제목을 구분해서 제공해.`,
             },
             {
               role: 'user',
