@@ -1864,14 +1864,14 @@ body.is-modal-open {
 }
 
 .login-modal__option--google {
-  background: #ffffff;
-  border-color: #fef568;
-  color: #2f2400;
+  background: #fef568;
+  border-color: #f0d600;
+  color: #404040;
   justify-content: flex-start;
 }
 
 .login-modal__option--google:hover {
-  background: #fffbe3;
+  background: #fff181;
   transform: translateY(-1px);
   box-shadow: 0 16px 30px rgba(63, 51, 37, 0.2);
 }
