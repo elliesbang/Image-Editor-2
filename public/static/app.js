@@ -3548,22 +3548,6 @@ function announceAdminDashboardAccess(options = {}) {
     return
   }
 
-  if (elements.adminSecretToggle instanceof HTMLButtonElement) {
-    elements.adminSecretToggle.addEventListener('click', () => {
-      if (!(elements.adminSecretInput instanceof HTMLInputElement)) {
-        return
-      }
-      const isHidden = elements.adminSecretInput.type === 'password'
-      elements.adminSecretInput.type = isHidden ? 'text' : 'password'
-      if (elements.adminSecretIcon instanceof HTMLElement) {
-        elements.adminSecretIcon.classList.toggle('ri-eye-line', isHidden)
-        elements.adminSecretIcon.classList.toggle('ri-eye-off-line', !isHidden)
-      }
-      elements.adminSecretToggle.dataset.state = isHidden ? 'visible' : 'hidden'
-      elements.adminSecretToggle.setAttribute('aria-pressed', isHidden ? 'true' : 'false')
-    })
-  }
-
   const prompt = getOrCreateAdminDashboardPrompt()
   prompt.hidden = false
   window.requestAnimationFrame(() => {
@@ -8785,6 +8769,22 @@ function attachEventListeners() {
     elements.adminLoginButton.addEventListener('click', (event) => {
       event.preventDefault()
       openAdminModal()
+    })
+  }
+
+  if (elements.adminSecretToggle instanceof HTMLButtonElement) {
+    elements.adminSecretToggle.addEventListener('click', () => {
+      if (!(elements.adminSecretInput instanceof HTMLInputElement)) {
+        return
+      }
+      const isHidden = elements.adminSecretInput.type === 'password'
+      elements.adminSecretInput.type = isHidden ? 'text' : 'password'
+      if (elements.adminSecretIcon instanceof HTMLElement) {
+        elements.adminSecretIcon.classList.toggle('ri-eye-line', isHidden)
+        elements.adminSecretIcon.classList.toggle('ri-eye-off-line', !isHidden)
+      }
+      elements.adminSecretToggle.dataset.state = isHidden ? 'visible' : 'hidden'
+      elements.adminSecretToggle.setAttribute('aria-pressed', isHidden ? 'true' : 'false')
     })
   }
 

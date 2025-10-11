@@ -1,8 +1,19 @@
+import type { Context } from 'hono'
 import { jsxRenderer } from 'hono/jsx-renderer'
 
-const ADMIN_SECRET_KEY = import.meta.env.VITE_ADMIN_SECRET_KEY ?? ''
+const resolveAdminSecretKey = (c?: Context) => {
+  const runtimeSecret = typeof c?.env?.VITE_ADMIN_SECRET_KEY === 'string' ? c.env.VITE_ADMIN_SECRET_KEY.trim() : ''
+  if (runtimeSecret) {
+    return runtimeSecret
+  }
 
-export const renderer = jsxRenderer(({ children }) => {
+  const buildTimeSecret = typeof import.meta.env.VITE_ADMIN_SECRET_KEY === 'string' ? import.meta.env.VITE_ADMIN_SECRET_KEY : ''
+  return buildTimeSecret
+}
+
+export const renderer = jsxRenderer(({ children }, c) => {
+  const adminSecretKey = resolveAdminSecretKey(c)
+
   return (
     <html lang="ko">
       <head>
@@ -31,7 +42,7 @@ export const renderer = jsxRenderer(({ children }) => {
         {children}
         <script
           dangerouslySetInnerHTML={{
-            __html: `window.__ADMIN_SECRET_KEY__ = ${JSON.stringify(ADMIN_SECRET_KEY)};`,
+            __html: `window.__ADMIN_SECRET_KEY__ = ${JSON.stringify(adminSecretKey)};`,
           }}
         />
         <script type="module" src="/static/app.js"></script>
