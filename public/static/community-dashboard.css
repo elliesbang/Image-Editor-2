@@ -22,7 +22,7 @@ a:focus,
 button:focus,
 select:focus,
 input:focus {
-  outline: 2px solid rgba(255, 211, 49, 0.85);
+  outline: 2px solid rgba(254, 245, 104, 0.85);
   outline-offset: 2px;
 }
 
@@ -32,7 +32,7 @@ input:focus {
   left: 0;
   right: 0;
   height: 60px;
-  background-color: #ffd331;
+  background-color: #fef568;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -128,7 +128,7 @@ input:focus {
 
 .dashboard-form button[type='submit'],
 .certificate-button {
-  background-color: #ffd331;
+  background-color: #fef568;
   color: #333333;
   border: none;
   border-radius: 10px;
@@ -140,7 +140,7 @@ input:focus {
 
 .dashboard-form button[type='submit']:hover,
 .certificate-button:hover {
-  background-color: rgba(255, 211, 49, 0.85);
+  background-color: #fef568;
 }
 
 .dashboard-form button[type='submit'] {
@@ -163,7 +163,7 @@ input:focus {
 
 .progress-fill {
   height: 10px;
-  background: #ffd331;
+  background: #fef568;
   border-radius: 6px;
   transition: width 0.3s ease-in-out;
   width: 0%;
@@ -208,7 +208,7 @@ input:focus {
 
 .certificate-template {
   background-color: #ffffff;
-  border: 4px solid #ffd331;
+  border: 4px solid #fef568;
   border-radius: 32px;
   padding: 40px;
   text-align: center;

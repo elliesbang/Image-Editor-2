@@ -131,7 +131,7 @@ function renderCommunityDashboardPage() {
   <head>
     <meta charSet="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#ffd331" />
+    <meta name="theme-color" content="#fef568" />
     <meta
       name="description"
       content="Elliesbang Image Editor와 함께하는 3주(15일) 미치나 챌린지를 공개 미리보기 모드에서 체험해보세요."
@@ -256,7 +256,7 @@ function renderAdminManagementPage() {
         font-family: inherit;
       }
       .admin-header {
-        background: #ffd331;
+        background: #fef568;
         padding: 20px 24px;
         font-weight: 600;
         font-size: 1.2rem;
@@ -270,7 +270,7 @@ function renderAdminManagementPage() {
       .admin-sidebar {
         width: 240px;
         background: #ffffff;
-        border-right: 2px solid #ffd331;
+        border-right: 2px solid #fef568;
         padding: 20px 16px;
         display: flex;
         flex-direction: column;
@@ -288,11 +288,11 @@ function renderAdminManagementPage() {
         transition: background 0.2s ease, box-shadow 0.2s ease;
       }
       .admin-sidebar button:hover {
-        background: rgba(255, 211, 49, 0.35);
+        background: #fef568;
         box-shadow: 0 4px 12px -8px rgba(0, 0, 0, 0.2);
       }
       .admin-sidebar button.is-active {
-        background: rgba(255, 211, 49, 0.95);
+        background: #fef568;
         box-shadow: 0 10px 18px -12px rgba(0, 0, 0, 0.35);
       }
       .admin-content {
@@ -302,7 +302,7 @@ function renderAdminManagementPage() {
       }
       .card {
         background: #ffffff;
-        border: 1px solid #ffd331;
+        border: 1px solid #fef568;
         border-radius: 14px;
         padding: 24px;
         margin-bottom: 28px;
@@ -332,7 +332,7 @@ function renderAdminManagementPage() {
         color: #333333;
       }
       .form-grid input[type="date"] {
-        border: 1px solid rgba(255, 211, 49, 0.8);
+        border: 1px solid rgba(254, 245, 104, 0.8);
         border-radius: 10px;
         padding: 10px 12px;
         font-size: 1rem;
@@ -346,7 +346,7 @@ function renderAdminManagementPage() {
         gap: 6px;
         border: none;
         border-radius: 10px;
-        background: #ffd331;
+        background: #fef568;
         color: #333333;
         padding: 10px 16px;
         font-weight: 600;
@@ -396,7 +396,7 @@ function renderAdminManagementPage() {
         padding: 6px 10px;
         border-radius: 999px;
         background: #fff1b3;
-        border: 1px solid #ffd331;
+        border: 1px solid #fef568;
         font-size: 0.85rem;
         color: #333333;
       }
@@ -409,7 +409,7 @@ function renderAdminManagementPage() {
         overflow-x: auto;
         margin-top: 18px;
         border-radius: 12px;
-        border: 1px solid rgba(255, 211, 49, 0.4);
+        border: 1px solid rgba(254, 245, 104, 0.4);
       }
       .admin-table {
         width: 100%;
@@ -423,7 +423,7 @@ function renderAdminManagementPage() {
         border-bottom: 1px solid rgba(0, 0, 0, 0.08);
       }
       .admin-table th {
-        background: rgba(255, 211, 49, 0.3);
+        background: rgba(254, 245, 104, 0.3);
         font-weight: 600;
       }
       .admin-table tbody tr:nth-child(even) {
@@ -480,10 +480,10 @@ function renderAdminManagementPage() {
         color: #333333;
       }
       .admin-upload input[type="file"] {
-        border: 1px dashed rgba(255, 211, 49, 0.6);
+        border: 1px dashed rgba(254, 245, 104, 0.6);
         border-radius: 12px;
         padding: 18px;
-        background: rgba(255, 211, 49, 0.1);
+        background: rgba(254, 245, 104, 0.1);
         cursor: pointer;
       }
       @media (max-width: 960px) {
@@ -496,7 +496,7 @@ function renderAdminManagementPage() {
           flex-wrap: wrap;
           gap: 8px;
           border-right: none;
-          border-bottom: 2px solid #ffd331;
+          border-bottom: 2px solid #fef568;
         }
         .admin-sidebar button {
           flex: 1 1 160px;

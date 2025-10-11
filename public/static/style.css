@@ -668,30 +668,30 @@ main.page {
 
 .btn:focus-visible,
 .btn-icon:focus-visible {
-  outline: 2px solid rgba(139, 92, 246, 0.65);
+  outline: 2px solid rgba(254, 245, 104, 0.65);
   outline-offset: 3px;
 }
 
 .btn--primary {
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
-  color: #fff;
-  box-shadow: 0 14px 40px rgba(124, 58, 237, 0.28);
+  background: #fef568;
+  color: #1f1a05;
+  box-shadow: 0 14px 40px rgba(254, 245, 104, 0.28);
 }
 
 .btn--primary:hover {
   transform: translateY(-2px);
-  box-shadow: 0 18px 44px rgba(124, 58, 237, 0.36);
+  box-shadow: 0 18px 44px rgba(254, 245, 104, 0.36);
 }
 
 .btn--brand {
-  background: linear-gradient(135deg, #ffd331 0%, #ffbe2e 100%);
+  background: #fef568;
   color: #1f1a05;
-  box-shadow: 0 14px 36px rgba(255, 211, 49, 0.35);
+  box-shadow: 0 14px 36px rgba(254, 245, 104, 0.35);
 }
 
 .btn--brand:hover {
   transform: translateY(-2px);
-  box-shadow: 0 18px 44px rgba(255, 211, 49, 0.45);
+  box-shadow: 0 18px 44px rgba(254, 245, 104, 0.45);
 }
 
 .btn--ghost {
@@ -1697,9 +1697,9 @@ main.page {
 .asset-card__button {
   flex: 1 1 auto;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(139, 92, 246, 0.35);
-  background: rgba(139, 92, 246, 0.12);
-  color: var(--heading);
+  border: 1px solid #fef568;
+  background: #fef568;
+  color: #1f1a05;
   font-size: 0.85rem;
   font-weight: 500;
   padding: 10px 12px;
@@ -1708,8 +1708,8 @@ main.page {
 }
 
 .asset-card__button:hover {
-  background: rgba(139, 92, 246, 0.22);
-  border-color: rgba(139, 92, 246, 0.55);
+  background: #fef568;
+  border-color: #fef568;
 }
 
 .asset-card__delete {
@@ -2081,7 +2081,7 @@ body.is-modal-open {
   padding: 36px 36px 28px;
   box-shadow: 0 32px 80px rgba(15, 23, 42, 0.45);
   color: #1f2937;
-  border: 1px solid rgba(255, 211, 49, 0.35);
+  border: 1px solid rgba(254, 245, 104, 0.35);
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -2105,7 +2105,7 @@ body.is-modal-open {
 
 .upgrade-modal__close:hover,
 .upgrade-modal__close:focus {
-  background: rgba(255, 211, 49, 0.65);
+  background: #fef568;
   transform: rotate(90deg);
   color: #1f1a05;
 }
@@ -2159,7 +2159,7 @@ body.is-modal-open {
 
 .plan-card {
   background: #fff;
-  border: 1px solid #ffd331;
+  border: 1px solid #fef568;
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
@@ -2176,12 +2176,12 @@ body.is-modal-open {
 }
 
 .plan-card[data-state='active'] {
-  box-shadow: 0 10px 24px rgba(255, 211, 49, 0.3);
+  box-shadow: 0 10px 24px rgba(254, 245, 104, 0.3);
   transform: translateY(-2px);
 }
 
 .plan-card.premium {
-  background: rgba(255, 211, 49, 0.1);
+  background: rgba(254, 245, 104, 0.1);
 }
 
 .plan-card h3 {
@@ -2219,7 +2219,7 @@ body.is-modal-open {
   position: absolute;
   left: 0;
   top: 0;
-  color: #ffd331;
+  color: #fef568;
   font-weight: 700;
   line-height: 1;
 }
@@ -2232,19 +2232,19 @@ body.is-modal-open {
   margin-top: auto;
   padding: 10px 16px;
   border-radius: 999px;
-  border: 1px solid #ffd331;
-  background: #ffd331;
+  border: 1px solid #fef568;
+  background: #fef568;
   color: #1f1a05;
   font-weight: 600;
   font-size: 0.95rem;
   cursor: pointer;
   transition: transform var(--transition), box-shadow var(--transition), opacity var(--transition);
-  box-shadow: 0 2px 6px rgba(255, 211, 49, 0.3);
+  box-shadow: 0 2px 6px rgba(254, 245, 104, 0.3);
 }
 
 .plan-card__button:hover:not([disabled]) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(255, 211, 49, 0.35);
+  box-shadow: 0 6px 16px rgba(254, 245, 104, 0.35);
 }
 
 .plan-card__button:disabled {
@@ -2280,9 +2280,9 @@ body.is-modal-open {
 }
 
 .upgrade-plan-card[data-state='active'] {
-  border-color: rgba(255, 211, 49, 0.85);
+  border-color: rgba(254, 245, 104, 0.85);
   background: #fff6d0;
-  box-shadow: 0 26px 60px rgba(255, 211, 49, 0.32);
+  box-shadow: 0 26px 60px rgba(254, 245, 104, 0.32);
 }
 
 .upgrade-plan-card__name {
@@ -2359,7 +2359,7 @@ body.is-modal-open {
   justify-content: center;
   padding: 8px 16px;
   border-radius: 999px;
-  background: rgba(255, 211, 49, 0.25);
+  background: rgba(254, 245, 104, 0.25);
   color: #b45309;
   font-weight: 600;
   font-size: 0.85rem;
@@ -2376,7 +2376,7 @@ body.is-modal-open {
   margin: 0;
   font-size: 0.85rem;
   color: #6b7280;
-  background: rgba(255, 211, 49, 0.22);
+  background: rgba(254, 245, 104, 0.22);
   border-radius: 16px;
   padding: 12px 16px;
 }
@@ -2694,8 +2694,8 @@ body.is-modal-open {
   border: none;
   border-radius: var(--radius-sm);
   padding: 10px 16px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
-  color: #fff;
+  background: #fef568;
+  color: #1f1a05;
   font-weight: 600;
   cursor: pointer;
   transition: transform var(--transition), box-shadow var(--transition), opacity var(--transition);
@@ -2709,7 +2709,7 @@ body.is-modal-open {
 
 .cookie-banner__button:not([disabled]):hover {
   transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(124, 58, 237, 0.3);
+  box-shadow: 0 12px 24px rgba(254, 245, 104, 0.3);
 }
 
 .results-toolbar {

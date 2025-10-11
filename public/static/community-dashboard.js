@@ -316,7 +316,7 @@ document.addEventListener('DOMContentLoaded', () => {
           {
             label: '제출률 (%)',
             data,
-            backgroundColor: '#ffd331',
+            backgroundColor: '#fef568',
             borderRadius: 8,
             borderSkipped: false,
           },
