@@ -1477,14 +1477,14 @@ async function evaluateCompletions(env: Bindings) {
   return updated
 }
 
-async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
+async function requireAdminSession(c: Context<{ Bindings: Bindings }>): Promise<string | Response | null> {
   const config = getAdminConfig(c.env)
   if (!config) {
     return null
   }
   const token = getCookie(c, ADMIN_SESSION_COOKIE)
   if (!token) {
-    return null
+    return c.redirect('/?expired=true')
   }
   try {
     const payload = (await verify(token, config.sessionSecret)) as AdminSessionPayload
@@ -1515,6 +1515,10 @@ async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
   }
 }
 
+function isResponse(result: unknown): result is Response {
+  return result instanceof Response
+}
+
 async function createAdminSession(
   c: Context<{ Bindings: Bindings }>,
   email: string,
@@ -1525,7 +1529,7 @@ async function createAdminSession(
     throw new Error('SESSION_SECRET_NOT_CONFIGURED')
   }
   const normalizedEmail = email.trim().toLowerCase()
-  const expiresInSeconds = 60 * 60 * 8
+  const expiresInSeconds = 60 * 60 * 24 * 7
   const issuedAt = Math.floor(Date.now() / 1000)
   const exp = issuedAt + expiresInSeconds
   const token = await sign(
@@ -1542,16 +1546,16 @@ async function createAdminSession(
   )
   setCookie(c, ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
-    sameSite: 'Strict',
     secure: true,
+    sameSite: 'None',
     path: '/',
-    maxAge: expiresInSeconds,
+    maxAge: 60 * 60 * 24 * 7,
   })
   return { exp, iat: issuedAt }
 }
 
 function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
+  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'None' })
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1590,6 +1594,9 @@ app.use(renderer)
 
 app.get('/api/auth/session', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
 })
 
@@ -1611,6 +1618,9 @@ app.get('/api/michina/config', async (c) => {
 
 app.get('/api/admin/michina/period', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -1620,6 +1630,9 @@ app.get('/api/admin/michina/period', async (c) => {
 
 app.post('/api/admin/michina/period', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -1643,6 +1656,9 @@ app.post('/api/admin/michina/period', async (c) => {
 
 app.get('/api/admin/michina/challengers', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -1656,6 +1672,9 @@ app.get('/api/admin/michina/challengers', async (c) => {
 
 app.post('/api/admin/michina/challengers', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -1729,6 +1748,9 @@ app.post('/api/michina/role/sync', async (c) => {
 
 app.get('/api/users', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -1757,10 +1779,10 @@ app.get('/auth/google', async (c) => {
   const state = generateRandomState()
   setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
     httpOnly: true,
-    sameSite: 'Lax',
     secure: true,
+    sameSite: 'None',
     path: '/',
-    maxAge: 600,
+    maxAge: 60 * 60 * 24 * 7,
   })
 
   const params = new URLSearchParams({
@@ -1779,7 +1801,7 @@ app.get('/auth/google', async (c) => {
 
 app.get('/api/auth/callback/google', async (c) => {
   const storedState = getCookie(c, ADMIN_OAUTH_STATE_COOKIE) ?? ''
-  deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'Lax', secure: true })
+  deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'None', secure: true })
 
   const stateParam = (c.req.query('state') || '').trim()
   if (!stateParam || !storedState || stateParam !== storedState) {
@@ -2081,6 +2103,9 @@ app.get('/api/auth/callback/google', async (c) => {
 
 app.post('/api/admin/challenge/import', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -2135,6 +2160,9 @@ app.post('/api/admin/challenge/import', async (c) => {
 
 app.get('/api/admin/challenge/participants', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -2144,6 +2172,9 @@ app.get('/api/admin/challenge/participants', async (c) => {
 
 app.post('/api/admin/challenge/run-completion-check', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
@@ -2153,6 +2184,9 @@ app.post('/api/admin/challenge/run-completion-check', async (c) => {
 
 app.get('/api/admin/challenge/completions', async (c) => {
   const adminEmail = await requireAdminSession(c)
+  if (isResponse(adminEmail)) {
+    return adminEmail
+  }
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }

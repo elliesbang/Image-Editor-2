@@ -71,13 +71,13 @@ const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
 const GOOGLE_ALLOWED_ORIGIN = 'https://image-editor-3.pages.dev'
 const GOOGLE_SIGNIN_TEXT = {
-  default: 'Google 계정으로 계속하기',
-  idle: 'Google 계정으로 계속하기',
-  initializing: 'Google 로그인 준비 중…',
+  default: '구글로 로그인하기',
+  idle: '구글로 로그인하기',
+  initializing: '구글로 로그인하기',
   loading: 'Google 계정을 확인하는 중…',
-  disabled: 'Google 로그인 준비 중',
+  disabled: '구글로 로그인하기',
   error: 'Google 로그인 다시 시도',
-  retrying: 'Google 로그인 자동 재시도 준비 중…',
+  retrying: 'Google 로그인 자동 재시도 중…',
 }
 
 const ENABLE_GOOGLE_LOGIN = true
@@ -4912,7 +4912,7 @@ async function handleGoogleLogin(event) {
     runtime.google.retryCount = 0
     runtime.google.latestCredential = ''
 
-    setGoogleButtonState('loading', 'Google 로그인 준비 중…')
+    setGoogleButtonState('loading')
     setStatus('Google 로그인 창을 열고 있습니다…', 'info', 0)
 
     const codeClient = await ensureGoogleClient()
