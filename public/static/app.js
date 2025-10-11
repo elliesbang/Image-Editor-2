@@ -3792,7 +3792,7 @@ function handleAdminLogin(event) {
   window.location.href = '/?admin=1'
 }
 
-async async function handleAdminImport(event) {
+async function handleAdminImport(event) {
   event.preventDefault()
   if (!state.admin.isLoggedIn) {
     setStatus('관리자 로그인 후 사용할 수 있습니다.', 'danger')
