@@ -8329,6 +8329,13 @@ function fallbackSanitizeSvg(svgText) {
     .replace(/stroke-dasharray="[^"]*"/g, '')
     .replace(/stroke-dashoffset="[^"]*"/g, '')
     .replace(/stroke-miterlimit="[^"]*"/g, '')
+    .replace(/style=(['"])(.*?)\1/gi, (match, quote, styleValue) => {
+      const filtered = filterStyleWithoutStroke(styleValue)
+      if (!filtered) {
+        return ''
+      }
+      return `style=${quote}${filtered}${quote}`
+    })
     .replace(/<g>\s*<\/g>/g, '')
 }
 
@@ -8356,17 +8363,46 @@ function getStyleProperty(element, property) {
   return ''
 }
 
+const STROKE_STYLE_PROPERTIES = new Set([
+  'stroke',
+  'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-opacity',
+  'stroke-dasharray',
+  'stroke-dashoffset',
+  'stroke-miterlimit',
+])
+
+function filterStyleWithoutStroke(styleText) {
+  if (typeof styleText !== 'string' || styleText.trim() === '') {
+    return ''
+  }
+
+  const kept = []
+  const declarations = styleText.split(';')
+  for (const declaration of declarations) {
+    if (!declaration) continue
+    const trimmed = declaration.trim()
+    if (!trimmed) continue
+    const [prop, ...rest] = trimmed.split(':')
+    if (!prop) continue
+    const normalizedProp = prop.trim().toLowerCase()
+    if (!normalizedProp || STROKE_STYLE_PROPERTIES.has(normalizedProp)) {
+      continue
+    }
+    const value = rest.join(':').trim()
+    if (!value) {
+      continue
+    }
+    kept.push(`${prop.trim()}:${value}`)
+  }
+
+  return kept.join('; ')
+}
+
 function stripStrokeFromElement(element) {
-  const attributesToRemove = [
-    'stroke',
-    'stroke-width',
-    'stroke-linecap',
-    'stroke-linejoin',
-    'stroke-opacity',
-    'stroke-dasharray',
-    'stroke-dashoffset',
-    'stroke-miterlimit',
-  ]
+  const attributesToRemove = Array.from(STROKE_STYLE_PROPERTIES)
   for (const attribute of attributesToRemove) {
     element.removeAttribute(attribute)
   }
@@ -8374,31 +8410,7 @@ function stripStrokeFromElement(element) {
   if (!style) {
     return
   }
-  const filtered = style
-    .split(';')
-    .map((declaration) => declaration.trim())
-    .filter((declaration) => {
-      if (!declaration) return false
-      const [prop, value] = declaration.split(':').map((part) => (part || '').trim())
-      if (!prop) return false
-      const normalized = prop.toLowerCase()
-      if (
-        [
-          'stroke',
-          'stroke-width',
-          'stroke-linecap',
-          'stroke-linejoin',
-          'stroke-opacity',
-          'stroke-dasharray',
-          'stroke-dashoffset',
-          'stroke-miterlimit',
-        ].includes(normalized)
-      ) {
-        return false
-      }
-      return value !== ''
-    })
-    .join('; ')
+  const filtered = filterStyleWithoutStroke(style)
   if (filtered) {
     element.setAttribute('style', filtered)
   } else {
@@ -8731,12 +8743,9 @@ function cleanSvgBeforeDownload(svgText) {
 
       if (element.hasAttribute('style')) {
         const style = element.getAttribute('style') || ''
-        const filtered = style
-          .split(';')
-          .map((rule) => rule.trim())
-          .filter((rule) => rule && !/^stroke(-|$)/i.test(rule.replace(/\s*/g, '')))
-        if (filtered.length > 0) {
-          element.setAttribute('style', filtered.join('; '))
+        const filtered = filterStyleWithoutStroke(style)
+        if (filtered) {
+          element.setAttribute('style', filtered)
         } else {
           element.removeAttribute('style')
         }
