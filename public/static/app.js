@@ -906,6 +906,215 @@ const elements = {
 let statusTimer = null
 let svgOptimizerReadyPromise = null
 
+const STROKE_CONVERSION_WORKER_SRC = '/static/svg-stroke-worker.js'
+let strokeWorkerReadyPromise = null
+let strokeWorkerInstance = null
+const strokeWorkerCallbacks = new Map()
+
+function resetStrokeWorker(error) {
+  if (strokeWorkerInstance) {
+    try {
+      strokeWorkerInstance.terminate()
+    } catch (workerError) {
+      console.warn('stroke 변환 실패', workerError)
+    }
+  }
+  strokeWorkerInstance = null
+  strokeWorkerReadyPromise = null
+
+  if (error instanceof Error) {
+    strokeWorkerCallbacks.forEach((entry) => {
+      try {
+        entry.reject?.(error)
+      } catch (callbackError) {
+        console.warn('stroke 변환 실패', callbackError)
+      }
+    })
+    strokeWorkerCallbacks.clear()
+  }
+}
+
+function handleStrokeWorkerMessage(event) {
+  const data = event?.data
+  if (!data || typeof data !== 'object') {
+    return
+  }
+
+  if (data.type === 'ready') {
+    return
+  }
+
+  const callback = data.id ? strokeWorkerCallbacks.get(data.id) : null
+
+  if (data.type === 'progress') {
+    if (callback && typeof callback.onProgress === 'function') {
+      const value = Number.isFinite(data.value) ? data.value : Number.parseFloat(data.value)
+      const clamped = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
+      try {
+        callback.onProgress(clamped, data.stage)
+      } catch (error) {
+        console.warn('stroke 변환 실패', error)
+      }
+    }
+    return
+  }
+
+  if (!callback) {
+    return
+  }
+
+  strokeWorkerCallbacks.delete(data.id)
+
+  if (data.type === 'result') {
+    try {
+      callback.resolve(typeof data.svg === 'string' ? data.svg : '')
+    } catch (error) {
+      console.warn('stroke 변환 실패', error)
+    }
+    return
+  }
+
+  if (data.type === 'error') {
+    const message = typeof data.message === 'string' ? data.message : 'stroke 변환 실패'
+    callback.reject(new Error(message))
+  }
+}
+
+function ensureStrokeWorker() {
+  if (strokeWorkerInstance && strokeWorkerReadyPromise) {
+    return strokeWorkerReadyPromise
+  }
+
+  if (strokeWorkerReadyPromise) {
+    return strokeWorkerReadyPromise
+  }
+
+  if (typeof Worker !== 'function') {
+    return Promise.reject(new Error('Web Worker not supported'))
+  }
+
+  strokeWorkerReadyPromise = new Promise((resolve, reject) => {
+    try {
+      const worker = new Worker(STROKE_CONVERSION_WORKER_SRC)
+
+      const handleReadyMessage = (event) => {
+        if (!event || !event.data) {
+          return
+        }
+        const { data } = event
+        if (data && data.type === 'ready') {
+          worker.removeEventListener('message', handleReadyMessage)
+          worker.removeEventListener('error', handleReadyError)
+          strokeWorkerInstance = worker
+          worker.addEventListener('message', handleStrokeWorkerMessage)
+          worker.addEventListener('error', (errorEvent) => {
+            const normalizedError =
+              errorEvent instanceof ErrorEvent && errorEvent.message
+                ? new Error(errorEvent.message)
+                : errorEvent instanceof Error
+                  ? errorEvent
+                  : new Error('stroke 변환 실패')
+            resetStrokeWorker(normalizedError)
+          })
+          resolve(worker)
+          return
+        }
+
+        handleStrokeWorkerMessage(event)
+      }
+
+      const handleReadyError = (errorEvent) => {
+        worker.removeEventListener('message', handleReadyMessage)
+        worker.removeEventListener('error', handleReadyError)
+        const normalizedError =
+          errorEvent instanceof ErrorEvent && errorEvent.message
+            ? new Error(errorEvent.message)
+            : errorEvent instanceof Error
+              ? errorEvent
+              : new Error('stroke 변환 실패')
+        resetStrokeWorker(normalizedError)
+        reject(normalizedError)
+      }
+
+      worker.addEventListener('message', handleReadyMessage)
+      worker.addEventListener('error', handleReadyError, { once: true })
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error))
+      resetStrokeWorker(normalizedError)
+      reject(normalizedError)
+    }
+  }).catch((error) => {
+    resetStrokeWorker(error)
+    throw error
+  })
+
+  return strokeWorkerReadyPromise
+}
+
+async function convertStrokeToFill(svgString, { onProgress } = {}) {
+  if (typeof svgString !== 'string' || svgString.trim().length === 0) {
+    return svgString
+  }
+
+  const progressHandler = typeof onProgress === 'function' ? onProgress : null
+
+  if (typeof Worker !== 'function') {
+    console.warn('stroke 변환 실패', new Error('Web Worker not supported'))
+    return svgString
+  }
+
+  let worker
+  try {
+    worker = await ensureStrokeWorker()
+  } catch (error) {
+    console.warn('stroke 변환 실패', error)
+    return svgString
+  }
+
+  const requestId = uuid()
+
+  if (progressHandler) {
+    try {
+      progressHandler(0, 'start')
+    } catch (error) {
+      console.warn('stroke 변환 실패', error)
+    }
+  }
+
+  return new Promise((resolve) => {
+    const entry = {
+      resolve: (value) => {
+        const output = typeof value === 'string' && value.length > 0 ? value : svgString
+        resolve(output)
+      },
+      reject: (error) => {
+        console.warn('stroke 변환 실패', error)
+        resolve(svgString)
+      },
+      onProgress: (value, stage) => {
+        if (!progressHandler) {
+          return
+        }
+        try {
+          progressHandler(value, stage)
+        } catch (error) {
+          console.warn('stroke 변환 실패', error)
+        }
+      },
+    }
+
+    strokeWorkerCallbacks.set(requestId, entry)
+
+    try {
+      worker.postMessage({ type: 'convert', id: requestId, svg: svgString })
+    } catch (error) {
+      strokeWorkerCallbacks.delete(requestId)
+      console.warn('stroke 변환 실패', error)
+      resolve(svgString)
+    }
+  })
+}
+
 const SVG_PROGRESS_STEPS = {
   uploading: { label: 'Uploading image...', fraction: 0.1 },
   analyzing: { label: 'Analyzing pixels...', fraction: 0.35 },
@@ -5453,9 +5662,34 @@ async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) 
 
     onStep?.('rendering')
 
-    const sanitizedResult = sanitizeSVG(svgString, { trackAdjustments: true })
-    const cleanedSvg = sanitizedResult.svgText
-    let effectiveStrokeAdjusted = Boolean(sanitizedResult.strokeAdjusted)
+    const onStrokeStart =
+      typeof progressHandlers.onStrokeStart === 'function' ? progressHandlers.onStrokeStart : null
+    const onStrokeProgress =
+      typeof progressHandlers.onStrokeProgress === 'function' ? progressHandlers.onStrokeProgress : null
+    const onStrokeComplete =
+      typeof progressHandlers.onStrokeComplete === 'function' ? progressHandlers.onStrokeComplete : null
+
+    onStrokeStart?.()
+
+    let sanitizedResult
+    try {
+      sanitizedResult = await sanitizeSVG(svgString, {
+        trackAdjustments: true,
+        onProgress: (value, stage) => {
+          onStrokeProgress?.(value, stage)
+        },
+      })
+    } finally {
+      onStrokeComplete?.()
+    }
+
+    const sanitizedPayload =
+      sanitizedResult && typeof sanitizedResult === 'object'
+        ? sanitizedResult
+        : { svgText: svgString, strokeAdjusted: false }
+
+    const cleanedSvg = sanitizedPayload.svgText
+    let effectiveStrokeAdjusted = Boolean(sanitizedPayload.strokeAdjusted)
     let outputBlob = new Blob([cleanedSvg], { type: 'image/svg+xml' })
     if (outputBlob.size > MAX_SVG_BYTES && optimizedBlob) {
       outputBlob = optimizedBlob
@@ -5578,6 +5812,20 @@ async function convertSelectionsToSvg() {
       // eslint-disable-next-line no-await-in-loop
       const conversion = await convertTargetToSvg(target, colorCount, {
         onStep: (step) => updateSvgProgressStep(step, index, targets.length, target.item?.name || ''),
+        onStrokeStart: () => {
+          setSvgProgressMessage('윤곽선 변환 중...')
+          setSvgProgressDetail(formatSvgDetail(index, targets.length, target.item?.name || ''))
+          setSvgProgressHintVisible(false)
+          setSvgProgressValue(0)
+        },
+        onStrokeProgress: (value) => {
+          const numeric = Number.isFinite(value) ? value : Number.parseFloat(value)
+          const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0
+          setSvgProgressValue(clamped)
+        },
+        onStrokeComplete: () => {
+          setSvgProgressMessage(SVG_PROGRESS_STEPS.rendering.label)
+        },
       })
       if (!conversion.success || !conversion.blob) {
         console.warn('SVG 변환 실패:', target.item?.name || '(이름 없음)', conversion.message)
@@ -8672,16 +8920,41 @@ function attemptStrokeConversion(element) {
   return adjusted
 }
 
-function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
-  if (typeof DOMParser !== 'function') {
-    return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
-  }
+async function sanitizeSVG(svgText, { trackAdjustments = false, onProgress } = {}) {
+  const progressHandler = typeof onProgress === 'function' ? onProgress : null
 
+  let workingSvg = typeof svgText === 'string' ? svgText : ''
   let strokeAdjusted = false
 
   try {
+    const convertedSvg = await convertStrokeToFill(workingSvg, {
+      onProgress: (value, stage) => {
+        if (!progressHandler) {
+          return
+        }
+        const numericValue = Number.isFinite(value) ? value : Number.parseFloat(value)
+        const clamped = Number.isFinite(numericValue) ? Math.max(0, Math.min(100, numericValue)) : 0
+        progressHandler(clamped, stage)
+      },
+    })
+
+    if (typeof convertedSvg === 'string' && convertedSvg.length > 0) {
+      if (convertedSvg !== workingSvg) {
+        strokeAdjusted = true
+      }
+      workingSvg = convertedSvg
+    }
+  } catch (error) {
+    console.warn('stroke 변환 실패', error)
+  }
+
+  if (typeof DOMParser !== 'function') {
+    return { svgText: fallbackSanitizeSvg(workingSvg), strokeAdjusted: false }
+  }
+
+  try {
     const parser = new DOMParser()
-    const doc = parser.parseFromString(svgText, 'image/svg+xml')
+    const doc = parser.parseFromString(workingSvg, 'image/svg+xml')
     const parserError = doc.querySelector('parsererror')
     if (parserError) {
       throw new Error(parserError.textContent || 'Failed to parse SVG.')
@@ -8701,10 +8974,11 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
         nodesToProcess.add(node)
       }
     }
+    let fallbackAdjusted = false
     for (const node of nodesToProcess) {
       const adjusted = attemptStrokeConversion(node)
       if (adjusted) {
-        strokeAdjusted = true
+        fallbackAdjusted = true
       }
     }
 
@@ -8723,11 +8997,11 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
     const serialized = new XMLSerializer().serializeToString(svg)
     return {
       svgText: serialized,
-      strokeAdjusted: trackAdjustments ? strokeAdjusted : false,
+      strokeAdjusted: trackAdjustments ? strokeAdjusted || fallbackAdjusted : false,
     }
   } catch (error) {
     console.warn('Failed to sanitize SVG', error)
-    return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
+    return { svgText: fallbackSanitizeSvg(workingSvg), strokeAdjusted: false }
   }
 }
 
@@ -8807,7 +9081,7 @@ async function createSanitizedSvgBlob(blob) {
   }
 
   const originalText = await blob.text()
-  const cleaned = sanitizeSVG(originalText, { trackAdjustments: true })
+  const cleaned = await sanitizeSVG(originalText, { trackAdjustments: true })
   const fullyCleaned = cleanSvgBeforeDownload(cleaned.svgText)
   return {
     blob: new Blob([fullyCleaned], { type: 'image/svg+xml' }),
