@@ -235,9 +235,9 @@ function renderAdminManagementPage() {
     <style>
       :root {
         color-scheme: light;
-        font-family: 'Pretendard','Noto Sans KR',sans-serif;
+        font-family: 'Pretendard', 'Noto Sans KR', sans-serif;
         background-color: #f5eee9;
-        color: #333333;
+        color: #2f2620;
       }
       *, *::before, *::after {
         box-sizing: border-box;
@@ -246,420 +246,350 @@ function renderAdminManagementPage() {
         margin: 0;
         min-height: 100vh;
         background: #f5eee9;
-        color: #333333;
-      }
-      a {
-        color: inherit;
-        text-decoration: none;
       }
       button {
         font-family: inherit;
       }
-      .admin-header {
-        background: #ffd331;
-        padding: 20px 24px;
-        font-weight: 600;
-        font-size: 1.2rem;
-        text-align: center;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-      }
-      .admin-layout {
+      .admin-shell {
+        min-height: 100vh;
+        padding: 64px 24px 96px;
         display: flex;
-        min-height: calc(100vh - 72px);
+        flex-direction: column;
+        gap: 32px;
       }
-      .admin-sidebar {
-        width: 240px;
+      .admin-hero,
+      .admin-main {
+        width: min(960px, 100%);
+        margin: 0 auto;
+      }
+      .admin-hero {
+        background: linear-gradient(135deg, rgba(255, 232, 170, 0.45), rgba(255, 211, 49, 0.35));
+        border: 1px solid rgba(255, 211, 49, 0.65);
+        border-radius: 22px;
+        padding: 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        box-shadow: 0 26px 48px -32px rgba(146, 95, 0, 0.45);
+      }
+      .admin-hero__badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        align-self: flex-start;
+        background: rgba(255, 211, 49, 0.85);
+        color: #7d5703;
+        font-weight: 700;
+        padding: 6px 16px;
+        border-radius: 999px;
+        letter-spacing: 0.02em;
+      }
+      .admin-hero__description {
+        margin: 0;
+        font-size: 1.06rem;
+        line-height: 1.65;
+        color: #5b4420;
+        font-weight: 500;
+      }
+      .admin-main {
+        display: flex;
+        flex-direction: column;
+        gap: 32px;
+      }
+      .admin-section {
         background: #ffffff;
-        border-right: 2px solid #ffd331;
-        padding: 20px 16px;
+        border: 1px solid rgba(255, 211, 49, 0.55);
+        border-radius: 24px;
+        padding: 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        box-shadow: 0 30px 56px -38px rgba(120, 84, 0, 0.4);
+      }
+      .admin-section h2 {
+        margin: 0;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #3d2a12;
+      }
+      .section-note {
+        margin: 0;
+        color: #6c5432;
+        font-size: 0.95rem;
+        line-height: 1.6;
+      }
+      .section-note--warning {
+        color: #a03a1a;
+        font-weight: 600;
+      }
+      .code-list {
         display: flex;
         flex-direction: column;
         gap: 12px;
       }
-      .admin-sidebar button {
-        border: none;
-        background: #ffffff;
-        padding: 12px 14px;
-        text-align: left;
-        border-radius: 10px;
-        font-weight: 600;
-        color: #333333;
-        cursor: pointer;
-        transition: background 0.2s ease, box-shadow 0.2s ease;
-      }
-      .admin-sidebar button:hover {
-        background: rgba(255, 211, 49, 0.35);
-        box-shadow: 0 4px 12px -8px rgba(0, 0, 0, 0.2);
-      }
-      .admin-sidebar button.is-active {
-        background: rgba(255, 211, 49, 0.95);
-        box-shadow: 0 10px 18px -12px rgba(0, 0, 0, 0.35);
-      }
-      .admin-content {
-        flex: 1;
-        padding: 28px 36px 80px;
-        display: block;
-      }
-      .card {
-        background: #ffffff;
-        border: 1px solid #ffd331;
-        border-radius: 14px;
-        padding: 24px;
-        margin-bottom: 28px;
-        box-shadow: 0 18px 32px -24px rgba(0, 0, 0, 0.35);
-      }
-      .card h2 {
-        margin: 0 0 12px;
-        font-size: 1.2rem;
-        font-weight: 700;
-      }
-      .admin-description {
-        margin: 0 0 18px;
-        color: #555555;
-        font-size: 0.95rem;
+      .code-line,
+      .code-block {
+        margin: 0;
+        background: #fff8de;
+        border: 1px solid rgba(255, 211, 49, 0.75);
+        border-radius: 16px;
+        padding: 14px 18px;
+        font-family: 'JetBrains Mono', 'DM Mono', 'Courier New', monospace;
+        font-size: 0.92rem;
         line-height: 1.55;
+        color: #4b3717;
+        white-space: pre-wrap;
       }
-      .form-grid {
+      .code-block code {
+        font: inherit;
+      }
+      .field-grid {
         display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: 16px;
-        max-width: 360px;
       }
-      .form-grid label {
+      .field-tile {
+        background: rgba(255, 245, 217, 0.75);
+        border: 1px dashed rgba(255, 211, 49, 0.8);
+        border-radius: 18px;
+        padding: 16px 18px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        font-weight: 600;
-        color: #333333;
+        gap: 8px;
+        min-height: 92px;
       }
-      .form-grid input[type="date"] {
-        border: 1px solid rgba(255, 211, 49, 0.8);
-        border-radius: 10px;
-        padding: 10px 12px;
-        font-size: 1rem;
-        background: #ffffff;
-        color: #333333;
+      .field-label {
+        font-weight: 700;
+        color: #7d5703;
+        font-size: 0.95rem;
       }
-      .admin-action {
-        margin-top: 4px;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
+      .field-value {
+        color: #4f3b1c;
+        font-size: 0.95rem;
+      }
+      .period-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 24px;
+      }
+      .period-card {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .period-card h3 {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #4a3418;
+      }
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .admin-button {
         border: none;
-        border-radius: 10px;
-        background: #ffd331;
-        color: #333333;
-        padding: 10px 16px;
-        font-weight: 600;
+        border-radius: 14px;
+        padding: 12px 18px;
+        font-weight: 700;
+        font-size: 0.95rem;
         cursor: pointer;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
       }
-      .admin-action:hover {
+      .admin-button:hover {
         transform: translateY(-1px);
-        box-shadow: 0 8px 18px -14px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 10px 24px -20px rgba(0, 0, 0, 0.45);
       }
-      .admin-action--ghost {
-        background: transparent;
-        border: 1px solid rgba(0, 0, 0, 0.12);
+      .admin-button--primary {
+        background: #ffd331;
+        color: #3d2a12;
       }
-      .admin-summary {
-        margin: 18px 0 6px;
-        font-weight: 600;
-        color: #333333;
-      }
-      .admin-hint {
-        margin: 8px 0 0;
-        font-size: 0.9rem;
-        color: #666666;
-      }
-      .admin-hint[hidden] {
-        display: none;
-      }
-      .admin-hint[data-tone="success"] {
-        color: #1b6b2c;
-      }
-      .admin-hint[data-tone="danger"] {
-        color: #c02629;
-      }
-      .admin-hint[data-tone="warning"] {
-        color: #a16207;
-      }
-      .admin-hint[data-tone="info"] {
-        color: #555555;
-      }
-      .admin-tag-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 18px;
-      }
-      .admin-tag {
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: #fff1b3;
-        border: 1px solid #ffd331;
-        font-size: 0.85rem;
-        color: #333333;
-      }
-      .admin-empty {
-        color: #777777;
-        font-size: 0.95rem;
-        margin-top: 12px;
-      }
-      .admin-table-wrapper {
-        overflow-x: auto;
-        margin-top: 18px;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 211, 49, 0.4);
-      }
-      .admin-table {
-        width: 100%;
-        border-collapse: collapse;
-        min-width: 420px;
-      }
-      .admin-table th,
-      .admin-table td {
-        padding: 12px 14px;
-        text-align: left;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-      }
-      .admin-table th {
-        background: rgba(255, 211, 49, 0.3);
-        font-weight: 600;
-      }
-      .admin-table tbody tr:nth-child(even) {
-        background: rgba(245, 238, 233, 0.6);
-      }
-      .admin-toast {
-        position: fixed;
-        right: 24px;
-        bottom: 24px;
-        background: #333333;
+      .admin-button--danger {
+        background: #d04a34;
         color: #ffffff;
-        padding: 14px 18px;
-        border-radius: 12px;
-        box-shadow: 0 22px 34px -22px rgba(0, 0, 0, 0.45);
-        font-size: 0.95rem;
-        font-weight: 500;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        z-index: 1200;
       }
-      .admin-toast[hidden] {
-        display: none;
+      .status-meta {
+        margin: 0;
+        font-size: 0.92rem;
+        color: #6c5432;
       }
-      .admin-toast[data-tone="success"] {
-        background: #1b6b2c;
+      .alert-card {
+        background: rgba(255, 232, 170, 0.35);
+        border-radius: 18px;
+        padding: 18px;
+        border: 1px solid rgba(255, 211, 49, 0.6);
       }
-      .admin-toast[data-tone="danger"] {
-        background: #c02629;
+      .alert-card h3 {
+        margin: 0 0 8px;
+        font-size: 1.02rem;
+        color: #4a3418;
       }
-      .admin-toast[data-tone="warning"] {
-        background: #a16207;
+      .section-meta {
+        margin: 0;
+        font-size: 0.92rem;
+        color: #7d6c54;
       }
-      .admin-view {
-        display: none;
+      .data-grid {
+        display: grid;
+        gap: 24px;
       }
-      .admin-view.is-active {
-        display: block;
-      }
-      .card--center {
-        text-align: center;
+      .data-card {
         display: flex;
         flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 220px;
         gap: 12px;
       }
-      .admin-upload {
-        display: inline-flex;
-        flex-direction: column;
-        gap: 8px;
-        font-weight: 600;
-        color: #333333;
+      .data-card h3 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 700;
+        color: #4a3418;
       }
-      .admin-upload input[type="file"] {
-        border: 1px dashed rgba(255, 211, 49, 0.6);
-        border-radius: 12px;
-        padding: 18px;
-        background: rgba(255, 211, 49, 0.1);
-        cursor: pointer;
-      }
-      @media (max-width: 960px) {
-        .admin-layout {
-          flex-direction: column;
+      @media (max-width: 720px) {
+        .admin-shell {
+          padding: 48px 16px 72px;
         }
-        .admin-sidebar {
-          width: auto;
-          flex-direction: row;
-          flex-wrap: wrap;
-          gap: 8px;
-          border-right: none;
-          border-bottom: 2px solid #ffd331;
+        .admin-hero {
+          padding: 28px 22px;
         }
-        .admin-sidebar button {
-          flex: 1 1 160px;
-        }
-        .admin-content {
-          padding: 24px 16px 72px;
-        }
-        .admin-table {
-          min-width: 320px;
+        .admin-section {
+          padding: 28px 22px;
+          border-radius: 20px;
         }
       }
     </style>
   </head>
   <body>
-    <header class="admin-header">관리자 대시보드 | 미치나 챌린지 관리</header>
-    <div class="admin-layout">
-      <aside class="admin-sidebar" aria-label="관리자 메뉴">
-        <button type="button" data-view="period" class="is-active">📅 미치나 기간 설정</button>
-        <button type="button" data-view="upload">📂 챌린저 명단 업로드</button>
-        <button type="button" data-view="status">👥 챌린저 현황 보기</button>
-        <button type="button" data-view="users">🔐 로그인 DB 보기</button>
-        <button type="button" data-view="plans">💳 구독 플랜 보기 (준비 중)</button>
-      </aside>
-      <main class="admin-content">
-        <div class="admin-toast" data-role="admin-toast" hidden></div>
-        <section class="admin-view is-active" data-admin-view="period">
-          <div class="card">
-            <h2>📅 미치나 챌린지 기간 설정</h2>
-            <p class="admin-description">시작일과 종료일을 지정하면 미치나 챌린저 등급 부여가 해당 기간에 자동으로 적용됩니다.</p>
-            <form class="form-grid" data-role="period-form">
-              <label>시작일
-                <input type="date" data-role="period-start" required />
-              </label>
-              <label>종료일
-                <input type="date" data-role="period-end" required />
-              </label>
-              <button class="admin-action" type="submit">기간 저장</button>
-            </form>
-            <p class="admin-summary" data-role="period-summary">저장된 기간이 없습니다.</p>
-            <p class="admin-hint" data-role="period-meta" hidden></p>
-            <p class="admin-hint" data-role="period-status" hidden></p>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="period">기간 새로고침</button>
+    <div class="admin-shell">
+      <header class="admin-hero">
+        <span class="admin-hero__badge">우리코치미치나</span>
+        <p class="admin-hero__description">
+          미치나 챌린지를 포함한 다양한 일러스트 강의를 관리하는 관리자 전용 애플리케이션.
+        </p>
+      </header>
+
+      <main class="admin-main">
+        <section class="admin-section">
+          <h2>기본 정보</h2>
+          <div class="code-list">
+            <pre class="code-line">plan: 'free' | 'michina-basic' | 'michina-pro' | 'premium' | 'admin'</pre>
+            <pre class="code-line">lastChallengerSyncedAt (YYYY-MM-DD)</pre>
+            <p class="section-note">이 설정은 미치나 챌린지 커뮤니티 DB에서 자동으로 계산돼요.</p>
           </div>
-        </section>
-        <section class="admin-view" data-admin-view="upload">
-          <div class="card">
-            <h2>📂 챌린저 명단 업로드</h2>
-            <p class="admin-description">CSV 또는 XLSX 파일에서 이메일 주소를 추출해 챌린저 명단을 업데이트합니다. 기존 명단은 새 데이터로 교체됩니다.</p>
-            <label class="admin-upload">챌린저 명단 파일 선택
-              <input type="file" accept=".csv,.xlsx" data-role="challenger-upload" />
-            </label>
-            <p class="admin-hint" data-role="upload-status" hidden></p>
-            <p class="admin-hint" data-role="challenger-meta" hidden></p>
-            <div class="admin-tag-list" data-role="challenger-list" aria-live="polite"></div>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="challengers">명단 새로고침</button>
-          </div>
-        </section>
-        <section class="admin-view" data-admin-view="status">
-          <div class="card">
-            <h2>👥 챌린저 현황 보기</h2>
-            <p class="admin-description">업로드된 명단은 챌린저 자동 등급 부여에 사용됩니다.</p>
-            <p class="admin-summary">등록된 챌린저: <strong data-role="status-count">0</strong>명</p>
-            <div class="admin-table-wrapper">
-              <table class="admin-table">
-                <thead>
-                  <tr>
-                    <th scope="col">No.</th>
-                    <th scope="col">이메일</th>
-                  </tr>
-                </thead>
-                <tbody data-role="status-table">
-                  <tr><td colspan="2" class="admin-empty">아직 등록된 명단이 없습니다.</td></tr>
-                </tbody>
-              </table>
+          <div class="field-grid">
+            <div class="field-tile">
+              <span class="field-label">name</span>
+              <span class="field-value">-</span>
             </div>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="challengers">현황 새로고침</button>
-          </div>
-        </section>
-        <section class="admin-view" data-admin-view="users">
-          <div class="card">
-            <h2>🔐 로그인 DB 보기</h2>
-            <p class="admin-description">/api/users 엔드포인트에서 최신 로그인 정보를 조회합니다.</p>
-            <div class="admin-table-wrapper">
-              <table class="admin-table">
-                <thead>
-                  <tr>
-                    <th scope="col">이름</th>
-                    <th scope="col">이메일</th>
-                    <th scope="col">가입일</th>
-                    <th scope="col">등급</th>
-                  </tr>
-                </thead>
-                <tbody data-role="users-table">
-                  <tr><td colspan="4" class="admin-empty">데이터를 불러오는 중입니다…</td></tr>
-                </tbody>
-              </table>
+            <div class="field-tile">
+              <span class="field-label">email</span>
+              <span class="field-value">-</span>
             </div>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="users">DB 새로고침</button>
+            <div class="field-tile">
+              <span class="field-label">passwordHash</span>
+              <span class="field-value">(SHA-256 64자)</span>
+            </div>
+          </div>
+          <p class="section-note">등록된 사용자 목록에서 찾아 선택해 주세요.</p>
+        </section>
+
+        <section class="admin-section">
+          <h2>챌린지 기간 설정</h2>
+          <div class="period-grid">
+            <div class="period-card">
+              <h3>지난 기간</h3>
+              <div class="field-tile">
+                <span class="field-label">startDate</span>
+                <span class="field-value">(YYYY-MM-DD)</span>
+              </div>
+              <div class="field-tile">
+                <span class="field-label">endDate</span>
+                <span class="field-value">(YYYY-MM-DD)</span>
+              </div>
+              <p class="section-note">이 정보는 자동으로 수집돼요. 필요 시 수동 수정도 가능해요.</p>
+            </div>
+            <div class="period-card">
+              <h3>현재 진행중 기간</h3>
+              <div class="field-tile">
+                <span class="field-label">startDate</span>
+                <span class="field-value">(YYYY-MM-DD)</span>
+              </div>
+              <div class="field-tile">
+                <span class="field-label">endDate</span>
+                <span class="field-value">(YYYY-MM-DD)</span>
+              </div>
+              <div class="button-row">
+                <button type="button" class="admin-button admin-button--primary">저장하기</button>
+                <button type="button" class="admin-button admin-button--danger">챌린지를 종료하고 수료증 발급하기</button>
+              </div>
+              <p class="section-note section-note--warning">* 이 작업은 되돌릴 수 없어요.</p>
+            </div>
           </div>
         </section>
-        <section class="admin-view" data-admin-view="plans">
-          <div class="card card--center">
-            <h2>💳 구독 플랜 보기</h2>
-            <p class="admin-description" data-role="plans-message">현재 등록된 구독 목록 보기 기능은 준비 중입니다.</p>
-            <p class="admin-hint admin-empty">추후 /api/plans 연동 시 자동으로 업데이트됩니다.</p>
+
+        <section class="admin-section">
+          <h2>미션 현황 관리</h2>
+          <div class="data-card">
+            <h3>챌린저 제출 현황</h3>
+            <p class="status-meta">startDate: 2024-10-21 · endDate: 2024-11-08 · challengePeriod: 15일 (영업일 기준)</p>
+            <pre class="code-block"><code>const startDate = new Date('2024-10-21');
+const endDate = new Date('2024-11-08');
+const challengePeriod = Math.ceil(
+  (endDate - startDate) / (1000 * 60 * 60 * 24)
+);
+
+if (challengePeriod <= 0) {
+  throw new Error('challengePeriod는 0보다 커야 해요.');
+}
+
+const submissionRate = (submittedCount / challengePeriod) * 100;
+
+return {
+  message: &#96;오늘까지 \${submittedCount}일 제출 완료 (\${submissionRate.toFixed(1)}%)&#96;,
+};</code></pre>
+          </div>
+          <div class="alert-card">
+            <h3>마감 경고 알림</h3>
+            <p class="section-note">마감 2일 전과 당일에 자동 발송돼요.</p>
+          </div>
+        </section>
+
+        <section class="admin-section">
+          <h2>챌린저 데이터 관리</h2>
+          <p class="section-meta">최근 조회: 2024-11-07 10:21</p>
+          <div class="data-grid">
+            <div class="data-card">
+              <h3>챌린저 명단 최신화</h3>
+              <pre class="code-block"><code>const lastFetch = env.MICHINA_CHALLENGERS?.get('lastUpdatedAt');
+return lastFetch ? new Date(lastFetch) : null;</code></pre>
+            </div>
+            <div class="data-card">
+              <h3>챌린저 목록 새로고침</h3>
+              <p class="section-note">이 작업은 백업 저장소에도 반영돼요.</p>
+            </div>
+            <div class="data-card">
+              <h3>개별 챌린저 조회</h3>
+              <pre class="code-block"><code>const challenger = await env.MICHINA_CHALLENGERS?.get(challengerId);
+
+if (!challenger) {
+  throw new Error('해당 챌린저를 찾을 수 없어요.');
+}
+
+return JSON.parse(challenger);</code></pre>
+            </div>
+            <div class="data-card">
+              <pre class="code-block"><code>const lastFetch = env.MICHINA_USERS?.get('lastSyncTimestamp');
+return lastFetch ? new Date(lastFetch) : null;</code></pre>
+              <h3>로그인 사용자 DB 최신화</h3>
+              <p class="section-note">데이터 싱크는 최대 5분 정도 걸릴 수 있어요.</p>
+            </div>
           </div>
         </section>
       </main>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
-    <script type="module" src="/static/admin-lite.js"></script>
   </body>
 </html>`
 }
-
-const inMemoryStore = new Map<string, string>()
-const inMemoryBackupStore = new Map<string, string>()
-const rateLimitMemoryStore = new Map<string, RateLimitRecord>()
-
-function encodeKey(email: string) {
-  return `${PARTICIPANT_KEY_PREFIX}${email.toLowerCase()}`
-}
-
-function isValidEmail(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  const trimmed = value.trim()
-  if (!trimmed) return false
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
-}
-
-function toHex(buffer: ArrayBuffer) {
-  return Array.from(new Uint8Array(buffer))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-async function sha256(input: string) {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(input)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return toHex(digest)
-}
-
-function parsePositiveInteger(value: string | undefined, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
-  const trimmed = (value ?? '').trim()
-  const parsed = Number.parseInt(trimmed, 10)
-  const boundedFallback = Math.min(Math.max(fallback, min), max)
-  if (!Number.isFinite(parsed) || parsed < min) {
-    return boundedFallback
-  }
-  return Math.min(Math.max(parsed, min), max)
-}
-
-function getFixedWindowBoundaries(now: number, windowSeconds: number) {
-  const normalizedWindowSeconds = Math.max(1, Math.floor(windowSeconds))
-  const windowMs = normalizedWindowSeconds * 1000
-  const windowStart = Math.floor(now / windowMs) * windowMs
-  return {
-    windowStart,
-    windowEnd: windowStart + windowMs,
-  }
-}
-
 function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   const issues: string[] = []
 
