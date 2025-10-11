@@ -8,7 +8,6 @@ import { renderer } from './renderer'
 type Bindings = {
   OPENAI_API_KEY?: string
   ADMIN_EMAIL?: string
-  ADMIN_PASSWORD_HASH?: string
   SESSION_SECRET?: string
   ADMIN_SESSION_VERSION?: string
   ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
@@ -59,7 +58,6 @@ type AdminSessionPayload = {
 
 type AdminConfig = {
   email: string
-  passwordHash: string
   sessionSecret: string
   sessionVersion: string
 }
@@ -120,7 +118,8 @@ const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/auth/google/callback'
+const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
+const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
 const MICHINA_PERIOD_KEY = 'michina:period'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
 const MICHINA_USERS_KEY = 'michina:users'
@@ -627,19 +626,6 @@ function isValidEmail(value: unknown): value is string {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
 }
 
-function toHex(buffer: ArrayBuffer) {
-  return Array.from(new Uint8Array(buffer))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-async function sha256(input: string) {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(input)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return toHex(digest)
-}
-
 function parsePositiveInteger(value: string | undefined, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
   const trimmed = (value ?? '').trim()
   const parsed = Number.parseInt(trimmed, 10)
@@ -670,13 +656,6 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
     issues.push('ADMIN_EMAIL must be a valid email address')
   }
 
-  const passwordHashRaw = env.ADMIN_PASSWORD_HASH?.trim().toLowerCase() ?? ''
-  if (!passwordHashRaw) {
-    issues.push('ADMIN_PASSWORD_HASH is not configured')
-  } else if (!/^[0-9a-f]{64}$/i.test(passwordHashRaw)) {
-    issues.push('ADMIN_PASSWORD_HASH must be a 64-character SHA-256 hex digest')
-  }
-
   const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
   if (!sessionSecretRaw) {
     issues.push('SESSION_SECRET is not configured')
@@ -698,7 +677,6 @@ function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
   return {
     config: {
       email: emailRaw,
-      passwordHash: passwordHashRaw,
       sessionSecret: sessionSecretRaw,
       sessionVersion: sessionVersionRaw,
     },
@@ -980,7 +958,7 @@ function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
   }
   try {
     const url = new URL(c.req.url)
-    return `${url.origin}/auth/google/callback`
+    return `${url.origin}/api/auth/callback/google`
   } catch (error) {
     console.warn('[auth/google] Failed to derive redirect URI from request URL', error)
     return DEFAULT_GOOGLE_REDIRECT_URI
@@ -1028,6 +1006,86 @@ function isGoogleEmailVerified(value: unknown) {
     return value.toLowerCase() === 'true'
   }
   return false
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function renderAdminOAuthPage({
+  title,
+  message,
+  scriptContent,
+}: {
+  title: string
+  message: string
+  scriptContent: string
+}) {
+  const safeTitle = escapeHtml(title)
+  const safeMessage = escapeHtml(message)
+  return `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${safeTitle}</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      .card {
+        padding: 24px 32px;
+        border-radius: 18px;
+        background: rgba(15, 23, 42, 0.86);
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        text-align: center;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.4);
+        max-width: 360px;
+      }
+      .card h1 {
+        margin: 0 0 12px;
+        font-size: 1.25rem;
+      }
+      .card p {
+        margin: 0;
+        font-size: 0.95rem;
+        color: rgba(226, 232, 240, 0.82);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card" role="alert" aria-live="polite">
+      <h1>${safeTitle}</h1>
+      <p>${safeMessage}</p>
+    </div>
+    <script>${scriptContent}</script>
+  </body>
+</html>`
+}
+
+function generateRandomState() {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes)
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')
 }
 
 function addBusinessDays(start: Date, days: number) {
@@ -1535,102 +1593,6 @@ app.get('/api/auth/session', async (c) => {
   return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
 })
 
-app.post('/api/auth/admin/login', async (c) => {
-  let payload: { email?: string; password?: string } | undefined
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    const response = c.json({ error: 'INVALID_JSON_BODY' }, 400)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const env = c.env
-  const validation = validateAdminEnvironment(env)
-  const adminConfig = validation.config
-  if (!adminConfig) {
-    const response = c.json(
-      {
-        error: 'ADMIN_AUTH_NOT_CONFIGURED',
-        issues: validation.issues,
-      },
-      500,
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const rateLimitConfig = getAdminRateLimitConfig(env)
-  const identifier = getClientIdentifier(c)
-  const currentStatus = await getAdminRateLimitStatus(env, identifier, rateLimitConfig)
-  if (currentStatus.blocked) {
-    const retryAfter = currentStatus.retryAfterSeconds ?? rateLimitConfig.cooldownSeconds
-    const response = c.json({ error: 'RATE_LIMIT_EXCEEDED', retryAfter }, 429)
-    attachRateLimitHeaders(response, rateLimitConfig, currentStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : ''
-  const password = typeof payload?.password === 'string' ? payload.password : ''
-
-  if (!isValidEmail(email) || !password) {
-    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
-    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
-    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
-      responseBody.retryAfter = failureStatus.retryAfterSeconds
-    }
-    const response = c.json(responseBody, 401)
-    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  if (email !== adminConfig.email) {
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
-    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
-    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
-      responseBody.retryAfter = failureStatus.retryAfterSeconds
-    }
-    const response = c.json(responseBody, 401)
-    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const computedHash = await sha256(password)
-  if (computedHash.toLowerCase() !== adminConfig.passwordHash) {
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    const failureStatus = await recordAdminLoginFailure(env, identifier, rateLimitConfig)
-    const responseBody: Record<string, unknown> = { error: 'INVALID_CREDENTIALS' }
-    if (failureStatus.blocked && failureStatus.retryAfterSeconds) {
-      responseBody.retryAfter = failureStatus.retryAfterSeconds
-    }
-    const response = c.json(responseBody, 401)
-    attachRateLimitHeaders(response, rateLimitConfig, failureStatus)
-    response.headers.set('Cache-Control', 'no-store')
-    return response
-  }
-
-  const sessionMeta = await createAdminSession(c, email, adminConfig)
-  await clearAdminRateLimit(env, identifier)
-  const successStatus: RateLimitStatus = {
-    blocked: false,
-    remaining: rateLimitConfig.maxAttempts,
-    resetAfterSeconds: rateLimitConfig.windowSeconds,
-  }
-  const response = c.json({
-    ok: true,
-    expiresAt: sessionMeta.exp,
-    issuedAt: sessionMeta.iat,
-    sessionVersion: adminConfig.sessionVersion,
-  })
-  attachRateLimitHeaders(response, rateLimitConfig, successStatus)
-  response.headers.set('Cache-Control', 'no-store')
-  return response
-})
-
 app.post('/api/auth/admin/logout', async (c) => {
   clearAdminSession(c)
   return c.json({ ok: true })
@@ -1774,17 +1736,79 @@ app.get('/api/users', async (c) => {
   return c.json({ users })
 })
 
-app.post('/api/auth/google', async (c) => {
-  let payload: { code?: string } | undefined
-  try {
-    payload = await c.req.json()
-  } catch (error) {
-    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+app.get('/auth/google', async (c) => {
+  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+  const redirectUri = resolveGoogleRedirectUri(c)
+
+  if (!clientId) {
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: 'Google 로그인 구성 오류',
+        message: 'Google OAuth 클라이언트가 구성되지 않았습니다. 관리자에게 문의해 주세요.',
+        scriptContent:
+          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'google_client_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing google client', error); } } window.location.replace('/'); }, 1800);",
+      }),
+      500,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   }
 
-  const code = typeof payload?.code === 'string' ? payload.code.trim() : ''
+  const state = generateRandomState()
+  setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: true,
+    path: '/',
+    maxAge: 600,
+  })
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    access_type: 'online',
+    prompt: 'select_account',
+    state,
+  })
+
+  const authorizeUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+  return c.redirect(authorizeUrl, 302)
+})
+
+app.get('/api/auth/callback/google', async (c) => {
+  const storedState = getCookie(c, ADMIN_OAUTH_STATE_COOKIE) ?? ''
+  deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'Lax', secure: true })
+
+  const stateParam = (c.req.query('state') || '').trim()
+  if (!stateParam || !storedState || stateParam !== storedState) {
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: '로그인 세션이 만료되었습니다',
+        message: '인증 요청이 만료되었습니다. 다시 로그인해주세요.',
+        scriptContent:
+          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'state_mismatch' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about state mismatch', error); } } window.location.replace('/'); }, 1400);",
+      }),
+      400,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
+  }
+
+  const code = (c.req.query('code') || '').trim()
   if (!code) {
-    return c.json({ error: 'AUTH_CODE_REQUIRED' }, 400)
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: '인증 코드가 전달되지 않았습니다',
+        message: 'Google 로그인에서 인증 코드를 확인하지 못했습니다.',
+        scriptContent:
+          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'code_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing code', error); } } window.location.replace('/'); }, 1600);",
+      }),
+      400,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   }
 
   const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
@@ -1792,7 +1816,17 @@ app.post('/api/auth/google', async (c) => {
   const redirectUri = resolveGoogleRedirectUri(c)
 
   if (!clientId || !clientSecret) {
-    return c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 500)
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: 'Google 로그인 구성 오류',
+        message: 'Google OAuth 자격 증명이 올바르게 구성되지 않았습니다.',
+        scriptContent:
+          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'google_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about config error', error); } } window.location.replace('/'); }, 1600);",
+      }),
+      500,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   }
 
   try {
@@ -1812,32 +1846,47 @@ app.post('/api/auth/google', async (c) => {
 
     if (!tokenResponse.ok) {
       const detail = await tokenResponse.text().catch(() => '')
-      return c.json(
-        { error: 'GOOGLE_TOKEN_EXCHANGE_FAILED', detail: detail.slice(0, 4000) },
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: 'Google 인증에 실패했습니다',
+          message: 'Google 인증 서버 응답이 원활하지 않습니다. 잠시 후 다시 시도해주세요.',
+          scriptContent: `window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'token_exchange_failed', detail: ${JSON.stringify('Token exchange failed')} }, window.location.origin); } catch (error) { console.warn('failed to notify opener about token failure', error); } } window.location.replace('/'); }, 1600);`,
+        }),
         502,
       )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
     }
 
-    const tokenJson = (await tokenResponse.json()) as {
-      id_token?: string
-      expires_in?: number
-      scope?: string
-      token_type?: string
-      refresh_token?: string
-    }
-
+    const tokenJson = (await tokenResponse.json()) as { id_token?: string }
     const idToken = typeof tokenJson.id_token === 'string' ? tokenJson.id_token : ''
     if (!idToken) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_MISSING' }, 502)
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: 'ID 토큰을 확인하지 못했습니다',
+          message: 'Google에서 유효한 로그인 정보를 전달하지 않았습니다.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'id_token_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about missing id token', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        502,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
     }
 
     const idPayload = decodeGoogleIdToken(idToken)
-    if (!idPayload) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_INVALID' }, 502)
-    }
-
-    if (idPayload.aud !== clientId) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_AUDIENCE_MISMATCH' }, 401)
+    if (!idPayload || idPayload.aud !== clientId) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '인증 정보를 확인할 수 없습니다',
+          message: 'Google 인증 정보가 올바르지 않습니다.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'id_token_invalid' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about invalid token', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        401,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
     }
 
     if (
@@ -1845,91 +1894,189 @@ app.post('/api/auth/google', async (c) => {
       idPayload.iss !== 'https://accounts.google.com' &&
       idPayload.iss !== 'accounts.google.com'
     ) {
-      return c.json({ error: 'GOOGLE_ID_TOKEN_ISSUER_INVALID' }, 401)
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '인증 제공자를 확인하지 못했습니다',
+          message: 'Google 인증 정보의 발급자가 올바르지 않습니다.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'issuer_invalid' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about issuer', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        401,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
     }
 
     const email = typeof idPayload.email === 'string' ? idPayload.email.trim().toLowerCase() : ''
-    if (!isValidEmail(email)) {
-      return c.json({ error: 'GOOGLE_EMAIL_INVALID' }, 400)
+    if (!isValidEmail(email) || !isGoogleEmailVerified(idPayload.email_verified)) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: 'Google 계정 정보를 확인하지 못했습니다',
+          message: '본인 확인이 완료된 Google 계정만 관리자 인증에 사용할 수 있습니다.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'email_not_verified' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about verification', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        403,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
     }
 
-    if (!isGoogleEmailVerified(idPayload.email_verified)) {
-      return c.json({ error: 'GOOGLE_EMAIL_NOT_VERIFIED' }, 403)
+    const adminEmail = c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
+    if (!adminEmail) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '관리자 이메일이 구성되지 않았습니다',
+          message: '환경변수 ADMIN_EMAIL을 설정한 후 다시 시도해주세요.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'admin_email_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about admin email', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        500,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
     }
 
-    const expiresAt =
-      typeof idPayload.exp === 'number'
-        ? idPayload.exp
-        : typeof idPayload.exp === 'string'
-          ? Number(idPayload.exp)
-          : undefined
+    if (email !== adminEmail) {
+      clearAdminSession(c)
+      const scriptContent = `(() => {
+  const message = ${JSON.stringify('관리자 전용 접근 권한이 없습니다.')};
+  const origin = window.location.origin;
+  try {
+    const storage = window.localStorage;
+    if (storage) {
+      storage.removeItem('admin');
+      storage.removeItem('adminSessionState');
+      storage.removeItem('role');
+    }
+  } catch (error) {
+    console.warn('failed to clear admin storage', error);
+  }
+  try {
+    window.sessionStorage?.removeItem('adminSessionId');
+  } catch (error) {
+    console.warn('failed to clear admin session id', error);
+  }
+  if (window.opener && !window.opener.closed) {
+    try {
+      window.opener.postMessage({ type: 'admin-oauth-denied', message }, origin);
+    } catch (error) {
+      console.warn('failed to notify opener about denied access', error);
+    }
+    try {
+      window.opener.alert(message);
+    } catch (error) {
+      console.warn('failed to show alert on opener', error);
+    }
+    window.setTimeout(() => {
+      try {
+        window.opener.location.href = '/';
+      } catch (error) {
+        window.opener.location.replace('/');
+      }
+      window.close();
+    }, 600);
+  } else {
+    window.alert(message);
+    window.location.replace('/');
+  }
+})();`
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '관리자 권한이 필요합니다',
+          message: '해당 Google 계정은 관리자 전용 영역에 접근할 수 없습니다.',
+          scriptContent,
+        }),
+        403,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
 
-    return c.json({
-      ok: true,
-      profile: {
-        email,
-        name: idPayload.name ?? idPayload.given_name ?? '',
-        picture: idPayload.picture ?? '',
-        expiresAt: expiresAt && Number.isFinite(expiresAt) ? expiresAt : null,
-      },
-    })
+    const adminConfig = getAdminConfig(c.env)
+    if (!adminConfig) {
+      const response = c.html(
+        renderAdminOAuthPage({
+          title: '관리자 세션을 생성하지 못했습니다',
+          message: '세션 구성이 누락되었습니다. 관리자에게 문의해주세요.',
+          scriptContent:
+            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'session_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about session config', error); } } window.location.replace('/'); }, 1600);",
+        }),
+        500,
+      )
+      response.headers.set('Cache-Control', 'no-store')
+      return response
+    }
+
+    const loginTime = Date.now()
+    const sessionId = generateRandomState()
+    await createAdminSession(c, email, adminConfig)
+
+    const scriptContent = `(() => {
+  const payload = ${JSON.stringify({ email, sessionId, loginTime })};
+  const origin = window.location.origin;
+  try {
+    const storage = window.localStorage;
+    if (storage) {
+      storage.setItem('admin', 'true');
+      storage.setItem('role', 'admin');
+      storage.setItem('adminSessionState', JSON.stringify({ loggedIn: true, email: payload.email, loginTime: payload.loginTime, sessionId: payload.sessionId }));
+    }
+  } catch (error) {
+    console.warn('failed to persist admin session', error);
+  }
+  try {
+    const sessionStorage = window.sessionStorage;
+    if (sessionStorage) {
+      sessionStorage.setItem('adminSessionId', payload.sessionId);
+    }
+  } catch (error) {
+    console.warn('failed to persist admin session id', error);
+  }
+  if (window.opener && !window.opener.closed) {
+    try {
+      window.opener.postMessage({ type: 'admin-oauth-success', email: payload.email, sessionId: payload.sessionId, loginTime: payload.loginTime }, origin);
+    } catch (error) {
+      console.warn('failed to notify opener about admin login', error);
+    }
+    window.setTimeout(() => {
+      try {
+        window.opener.location.href = '/admin-dashboard';
+      } catch (error) {
+        window.opener.location.replace('/admin-dashboard');
+      }
+      window.close();
+    }, 500);
+  } else {
+    window.setTimeout(() => {
+      window.location.replace('/admin-dashboard');
+    }, 500);
+  }
+})();`
+
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: '관리자 인증이 완료되었습니다',
+        message: '관리자 대시보드로 이동합니다.',
+        scriptContent,
+      }),
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   } catch (error) {
     console.error('[auth/google] Unexpected error', error)
-    return c.json({ error: 'GOOGLE_AUTH_UNEXPECTED_ERROR' }, 502)
+    const response = c.html(
+      renderAdminOAuthPage({
+        title: 'Google 인증 중 오류가 발생했습니다',
+        message: '잠시 후 다시 시도해주세요.',
+        scriptContent:
+          "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'unexpected_error' }, window.location.origin); } catch (notifyError) { console.warn('failed to notify opener about unexpected error', notifyError); } } window.location.replace('/'); }, 1600);",
+      }),
+      502,
+    )
+    response.headers.set('Cache-Control', 'no-store')
+    return response
   }
-})
-
-app.get('/auth/google/callback', (c) => {
-  return c.html(`<!DOCTYPE html>
-<html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <title>Google 인증 완료</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      body {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        display: grid;
-        place-items: center;
-        min-height: 100vh;
-        margin: 0;
-        background: #0f172a;
-        color: #f8fafc;
-      }
-      .card {
-        padding: 24px 32px;
-        border-radius: 18px;
-        background: rgba(15, 23, 42, 0.86);
-        border: 1px solid rgba(148, 163, 184, 0.24);
-        text-align: center;
-        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.4);
-      }
-      .card h1 {
-        margin: 0 0 12px;
-        font-size: 1.25rem;
-      }
-      .card p {
-        margin: 0;
-        font-size: 0.95rem;
-        color: rgba(226, 232, 240, 0.82);
-      }
-    </style>
-  </head>
-  <body>
-    <div class="card" role="alert" aria-live="polite">
-      <h1>Google 인증이 완료되었습니다.</h1>
-      <p>이 창은 잠시 후 자동으로 닫힙니다.</p>
-    </div>
-    <script>
-      setTimeout(() => {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({ type: 'google-auth-callback' }, '*')
-        }
-        window.close()
-      }, 600)
-    </script>
-  </body>
-</html>`)
 })
 
 app.post('/api/admin/challenge/import', async (c) => {
@@ -2965,40 +3112,21 @@ app.get('/', async (c) => {
         <div class="admin-modal__backdrop" data-action="close-admin" aria-hidden="true"></div>
         <div class="admin-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="admin-modal-title">
           <header class="admin-modal__header">
-            <h2 class="admin-modal__title" id="admin-modal-title">관리자 시크릿 키 인증</h2>
+            <h2 class="admin-modal__title" id="admin-modal-title">관리자 로그인</h2>
             <button class="admin-modal__close" type="button" data-action="close-admin" aria-label="관리자 인증 창 닫기">
               <i class="ri-close-line" aria-hidden="true"></i>
             </button>
           </header>
           <p class="admin-modal__subtitle" data-role="admin-modal-subtitle">
-            발급받은 시크릿 키를 입력해 관리자 권한을 활성화하세요.
+            관리자 전용 Google 계정으로 로그인해 관리자 대시보드에 접근하세요.
           </p>
-          <form class="admin-modal__form" data-role="admin-login-form" data-state="idle">
-            <label class="admin-modal__label" for="adminSecret">관리자 시크릿 키</label>
-            <div class="admin-modal__input-group">
-              <input
-                id="adminSecret"
-                name="adminSecret"
-                type="password"
-                required
-                autocomplete="off"
-                class="admin-modal__input"
-                data-role="admin-secret"
-                placeholder="시크릿 키를 입력하세요"
-              />
-              <button
-                class="admin-modal__toggle"
-                type="button"
-                data-role="admin-secret-toggle"
-                aria-pressed="false"
-                aria-label="시크릿 키 표시 전환"
-              >
-                <i class="ri-eye-off-line" aria-hidden="true" data-role="admin-secret-icon"></i>
-              </button>
-            </div>
+          <div class="admin-modal__form" data-role="admin-login-form" data-state="idle">
+            <button class="btn btn--primary admin-modal__submit" type="button" data-role="admin-google-login">
+              <i class="ri-google-fill" aria-hidden="true"></i>
+              Google 계정으로 로그인
+            </button>
             <p class="admin-modal__helper" data-role="admin-login-message" role="status" aria-live="polite"></p>
-            <button class="btn btn--primary admin-modal__submit" type="submit">인증하기</button>
-          </form>
+          </div>
           <div class="admin-modal__actions" data-role="admin-modal-actions" hidden>
             <p class="admin-modal__note">
               관리자 모드가 이미 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있습니다.
