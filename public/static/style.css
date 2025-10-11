@@ -2509,6 +2509,28 @@ body.is-modal-open {
   font-size: 0.95rem;
 }
 
+.admin-modal__secret {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-modal__secret-toggle {
+  border: none;
+  background: rgba(30, 41, 59, 0.8);
+  color: var(--heading);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.admin-modal__secret-toggle:hover,
+.admin-modal__secret-toggle:focus-visible {
+  background: rgba(59, 130, 246, 0.45);
+  outline: none;
+}
+
 .admin-modal__input:focus-visible {
   outline: 2px solid rgba(254, 245, 104, 0.65);
   outline-offset: 3px;
