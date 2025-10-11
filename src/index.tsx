@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import { createGoogleAuthorizationUrl } from '@hono/oauth-providers/google'
 import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
 
@@ -1764,17 +1765,18 @@ app.get('/auth/google', async (c) => {
     maxAge: ADMIN_SESSION_MAX_AGE_SECONDS,
   })
 
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'openid email profile',
-    access_type: 'online',
-    prompt: 'select_account',
-    state,
-  })
+  const authorizeUrl = createGoogleAuthorizationUrl(
+    {
+      clientId,
+      redirectUri,
+      scope: ['openid', 'email', 'profile'],
+      accessType: 'online',
+      prompt: 'select_account',
+    },
+    c,
+    { state },
+  )
 
-  const authorizeUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
   return c.redirect(authorizeUrl, 302)
 })
 
