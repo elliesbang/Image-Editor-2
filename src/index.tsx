@@ -1583,7 +1583,7 @@ async function createAdminSession(
   setCookie(c, ADMIN_SESSION_COOKIE, encryptedSession, {
     httpOnly: true,
     secure: true,
-    sameSite: 'None',
+    sameSite: 'none',
     path: '/',
     maxAge: expiresInSeconds,
   })
@@ -1591,7 +1591,7 @@ async function createAdminSession(
 }
 
 function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'None' })
+  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'none' })
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
