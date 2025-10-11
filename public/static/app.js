@@ -1,3 +1,5 @@
+console.log(import.meta.env.VITE_ADMIN_SECRET_KEY)
+
 const MAX_FILES = 50
 const MAX_SVG_BYTES = 150 * 1024
 const ENGINE_IMPORT_PATH = '/engine.js'
@@ -53,9 +55,7 @@ const SUBSCRIPTION_PLAN_FEATURES = Object.freeze({
   ],
 })
 const ADMIN_ACCESS_STORAGE_KEY = 'admin'
-const ADMIN_SECRET_KEY = typeof window !== 'undefined' && typeof window.__ADMIN_SECRET_KEY__ === 'string'
-  ? window.__ADMIN_SECRET_KEY__
-  : ''
+const adminKey = import.meta.env.VITE_ADMIN_SECRET_KEY
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
 const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
 const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
@@ -3752,15 +3752,15 @@ function handleAdminLogin(event) {
   if (!(elements.adminLoginForm instanceof HTMLFormElement)) return
   if (elements.adminLoginForm.dataset.state === 'loading') return
 
-  if (!ADMIN_SECRET_KEY) {
-    setAdminMessage('관리자 시크릿 키가 구성되지 않았습니다. 환경변수를 확인하세요.', 'danger')
-    window.alert('관리자 시크릿 키가 구성되지 않았습니다.')
+  if (!adminKey) {
+    console.warn('환경변수 VITE_ADMIN_SECRET_KEY를 불러오지 못했습니다.')
     return
   }
 
-  const secret = elements.adminSecretInput instanceof HTMLInputElement ? elements.adminSecretInput.value.trim() : ''
+  const inputKey =
+    elements.adminSecretInput instanceof HTMLInputElement ? elements.adminSecretInput.value.trim() : ''
 
-  if (!secret) {
+  if (!inputKey) {
     setAdminMessage('시크릿 키를 입력해주세요.', 'danger')
     if (elements.adminSecretInput instanceof HTMLInputElement) {
       elements.adminSecretInput.setAttribute('aria-invalid', 'true')
@@ -3769,7 +3769,7 @@ function handleAdminLogin(event) {
     return
   }
 
-  if (secret !== ADMIN_SECRET_KEY) {
+  if (inputKey !== adminKey) {
     setAdminMessage('잘못된 관리자 키입니다.', 'danger')
     if (elements.adminSecretInput instanceof HTMLInputElement) {
       elements.adminSecretInput.setAttribute('aria-invalid', 'true')
@@ -3784,6 +3784,11 @@ function handleAdminLogin(event) {
 
   persistAdminAccess()
   applyAdminPrivileges()
+  try {
+    window.localStorage?.setItem(ADMIN_ACCESS_STORAGE_KEY, 'true')
+  } catch (error) {
+    console.warn('관리자 상태를 저장하지 못했습니다.', error)
+  }
   if (elements.adminSecretInput instanceof HTMLInputElement) {
     elements.adminSecretInput.removeAttribute('aria-invalid')
   }
