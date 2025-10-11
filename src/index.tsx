@@ -2,14 +2,11 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
 
 type Bindings = {
   OPENAI_API_KEY?: string
   ADMIN_EMAIL?: string
-  SESSION_SECRET?: string
-  ADMIN_SESSION_VERSION?: string
   ADMIN_RATE_LIMIT_MAX_ATTEMPTS?: string
   ADMIN_RATE_LIMIT_WINDOW_SECONDS?: string
   ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
@@ -46,31 +43,15 @@ type ChallengeSummary = ChallengeParticipant & {
   missingDays: number
 }
 
-type AdminSessionPayload = {
-  sub: string
-  role: 'admin'
-  exp: number
-  iss: string
-  aud: string
-  ver: string
-  iat: number
-}
-
-type AdminConfig = {
+type UserSession = {
   email: string
-  sessionSecret: string
-  sessionVersion: string
+  role: 'admin' | 'member'
 }
 
 type AdminRateLimitConfig = {
   maxAttempts: number
   windowSeconds: number
   cooldownSeconds: number
-}
-
-type AdminConfigValidationResult = {
-  config: AdminConfig | null
-  issues: string[]
 }
 
 type RateLimitRecord = {
@@ -108,9 +89,7 @@ type MichinaUserRecord = {
   updatedAt: string
 }
 
-const ADMIN_SESSION_COOKIE = 'admin_session'
-const ADMIN_SESSION_ISSUER = 'easy-image-editor'
-const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
+const USER_SESSION_COOKIE = 'user'
 const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -646,49 +625,6 @@ function getFixedWindowBoundaries(now: number, windowSeconds: number) {
   }
 }
 
-function validateAdminEnvironment(env: Bindings): AdminConfigValidationResult {
-  const issues: string[] = []
-
-  const emailRaw = env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
-  if (!emailRaw) {
-    issues.push('ADMIN_EMAIL is not configured')
-  } else if (!isValidEmail(emailRaw)) {
-    issues.push('ADMIN_EMAIL must be a valid email address')
-  }
-
-  const sessionSecretRaw = env.SESSION_SECRET?.trim() ?? ''
-  if (!sessionSecretRaw) {
-    issues.push('SESSION_SECRET is not configured')
-  } else if (sessionSecretRaw.length < 32) {
-    issues.push('SESSION_SECRET must be at least 32 characters')
-  }
-
-  const sessionVersionRaw = env.ADMIN_SESSION_VERSION?.trim() ?? '1'
-  if (!sessionVersionRaw) {
-    issues.push('ADMIN_SESSION_VERSION must not be empty')
-  } else if (sessionVersionRaw.length > 32) {
-    issues.push('ADMIN_SESSION_VERSION must be 32 characters or fewer')
-  }
-
-  if (issues.length > 0) {
-    return { config: null, issues }
-  }
-
-  return {
-    config: {
-      email: emailRaw,
-      sessionSecret: sessionSecretRaw,
-      sessionVersion: sessionVersionRaw,
-    },
-    issues,
-  }
-}
-
-function getAdminConfig(env: Bindings): AdminConfig | null {
-  const validation = validateAdminEnvironment(env)
-  return validation.config
-}
-
 function getAdminRateLimitConfig(env: Bindings): AdminRateLimitConfig {
   const windowSeconds = parsePositiveInteger(
     env.ADMIN_RATE_LIMIT_WINDOW_SECONDS,
@@ -713,6 +649,31 @@ function getAdminRateLimitConfig(env: Bindings): AdminRateLimitConfig {
     windowSeconds,
     cooldownSeconds,
   }
+}
+
+function readUserSession(c: Context<{ Bindings: Bindings }>): UserSession | null {
+  const raw = getCookie(c, USER_SESSION_COOKIE)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<UserSession>
+    const email = typeof parsed.email === 'string' ? parsed.email.trim().toLowerCase() : ''
+    const role = parsed.role === 'admin' ? 'admin' : parsed.role === 'member' ? 'member' : null
+    if (!email || !role || !isValidEmail(email)) {
+      deleteCookie(c, USER_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' })
+      return null
+    }
+    return { email, role }
+  } catch (error) {
+    console.warn('[auth] Failed to parse user cookie', error)
+    deleteCookie(c, USER_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' })
+    return null
+  }
+}
+
+function clearUserSession(c: Context<{ Bindings: Bindings }>) {
+  deleteCookie(c, USER_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' })
 }
 
 function buildRateLimitKey(identifier: string) {
@@ -1478,80 +1439,15 @@ async function evaluateCompletions(env: Bindings) {
 }
 
 async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
-  const config = getAdminConfig(c.env)
-  if (!config) {
+  const session = readUserSession(c)
+  if (!session || session.role !== 'admin') {
     return null
   }
-  const token = getCookie(c, ADMIN_SESSION_COOKIE)
-  if (!token) {
+  const adminEmail = c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
+  if (adminEmail && session.email !== adminEmail) {
     return null
   }
-  try {
-    const payload = (await verify(token, config.sessionSecret)) as AdminSessionPayload
-    const nowSeconds = Math.floor(Date.now() / 1000)
-    if (payload.role !== 'admin' || !payload.sub) {
-      return null
-    }
-    if (payload.iss !== ADMIN_SESSION_ISSUER || payload.aud !== ADMIN_SESSION_AUDIENCE) {
-      return null
-    }
-    if (payload.ver !== config.sessionVersion) {
-      return null
-    }
-    if (payload.sub !== config.email) {
-      return null
-    }
-    if (typeof payload.iat !== 'number' || payload.iat > nowSeconds + 60) {
-      return null
-    }
-    if (typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
-      return null
-    }
-    return payload.sub
-  } catch (error) {
-    console.error('[auth] Failed to verify admin session', error)
-    clearAdminSession(c)
-    return null
-  }
-}
-
-async function createAdminSession(
-  c: Context<{ Bindings: Bindings }>,
-  email: string,
-  config?: AdminConfig,
-): Promise<{ exp: number; iat: number }> {
-  const adminConfig = config ?? getAdminConfig(c.env)
-  if (!adminConfig) {
-    throw new Error('SESSION_SECRET_NOT_CONFIGURED')
-  }
-  const normalizedEmail = email.trim().toLowerCase()
-  const expiresInSeconds = 60 * 60 * 8
-  const issuedAt = Math.floor(Date.now() / 1000)
-  const exp = issuedAt + expiresInSeconds
-  const token = await sign(
-    {
-      sub: normalizedEmail,
-      role: 'admin',
-      exp,
-      iat: issuedAt,
-      iss: ADMIN_SESSION_ISSUER,
-      aud: ADMIN_SESSION_AUDIENCE,
-      ver: adminConfig.sessionVersion,
-    },
-    adminConfig.sessionSecret,
-  )
-  setCookie(c, ADMIN_SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'Strict',
-    secure: true,
-    path: '/',
-    maxAge: expiresInSeconds,
-  })
-  return { exp, iat: issuedAt }
-}
-
-function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
+  return session.email
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1593,9 +1489,22 @@ app.get('/api/auth/session', async (c) => {
   return c.json({ admin: Boolean(adminEmail), email: adminEmail ?? null })
 })
 
+app.get('/api/me', (c) => {
+  const session = readUserSession(c)
+  if (!session) {
+    return c.json({ loggedIn: false })
+  }
+  return c.json({ loggedIn: true, email: session.email, role: session.role })
+})
+
 app.post('/api/auth/admin/logout', async (c) => {
-  clearAdminSession(c)
+  clearUserSession(c)
   return c.json({ ok: true })
+})
+
+app.get('/logout', (c) => {
+  clearUserSession(c)
+  return c.redirect('/', 302)
 })
 
 app.get('/api/michina/config', async (c) => {
@@ -1923,146 +1832,18 @@ app.get('/api/auth/callback/google', async (c) => {
     }
 
     const adminEmail = c.env.ADMIN_EMAIL?.trim().toLowerCase() ?? ''
-    if (!adminEmail) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '관리자 이메일이 구성되지 않았습니다',
-          message: '환경변수 ADMIN_EMAIL을 설정한 후 다시 시도해주세요.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'admin_email_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about admin email', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        500,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
+    const role: UserSession['role'] = adminEmail && email === adminEmail ? 'admin' : 'member'
+    const payload: UserSession = { email, role }
+    setCookie(c, USER_SESSION_COOKIE, JSON.stringify(payload), {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 7,
+    })
 
-    if (email !== adminEmail) {
-      clearAdminSession(c)
-      const scriptContent = `(() => {
-  const message = ${JSON.stringify('관리자 전용 접근 권한이 없습니다.')};
-  const origin = window.location.origin;
-  try {
-    const storage = window.localStorage;
-    if (storage) {
-      storage.removeItem('admin');
-      storage.removeItem('adminSessionState');
-      storage.removeItem('role');
-    }
-  } catch (error) {
-    console.warn('failed to clear admin storage', error);
-  }
-  try {
-    window.sessionStorage?.removeItem('adminSessionId');
-  } catch (error) {
-    console.warn('failed to clear admin session id', error);
-  }
-  if (window.opener && !window.opener.closed) {
-    try {
-      window.opener.postMessage({ type: 'admin-oauth-denied', message }, origin);
-    } catch (error) {
-      console.warn('failed to notify opener about denied access', error);
-    }
-    try {
-      window.opener.alert(message);
-    } catch (error) {
-      console.warn('failed to show alert on opener', error);
-    }
-    window.setTimeout(() => {
-      try {
-        window.opener.location.href = '/';
-      } catch (error) {
-        window.opener.location.replace('/');
-      }
-      window.close();
-    }, 600);
-  } else {
-    window.alert(message);
-    window.location.replace('/');
-  }
-})();`
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '관리자 권한이 필요합니다',
-          message: '해당 Google 계정은 관리자 전용 영역에 접근할 수 없습니다.',
-          scriptContent,
-        }),
-        403,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    const adminConfig = getAdminConfig(c.env)
-    if (!adminConfig) {
-      const response = c.html(
-        renderAdminOAuthPage({
-          title: '관리자 세션을 생성하지 못했습니다',
-          message: '세션 구성이 누락되었습니다. 관리자에게 문의해주세요.',
-          scriptContent:
-            "window.setTimeout(() => { if (window.opener && !window.opener.closed) { try { window.opener.postMessage({ type: 'admin-oauth-error', message: 'session_config_missing' }, window.location.origin); } catch (error) { console.warn('failed to notify opener about session config', error); } } window.location.replace('/'); }, 1600);",
-        }),
-        500,
-      )
-      response.headers.set('Cache-Control', 'no-store')
-      return response
-    }
-
-    const loginTime = Date.now()
-    const sessionId = generateRandomState()
-    await createAdminSession(c, email, adminConfig)
-
-    const scriptContent = `(() => {
-  const payload = ${JSON.stringify({ email, sessionId, loginTime })};
-  const origin = window.location.origin;
-  try {
-    const storage = window.localStorage;
-    if (storage) {
-      storage.setItem('admin', 'true');
-      storage.setItem('role', 'admin');
-      storage.setItem('adminSessionState', JSON.stringify({ loggedIn: true, email: payload.email, loginTime: payload.loginTime, sessionId: payload.sessionId }));
-    }
-  } catch (error) {
-    console.warn('failed to persist admin session', error);
-  }
-  try {
-    const sessionStorage = window.sessionStorage;
-    if (sessionStorage) {
-      sessionStorage.setItem('adminSessionId', payload.sessionId);
-    }
-  } catch (error) {
-    console.warn('failed to persist admin session id', error);
-  }
-  if (window.opener && !window.opener.closed) {
-    try {
-      window.opener.postMessage({ type: 'admin-oauth-success', email: payload.email, sessionId: payload.sessionId, loginTime: payload.loginTime }, origin);
-    } catch (error) {
-      console.warn('failed to notify opener about admin login', error);
-    }
-    window.setTimeout(() => {
-      try {
-        window.opener.location.href = '/admin-dashboard';
-      } catch (error) {
-        window.opener.location.replace('/admin-dashboard');
-      }
-      window.close();
-    }, 500);
-  } else {
-    window.setTimeout(() => {
-      window.location.replace('/admin-dashboard');
-    }, 500);
-  }
-})();`
-
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: '관리자 인증이 완료되었습니다',
-        message: '관리자 대시보드로 이동합니다.',
-        scriptContent,
-      }),
-    )
-    response.headers.set('Cache-Control', 'no-store')
-    return response
+    const redirectTarget = role === 'admin' ? '/dashboard' : '/'
+    return c.redirect(redirectTarget, 302)
   } catch (error) {
     console.error('[auth/google] Unexpected error', error)
     const response = c.html(
