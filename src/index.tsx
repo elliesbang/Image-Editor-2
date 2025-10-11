@@ -3005,9 +3005,18 @@ app.get('/', async (c) => {
             </button>
           </header>
           <p class="login-modal__subtitle">원하는 로그인 방식을 선택해 계속 진행하세요.</p>
-          <div class="login-modal__providers">
+          <div class="login-modal__actions">
             <button
-              class="login-modal__provider login-modal__provider--google"
+              class="login-modal__option login-modal__option--email"
+              type="button"
+              data-action="choose-email-login"
+              aria-pressed="false"
+            >
+              <span class="login-modal__option-title">이메일로 로그인</span>
+              <span class="login-modal__option-copy">6자리 인증 코드 받기</span>
+            </button>
+            <button
+              class="login-modal__option login-modal__option--google"
               type="button"
               data-action="login-google"
               data-role="google-login-button"
@@ -3016,58 +3025,59 @@ app.get('/', async (c) => {
               <span class="login-modal__icon" aria-hidden="true">
                 <i class="ri-google-fill"></i>
               </span>
-              <span data-role="google-login-text" aria-live="polite">Google 계정으로 계속하기</span>
+              <span class="login-modal__option-title" data-role="google-login-text" aria-live="polite">Google로 로그인</span>
               <span class="login-modal__spinner" data-role="google-login-spinner" aria-hidden="true"></span>
             </button>
-            <p
-              class="login-modal__helper login-modal__helper--google"
-              data-role="google-login-helper"
-              aria-live="polite"
-              id="google-login-helper"
-              hidden
-            ></p>
           </div>
-          <div class="login-modal__divider" role="presentation">
-            <span>또는</span>
-          </div>
-          <form class="login-modal__form" data-role="login-email-form" data-state="idle">
-            <label class="login-modal__label" for="loginEmail">이메일 로그인</label>
-            <div class="login-modal__field-group">
-              <input
-                id="loginEmail"
-                name="email"
-                type="email"
-                placeholder="example@email.com"
-                required
-                autocomplete="email"
-                class="login-modal__input"
-                data-role="login-email-input"
-              />
-              <button class="login-modal__submit" type="submit" data-role="login-email-submit">
-                인증 코드 받기
-              </button>
-            </div>
-            <div class="login-modal__code-group">
-              <input
-                id="loginEmailCode"
-                name="code"
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                placeholder="6자리 인증 코드"
-                class="login-modal__input login-modal__input--code"
-                data-role="login-email-code"
-                disabled
-              />
-              <button class="login-modal__resend" type="button" data-role="login-email-resend" hidden>
-                코드 다시 보내기
-              </button>
-            </div>
-            <p class="login-modal__helper" data-role="login-email-helper">
-              이메일 주소를 입력하면 인증 코드를 보내드립니다.
-            </p>
-          </form>
+          <p
+            class="login-modal__helper login-modal__helper--google"
+            data-role="google-login-helper"
+            aria-live="polite"
+            id="google-login-helper"
+            hidden
+          ></p>
+          <section class="login-modal__email-panel" data-role="login-email-panel" hidden>
+            <h3 class="login-modal__section-title">이메일 로그인</h3>
+            <p class="login-modal__section-copy">가입하신 이메일로 6자리 인증 코드를 보내드립니다.</p>
+            <form class="login-modal__form" data-role="login-email-form" data-state="idle">
+              <label class="login-modal__label" for="loginEmail">이메일 주소</label>
+              <div class="login-modal__field-group">
+                <input
+                  id="loginEmail"
+                  name="email"
+                  type="email"
+                  placeholder="example@email.com"
+                  required
+                  autocomplete="email"
+                  class="login-modal__input"
+                  data-role="login-email-input"
+                />
+                <button class="login-modal__submit" type="submit" data-role="login-email-submit">
+                  인증 코드 받기
+                </button>
+              </div>
+              <div class="login-modal__code-group">
+                <input
+                  id="loginEmailCode"
+                  name="code"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  placeholder="6자리 인증 코드"
+                  class="login-modal__input login-modal__input--code"
+                  data-role="login-email-code"
+                  disabled
+                />
+                <button class="login-modal__resend" type="button" data-role="login-email-resend" hidden>
+                  코드 다시 보내기
+                </button>
+              </div>
+              <p class="login-modal__helper" data-role="login-email-helper">
+                이메일 주소를 입력하면 인증 코드를 보내드립니다.
+              </p>
+            </form>
+          </section>
         </div>
       </div>
 
