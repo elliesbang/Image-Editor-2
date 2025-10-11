@@ -2,84 +2,30 @@ const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 let toastTimer = 0;
 
 const state = {
-  view: 'period',
   period: null,
-  periodUpdatedAt: '',
-  periodUpdatedBy: '',
-  challengers: [],
-  challengersUpdatedAt: '',
-  challengersUpdatedBy: '',
-  users: [],
-  periodLoaded: false,
-  challengersLoaded: false,
-  usersLoaded: false,
+  participants: [],
+  isSavingPeriod: false,
+  isUploading: false,
 };
 
 const elements = {
-  buttons: Array.prototype.slice.call(document.querySelectorAll('.admin-sidebar button[data-view]')),
-  views: Array.prototype.slice.call(document.querySelectorAll('[data-admin-view]')),
   periodForm: document.querySelector('[data-role="period-form"]'),
   periodStart: document.querySelector('[data-role="period-start"]'),
   periodEnd: document.querySelector('[data-role="period-end"]'),
   periodSummary: document.querySelector('[data-role="period-summary"]'),
-  periodMeta: document.querySelector('[data-role="period-meta"]'),
   periodStatus: document.querySelector('[data-role="period-status"]'),
-  challengerUpload: document.querySelector('[data-role="challenger-upload"]'),
-  challengerStatus: document.querySelector('[data-role="upload-status"]'),
-  challengerMeta: document.querySelector('[data-role="challenger-meta"]'),
-  challengerList: document.querySelector('[data-role="challenger-list"]'),
-  statusCount: document.querySelector('[data-role="status-count"]'),
-  statusTable: document.querySelector('[data-role="status-table"]'),
-  usersTable: document.querySelector('[data-role="users-table"]'),
+  periodSubmit: document.querySelector('[data-role="period-form"] button[type="submit"]'),
+  uploadTrigger: document.querySelector('[data-role="upload-trigger"]'),
+  uploadInput: document.querySelector('[data-role="upload-input"]'),
+  uploadFilename: document.querySelector('[data-role="upload-filename"]'),
+  uploadStatus: document.querySelector('[data-role="upload-status"]'),
+  participantRows: document.querySelector('[data-role="participant-rows"]'),
+  participantCount: document.querySelector('[data-role="participant-count"]'),
   toast: document.querySelector('[data-role="admin-toast"]'),
-  refreshButtons: Array.prototype.slice.call(document.querySelectorAll('[data-action="refresh-view"]')),
+  logoutButton: document.querySelector('[data-action="logout"]'),
 };
 
-function normalizeEmail(value) {
-  if (typeof value !== 'string') {
-    return '';
-  }
-  return value.trim().toLowerCase();
-}
-
-function formatDate(value) {
-  if (typeof value !== 'string' || !value) {
-    return '';
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return new Intl.DateTimeFormat('ko', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
-}
-
-function describeRole(role) {
-  if (role === 'michina') {
-    return '미치나 챌린저';
-  }
-  if (role === 'admin') {
-    return '관리자';
-  }
-  if (role === 'guest') {
-    return '게스트';
-  }
-  return '회원';
-}
-
-function showToast(message, tone) {
-  if (!(elements.toast instanceof HTMLElement)) {
-    return;
-  }
-  elements.toast.textContent = message;
-  elements.toast.dataset.tone = tone || 'info';
-  elements.toast.hidden = false;
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => {
-    elements.toast.hidden = true;
-  }, 3600);
-}
-
-function setHint(element, message, tone) {
+function setMessage(element, message, tone) {
   if (!(element instanceof HTMLElement)) {
     return;
   }
@@ -94,603 +40,366 @@ function setHint(element, message, tone) {
   }
 }
 
-function persistPeriod(record) {
-  try {
-    if (!window.localStorage) {
-      return;
-    }
-    if (record) {
-      window.localStorage.setItem('michinaPeriod', JSON.stringify(record));
-    } else {
-      window.localStorage.removeItem('michinaPeriod');
-    }
-  } catch (error) {
-    console.warn('기간 정보를 저장하지 못했습니다.', error);
+function showToast(message) {
+  if (!(elements.toast instanceof HTMLElement)) {
+    return;
   }
+  elements.toast.textContent = message;
+  elements.toast.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    elements.toast.hidden = true;
+  }, 3600);
 }
 
-function persistChallengers(record) {
-  try {
-    if (!window.localStorage) {
-      return;
-    }
-    if (record && record.challengers) {
-      window.localStorage.setItem('michinaChallengers', JSON.stringify(record));
-    } else {
-      window.localStorage.removeItem('michinaChallengers');
-    }
-  } catch (error) {
-    console.warn('명단 정보를 저장하지 못했습니다.', error);
+function formatDate(value) {
+  if (typeof value !== 'string' || !value) {
+    return '-';
   }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat('ko', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
-function restoreFromStorage() {
-  try {
-    if (window.localStorage) {
-      const storedPeriod = window.localStorage.getItem('michinaPeriod');
-      if (storedPeriod) {
-        try {
-          const parsed = JSON.parse(storedPeriod);
-          if (parsed && typeof parsed === 'object') {
-            state.period = {
-              start: typeof parsed.start === 'string' ? parsed.start : '',
-              end: typeof parsed.end === 'string' ? parsed.end : '',
-            };
-            state.periodUpdatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '';
-            state.periodUpdatedBy = typeof parsed.updatedBy === 'string' ? parsed.updatedBy : '';
-          }
-        } catch (error) {
-          console.warn('저장된 기간 정보를 해석하지 못했습니다.', error);
-        }
-      }
-      const storedChallengers = window.localStorage.getItem('michinaChallengers');
-      if (storedChallengers) {
-        try {
-          const parsed = JSON.parse(storedChallengers);
-          if (Array.isArray(parsed)) {
-            state.challengers = parsed.map((value) => normalizeEmail(value)).filter(Boolean);
-          } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.challengers)) {
-            state.challengers = parsed.challengers.map((value) => normalizeEmail(value)).filter(Boolean);
-            state.challengersUpdatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '';
-            state.challengersUpdatedBy = typeof parsed.updatedBy === 'string' ? parsed.updatedBy : '';
-          }
-        } catch (error) {
-          console.warn('저장된 명단 정보를 해석하지 못했습니다.', error);
-        }
-      }
-    }
-  } catch (error) {
-    console.warn('저장된 설정을 불러오지 못했습니다.', error);
+function formatDateTime(value) {
+  if (typeof value !== 'string' || !value) {
+    return '';
   }
-  renderPeriod();
-  renderChallengers();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat('ko', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 }
 
-function setActiveView(view) {
-  state.view = view;
-  elements.buttons.forEach((button) => {
-    if (!(button instanceof HTMLElement)) {
-      return;
-    }
-    button.classList.toggle('is-active', button.dataset.view === view);
-  });
-  elements.views.forEach((section) => {
-    if (!(section instanceof HTMLElement)) {
-      return;
-    }
-    section.classList.toggle('is-active', section.dataset.adminView === view);
-  });
-  if (view === 'period' && !state.periodLoaded) {
-    loadPeriod();
-  } else if ((view === 'upload' || view === 'status') && !state.challengersLoaded) {
-    loadChallengers();
-  } else if (view === 'users' && !state.usersLoaded) {
-    loadUsers();
+function normalizeDateValue(value) {
+  if (typeof value !== 'string') {
+    return '';
   }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const normalized = trimmed.replace(/[.\/]/g, '-');
+  const parsed = Date.parse(normalized);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString().split('T')[0];
+  }
+  return trimmed;
+}
+
+function describeRole(role) {
+  if (!role) return 'free';
+  if (role.toLowerCase() === 'free') return 'free';
+  return role;
 }
 
 function renderPeriod() {
-  if (elements.periodStart instanceof HTMLInputElement) {
-    elements.periodStart.value = state.period && state.period.start ? state.period.start : '';
-  }
-  if (elements.periodEnd instanceof HTMLInputElement) {
-    elements.periodEnd.value = state.period && state.period.end ? state.period.end : '';
-  }
   if (elements.periodSummary instanceof HTMLElement) {
-    if (state.period && state.period.start && state.period.end) {
-      elements.periodSummary.textContent = state.period.start + ' ~ ' + state.period.end;
+    if (state.period && state.period.startDate && state.period.endDate) {
+      const startLabel = formatDate(state.period.startDate);
+      const endLabel = formatDate(state.period.endDate);
+      elements.periodSummary.textContent = `${startLabel} ~ ${endLabel}`;
     } else {
-      elements.periodSummary.textContent = '저장된 기간이 없습니다.';
+      elements.periodSummary.textContent = '저장된 챌린지 기간이 없습니다.';
     }
   }
-  if (elements.periodMeta instanceof HTMLElement) {
-    if (state.periodUpdatedAt) {
-      let meta = '마지막 업데이트: ' + formatDate(state.periodUpdatedAt);
-      if (state.periodUpdatedBy) {
-        meta += ' · ' + state.periodUpdatedBy;
-      }
-      setHint(elements.periodMeta, meta, 'info');
-    } else {
-      setHint(elements.periodMeta, '', 'info');
-    }
+  if (state.period && state.period.updatedAt) {
+    setMessage(elements.periodStatus, `마지막 저장: ${formatDateTime(state.period.updatedAt)}`, 'success');
+  } else {
+    setMessage(elements.periodStatus, '', 'info');
+  }
+  if (elements.periodStart instanceof HTMLInputElement && state.period?.startDate) {
+    elements.periodStart.value = state.period.startDate;
+  }
+  if (elements.periodEnd instanceof HTMLInputElement && state.period?.endDate) {
+    elements.periodEnd.value = state.period.endDate;
   }
 }
 
-function renderChallengers() {
-  const sorted = state.challengers.slice().sort();
-  if (elements.challengerList instanceof HTMLElement) {
-    elements.challengerList.innerHTML = '';
-    if (sorted.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'admin-empty';
-      empty.textContent = '등록된 챌린저 명단이 없습니다.';
-      elements.challengerList.appendChild(empty);
-    } else {
-      sorted.forEach((email) => {
-        const tag = document.createElement('span');
-        tag.className = 'admin-tag';
-        tag.textContent = email;
-        elements.challengerList.appendChild(tag);
-      });
-    }
-  }
-  if (elements.statusCount instanceof HTMLElement) {
-    elements.statusCount.textContent = String(sorted.length);
-  }
-  if (elements.statusTable instanceof HTMLElement) {
-    if (sorted.length === 0) {
-      elements.statusTable.innerHTML = '<tr><td colspan="2" class="admin-empty">등록된 명단이 없습니다.</td></tr>';
-    } else {
-      const rows = sorted.map((email, index) => {
-        return '<tr><td>' + (index + 1) + '</td><td>' + email + '</td></tr>';
-      });
-      elements.statusTable.innerHTML = rows.join('');
-    }
-  }
-  if (elements.challengerMeta instanceof HTMLElement) {
-    if (state.challengersUpdatedAt) {
-      let meta = '마지막 업데이트: ' + formatDate(state.challengersUpdatedAt);
-      if (state.challengersUpdatedBy) {
-        meta += ' · ' + state.challengersUpdatedBy;
-      }
-      setHint(elements.challengerMeta, meta, 'info');
-    } else {
-      setHint(elements.challengerMeta, '', 'info');
-    }
-  }
-}
-
-function renderUsers() {
-  if (!(elements.usersTable instanceof HTMLElement)) {
+function renderParticipants() {
+  if (!(elements.participantRows instanceof HTMLElement)) {
     return;
   }
-  if (!Array.isArray(state.users) || state.users.length === 0) {
-    elements.usersTable.innerHTML = '<tr><td colspan="4" class="admin-empty">아직 저장된 로그인 정보가 없습니다.</td></tr>';
+  const list = Array.isArray(state.participants) ? state.participants : [];
+  if (elements.participantCount instanceof HTMLElement) {
+    elements.participantCount.textContent = `${list.length}명`;
+  }
+  if (list.length === 0) {
+    elements.participantRows.innerHTML = '<tr><td colspan="4" class="admin-empty">등록된 참가자가 없습니다.</td></tr>';
     return;
   }
-  const rows = state.users.map((user) => {
-    const name = user.name && user.name.trim().length > 0 ? user.name : '미등록';
-    const email = user.email;
-    const joined = user.joinedAt ? formatDate(user.joinedAt) : '-';
-    const role = describeRole(user.role);
-    return '<tr><td>' + name + '</td><td>' + email + '</td><td>' + joined + '</td><td>' + role + '</td></tr>';
-  });
-  elements.usersTable.innerHTML = rows.join('');
+  const rows = list
+    .map((participant) => {
+      const name = typeof participant.name === 'string' && participant.name.trim() ? participant.name.trim() : '-';
+      const email = typeof participant.email === 'string' ? participant.email : '-';
+      const joinedAt = typeof participant.joined_at === 'string' ? participant.joined_at : participant.joinedAt;
+      const joinedLabel = formatDate(joinedAt || '');
+      const role = describeRole(participant.role || participant.roleName || 'free');
+      return `<tr><td>${name}</td><td>${email}</td><td>${joinedLabel}</td><td>${role}</td></tr>`;
+    })
+    .join('');
+  elements.participantRows.innerHTML = rows;
 }
 
 async function loadPeriod() {
-  if (elements.periodStatus instanceof HTMLElement && !state.periodLoaded) {
-    setHint(elements.periodStatus, '미치나 기간 정보를 불러오는 중입니다…', 'info');
-  }
   try {
-    const response = await fetch('/api/admin/michina/period', {
-      credentials: 'include',
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-    });
+    const response = await fetch('/api/admin/period', { credentials: 'include' });
     if (response.status === 401) {
-      setHint(elements.periodStatus, '관리자 인증이 필요합니다. 로그인 후 다시 시도해주세요.', 'warning');
-      state.period = null;
-      state.periodUpdatedAt = '';
-      state.periodUpdatedBy = '';
-      persistPeriod(null);
-      renderPeriod();
+      setMessage(elements.periodStatus, '관리자 인증이 필요합니다.', 'danger');
       return;
     }
     if (!response.ok) {
-      throw new Error('PERIOD_FETCH_FAILED');
+      throw new Error('failed');
     }
-    const payload = await response.json().catch(() => ({}));
-    if (payload && payload.period) {
-      state.period = {
-        start: typeof payload.period.start === 'string' ? payload.period.start : '',
-        end: typeof payload.period.end === 'string' ? payload.period.end : '',
-      };
-      state.periodUpdatedAt = typeof payload.period.updatedAt === 'string' ? payload.period.updatedAt : '';
-      state.periodUpdatedBy = typeof payload.period.updatedBy === 'string' ? payload.period.updatedBy : '';
-      persistPeriod({
-        start: state.period.start,
-        end: state.period.end,
-        updatedAt: state.periodUpdatedAt,
-        updatedBy: state.periodUpdatedBy,
-      });
-    } else {
-      state.period = null;
-      state.periodUpdatedAt = '';
-      state.periodUpdatedBy = '';
-      persistPeriod(null);
-    }
+    const payload = await response.json();
+    state.period = payload?.period ?? null;
     renderPeriod();
-    setHint(elements.periodStatus, '', 'info');
   } catch (error) {
-    console.warn('미치나 기간 정보를 불러오지 못했습니다.', error);
-    setHint(elements.periodStatus, '미치나 기간 정보를 불러오지 못했습니다.', 'danger');
-  } finally {
-    state.periodLoaded = true;
+    setMessage(elements.periodStatus, '기간 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger');
   }
 }
 
-async function savePeriod(start, end) {
-  if (elements.periodStatus instanceof HTMLElement) {
-    setHint(elements.periodStatus, '기간을 저장하는 중입니다…', 'info');
+async function savePeriod(startDate, endDate) {
+  if (state.isSavingPeriod) {
+    return;
+  }
+  state.isSavingPeriod = true;
+  if (elements.periodSubmit instanceof HTMLButtonElement) {
+    elements.periodSubmit.disabled = true;
+    elements.periodSubmit.textContent = '저장 중...';
   }
   try {
-    const response = await fetch('/api/admin/michina/period', {
+    const response = await fetch('/api/admin/period', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({ start, end }),
+      body: JSON.stringify({ startDate, endDate }),
     });
     if (response.status === 401) {
-      setHint(elements.periodStatus, '관리자 인증이 필요합니다. 로그인 후 다시 시도해주세요.', 'warning');
+      setMessage(elements.periodStatus, '관리자 인증이 필요합니다.', 'danger');
       return;
     }
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      if (payload && payload.error === 'INVALID_RANGE') {
-        setHint(elements.periodStatus, '종료일은 시작일 이후여야 합니다.', 'warning');
-        return;
-      }
-      if (payload && payload.error === 'INVALID_PERIOD') {
-        setHint(elements.periodStatus, '시작일과 종료일을 모두 입력해주세요.', 'warning');
-        return;
-      }
-      throw new Error('PERIOD_SAVE_FAILED');
+      throw new Error('failed');
     }
-    const result = await response.json().catch(() => ({}));
-    if (result && result.period) {
-      state.period = {
-        start: typeof result.period.start === 'string' ? result.period.start : start,
-        end: typeof result.period.end === 'string' ? result.period.end : end,
-      };
-      state.periodUpdatedAt = typeof result.period.updatedAt === 'string' ? result.period.updatedAt : '';
-      state.periodUpdatedBy = typeof result.period.updatedBy === 'string' ? result.period.updatedBy : '';
-      persistPeriod({
-        start: state.period.start,
-        end: state.period.end,
-        updatedAt: state.periodUpdatedAt,
-        updatedBy: state.periodUpdatedBy,
-      });
-      renderPeriod();
-      setHint(elements.periodStatus, '', 'info');
-      showToast('✅ 챌린지 기간이 저장되었습니다.', 'success');
-    }
+    const payload = await response.json();
+    state.period = payload?.period ?? null;
+    renderPeriod();
+    setMessage(elements.periodStatus, '챌린지 기간이 저장되었습니다.', 'success');
+    showToast('챌린지 기간이 저장되었습니다.');
   } catch (error) {
-    console.warn('기간 저장 중 오류가 발생했습니다.', error);
-    setHint(elements.periodStatus, '기간을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-  }
-}
-
-async function loadChallengers() {
-  if (elements.challengerStatus instanceof HTMLElement && !state.challengersLoaded) {
-    setHint(elements.challengerStatus, '챌린저 명단을 불러오는 중입니다…', 'info');
-  }
-  try {
-    const response = await fetch('/api/admin/michina/challengers', {
-      credentials: 'include',
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-    });
-    if (response.status === 401) {
-      setHint(elements.challengerStatus, '관리자 인증이 필요합니다. 로그인 후 다시 시도해주세요.', 'warning');
-      state.challengers = [];
-      state.challengersUpdatedAt = '';
-      state.challengersUpdatedBy = '';
-      persistChallengers(null);
-      renderChallengers();
-      return;
-    }
-    if (!response.ok) {
-      throw new Error('CHALLENGERS_FETCH_FAILED');
-    }
-    const payload = await response.json().catch(() => ({}));
-    if (payload && Array.isArray(payload.challengers)) {
-      state.challengers = payload.challengers.map((value) => normalizeEmail(value)).filter(Boolean);
-      state.challengersUpdatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : '';
-      state.challengersUpdatedBy = typeof payload.updatedBy === 'string' ? payload.updatedBy : '';
-      persistChallengers({
-        challengers: state.challengers,
-        updatedAt: state.challengersUpdatedAt,
-        updatedBy: state.challengersUpdatedBy,
-      });
-    } else {
-      state.challengers = [];
-      state.challengersUpdatedAt = '';
-      state.challengersUpdatedBy = '';
-      persistChallengers(null);
-    }
-    renderChallengers();
-    setHint(elements.challengerStatus, '', 'info');
-  } catch (error) {
-    console.warn('챌린저 명단을 불러오지 못했습니다.', error);
-    setHint(elements.challengerStatus, '챌린저 명단을 불러오지 못했습니다.', 'danger');
+    setMessage(elements.periodStatus, '기간을 저장하지 못했습니다. 입력 값을 확인해주세요.', 'danger');
   } finally {
-    state.challengersLoaded = true;
+    state.isSavingPeriod = false;
+    if (elements.periodSubmit instanceof HTMLButtonElement) {
+      elements.periodSubmit.disabled = false;
+      elements.periodSubmit.textContent = '기간 저장';
+    }
   }
 }
 
-async function saveChallengers(emails) {
-  if (elements.challengerStatus instanceof HTMLElement) {
-    setHint(elements.challengerStatus, '명단을 저장하는 중입니다…', 'info');
-  }
-  try {
-    const response = await fetch('/api/admin/michina/challengers', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({ challengers: emails, allowEmpty: true }),
-    });
-    if (response.status === 401) {
-      setHint(elements.challengerStatus, '관리자 인증이 필요합니다. 로그인 후 다시 시도해주세요.', 'warning');
-      return;
-    }
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      if (payload && payload.error === 'NO_CHALLENGERS') {
-        setHint(elements.challengerStatus, '추출된 이메일이 없습니다. CSV 또는 XLSX 파일을 확인해주세요.', 'warning');
-        return;
+function splitCsvLine(line) {
+  const cells = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
       }
-      throw new Error('CHALLENGERS_SAVE_FAILED');
-    }
-    const result = await response.json().catch(() => ({}));
-    if (result && Array.isArray(result.challengers)) {
-      state.challengers = result.challengers.map((value) => normalizeEmail(value)).filter(Boolean);
-      state.challengersUpdatedAt = typeof result.updatedAt === 'string' ? result.updatedAt : '';
-      state.challengersUpdatedBy = typeof result.updatedBy === 'string' ? result.updatedBy : '';
-      persistChallengers({
-        challengers: state.challengers,
-        updatedAt: state.challengersUpdatedAt,
-        updatedBy: state.challengersUpdatedBy,
-      });
-      renderChallengers();
-      setHint(elements.challengerStatus, '', 'info');
-      showToast('✅ 챌린저 명단이 등록되었습니다.', 'success');
-    }
-  } catch (error) {
-    console.warn('챌린저 명단 저장 중 오류가 발생했습니다.', error);
-    setHint(elements.challengerStatus, '챌린저 명단을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-  }
-}
-
-async function loadUsers() {
-  if (elements.usersTable instanceof HTMLElement && !state.usersLoaded) {
-    elements.usersTable.innerHTML = '<tr><td colspan="4" class="admin-empty">데이터를 불러오는 중입니다…</td></tr>';
-  }
-  try {
-    const response = await fetch('/api/users', {
-      credentials: 'include',
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-    });
-    if (response.status === 401) {
-      if (elements.usersTable instanceof HTMLElement) {
-        elements.usersTable.innerHTML = '<tr><td colspan="4" class="admin-empty">관리자 인증이 필요합니다.</td></tr>';
-      }
-      state.users = [];
-      return;
-    }
-    if (!response.ok) {
-      throw new Error('USERS_FETCH_FAILED');
-    }
-    const payload = await response.json().catch(() => ({}));
-    if (payload && Array.isArray(payload.users)) {
-      state.users = payload.users.map((user) => ({
-        name: typeof user.name === 'string' ? user.name : '',
-        email: normalizeEmail(user.email),
-        joinedAt: typeof user.joinedAt === 'string' ? user.joinedAt : '',
-        role: typeof user.role === 'string' ? user.role : 'member',
-      }));
+    } else if (char === ',' && !inQuotes) {
+      cells.push(current);
+      current = '';
     } else {
-      state.users = [];
+      current += char;
     }
-    renderUsers();
-  } catch (error) {
-    console.warn('로그인 DB를 불러오지 못했습니다.', error);
-    if (elements.usersTable instanceof HTMLElement) {
-      elements.usersTable.innerHTML = '<tr><td colspan="4" class="admin-empty">로그인 DB를 불러오지 못했습니다.</td></tr>';
-    }
-  } finally {
-    state.usersLoaded = true;
   }
+  cells.push(current);
+  return cells.map((value) => value.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
 }
 
 function parseCsv(text) {
-  const values = [];
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (!line) {
+  if (typeof text !== 'string') {
+    return [];
+  }
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 2) {
+    return [];
+  }
+  const headerCells = splitCsvLine(lines[0].replace(/\ufeff/g, ''));
+  const normalizedHeaders = headerCells.map((value) => value.toLowerCase());
+  const emailIndex = normalizedHeaders.findIndex((value) => value.includes('이메일') || value === 'email');
+  if (emailIndex === -1) {
+    return [];
+  }
+  const nameIndex = normalizedHeaders.findIndex((value) => value.includes('이름') || value === 'name');
+  const joinedIndex = normalizedHeaders.findIndex(
+    (value) => value.includes('등록일') || value.includes('가입') || value === 'joined_at' || value === 'joined',
+  );
+  const records = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const cells = splitCsvLine(lines[i]);
+    if (cells.every((value) => value.trim() === '')) {
       continue;
     }
-    const parts = line.split(/[;,\t]/);
-    for (let j = 0; j < parts.length; j += 1) {
-      values.push(parts[j]);
+    const emailRaw = cells[emailIndex] ? cells[emailIndex].trim().toLowerCase() : '';
+    if (!emailPattern.test(emailRaw)) {
+      continue;
     }
+    const name = nameIndex >= 0 && cells[nameIndex] ? cells[nameIndex].trim() : '';
+    const joinedRaw = joinedIndex >= 0 && cells[joinedIndex] ? cells[joinedIndex].trim() : '';
+    records.push({
+      name,
+      email: emailRaw,
+      joined_at: normalizeDateValue(joinedRaw),
+    });
   }
-  return values;
+  return records;
 }
 
-function extractValuesFromRows(rows) {
-  const values = [];
-  if (!Array.isArray(rows)) {
-    return values;
-  }
-  for (let i = 0; i < rows.length; i += 1) {
-    const row = rows[i];
-    if (Array.isArray(row)) {
-      for (let j = 0; j < row.length; j += 1) {
-        values.push(row[j]);
+async function loadParticipants() {
+  try {
+    const response = await fetch('/api/admin/participants', { credentials: 'include' });
+    if (response.status === 401) {
+      if (elements.uploadStatus) {
+        setMessage(elements.uploadStatus, '관리자 인증이 필요합니다.', 'danger');
       }
-    } else if (row && typeof row === 'object') {
-      for (const key in row) {
-        if (Object.prototype.hasOwnProperty.call(row, key)) {
-          values.push(row[key]);
-        }
-      }
-    } else if (typeof row === 'string') {
-      values.push(row);
+      return;
+    }
+    if (!response.ok) {
+      throw new Error('failed');
+    }
+    const payload = await response.json();
+    state.participants = Array.isArray(payload?.participants) ? payload.participants : [];
+    renderParticipants();
+  } catch (error) {
+    if (elements.uploadStatus) {
+      setMessage(elements.uploadStatus, '참가자 명단을 불러오지 못했습니다.', 'danger');
     }
   }
-  return values;
 }
 
-function collectEmails(values) {
-  const unique = new Set();
-  for (let i = 0; i < values.length; i += 1) {
-    const normalized = normalizeEmail(values[i]);
-    if (normalized && emailPattern.test(normalized)) {
-      unique.add(normalized);
+async function handleUploadFile(file) {
+  if (!file || state.isUploading) {
+    return;
+  }
+  state.isUploading = true;
+  if (elements.uploadTrigger instanceof HTMLButtonElement) {
+    elements.uploadTrigger.disabled = true;
+    elements.uploadTrigger.textContent = '업로드 중...';
+  }
+  if (elements.uploadFilename instanceof HTMLElement) {
+    elements.uploadFilename.textContent = file.name;
+  }
+  try {
+    const text = await file.text();
+    const records = parseCsv(text);
+    if (records.length === 0) {
+      setMessage(elements.uploadStatus, 'CSV에서 유효한 참가자를 찾지 못했습니다.', 'danger');
+      return;
+    }
+    const response = await fetch('/api/admin/participants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(records),
+    });
+    if (response.status === 401) {
+      setMessage(elements.uploadStatus, '관리자 인증이 필요합니다.', 'danger');
+      return;
+    }
+    if (!response.ok) {
+      throw new Error('failed');
+    }
+    const payload = await response.json();
+    if (Array.isArray(payload?.participants)) {
+      state.participants = payload.participants;
+    }
+    renderParticipants();
+    setMessage(elements.uploadStatus, '명단이 저장되었습니다.', 'success');
+    showToast('명단이 저장되었습니다.');
+  } catch (error) {
+    setMessage(elements.uploadStatus, '업로드에 실패했습니다. CSV 파일을 확인해주세요.', 'danger');
+  } finally {
+    state.isUploading = false;
+    if (elements.uploadTrigger instanceof HTMLButtonElement) {
+      elements.uploadTrigger.disabled = false;
+      elements.uploadTrigger.textContent = 'CSV 업로드';
+    }
+    if (elements.uploadInput instanceof HTMLInputElement) {
+      elements.uploadInput.value = '';
     }
   }
-  return Array.from(unique).sort();
 }
 
-async function extractEmailsFromFile(file) {
-  const extension = typeof file.name === 'string' && file.name.includes('.')
-    ? file.name.split('.').pop().toLowerCase()
-    : '';
-  if (extension === 'xlsx' || extension === 'xls') {
-    const xlsxLib = window.XLSX;
-    if (!xlsxLib || typeof xlsxLib.read !== 'function' || !xlsxLib.utils) {
-      throw new Error('XLSX_UNAVAILABLE');
-    }
-    const buffer = await file.arrayBuffer();
-    const workbook = xlsxLib.read(buffer, { type: 'array' });
-    const collected = [];
-    workbook.SheetNames.forEach((name) => {
-      const sheet = workbook.Sheets[name];
-      if (!sheet) {
+function handleLogout() {
+  fetch('/api/auth/admin/logout', {
+    method: 'POST',
+    credentials: 'include',
+  })
+    .then(() => {
+      window.location.href = '/';
+    })
+    .catch(() => {
+      window.location.href = '/';
+    });
+}
+
+function initialize() {
+  if (elements.logoutButton instanceof HTMLButtonElement) {
+    elements.logoutButton.addEventListener('click', handleLogout);
+  }
+  if (elements.periodForm instanceof HTMLFormElement) {
+    elements.periodForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!(elements.periodStart instanceof HTMLInputElement) || !(elements.periodEnd instanceof HTMLInputElement)) {
         return;
       }
-      const rows = xlsxLib.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
-      collected.push(...extractValuesFromRows(rows));
+      const startDate = elements.periodStart.value;
+      const endDate = elements.periodEnd.value;
+      if (!startDate || !endDate) {
+        setMessage(elements.periodStatus, '시작일과 종료일을 모두 입력해주세요.', 'danger');
+        return;
+      }
+      if (startDate > endDate) {
+        setMessage(elements.periodStatus, '시작일은 종료일보다 빠르거나 같아야 합니다.', 'danger');
+        return;
+      }
+      savePeriod(startDate, endDate);
     });
-    return collectEmails(collected);
   }
-  const text = await file.text();
-  return collectEmails(parseCsv(text));
-}
-
-function handlePeriodSubmit(event) {
-  event.preventDefault();
-  if (!(elements.periodStart instanceof HTMLInputElement) || !(elements.periodEnd instanceof HTMLInputElement)) {
-    return;
-  }
-  const start = elements.periodStart.value;
-  const end = elements.periodEnd.value;
-  if (!start || !end) {
-    setHint(elements.periodStatus, '시작일과 종료일을 모두 입력해주세요.', 'warning');
-    return;
-  }
-  if (start > end) {
-    setHint(elements.periodStatus, '종료일은 시작일 이후여야 합니다.', 'warning');
-    return;
-  }
-  savePeriod(start, end);
-}
-
-async function handleChallengerUpload(event) {
-  const input = event.currentTarget;
-  if (!(input instanceof HTMLInputElement) || !input.files || input.files.length === 0) {
-    return;
-  }
-  const file = input.files[0];
-  input.value = '';
-  setHint(elements.challengerStatus, '명단을 분석하는 중입니다…', 'info');
-  try {
-    const emails = await extractEmailsFromFile(file);
-    if (emails.length === 0) {
-      setHint(elements.challengerStatus, '유효한 이메일을 찾지 못했습니다. 파일을 다시 확인해주세요.', 'warning');
-      return;
-    }
-    await saveChallengers(emails);
-  } catch (error) {
-    if (error && error.message === 'XLSX_UNAVAILABLE') {
-      setHint(elements.challengerStatus, 'XLSX 파일을 읽을 수 없습니다. CSV 형식으로 다시 시도해주세요.', 'danger');
-      return;
-    }
-    console.warn('명단 업로드 처리 중 오류', error);
-    setHint(elements.challengerStatus, '명단을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger');
-  }
-}
-
-function handleRefresh(event) {
-  const button = event.currentTarget;
-  if (!(button instanceof HTMLElement)) {
-    return;
-  }
-  const target = button.dataset.target;
-  if (target === 'period') {
-    state.periodLoaded = false;
-    loadPeriod();
-  } else if (target === 'challengers') {
-    state.challengersLoaded = false;
-    loadChallengers();
-  } else if (target === 'users') {
-    state.usersLoaded = false;
-    loadUsers();
-  }
-}
-
-function attachEvents() {
-  elements.buttons.forEach((button) => {
-    if (!(button instanceof HTMLElement)) {
-      return;
-    }
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      setActiveView(button.dataset.view || 'period');
+  if (elements.uploadTrigger instanceof HTMLButtonElement && elements.uploadInput instanceof HTMLInputElement) {
+    elements.uploadTrigger.addEventListener('click', () => {
+      elements.uploadInput.click();
     });
-  });
-
-  if (elements.periodForm instanceof HTMLFormElement) {
-    elements.periodForm.addEventListener('submit', handlePeriodSubmit);
+    elements.uploadInput.addEventListener('change', () => {
+      const [file] = elements.uploadInput.files || [];
+      if (!file) {
+        return;
+      }
+      handleUploadFile(file);
+    });
   }
-
-  if (elements.challengerUpload instanceof HTMLInputElement) {
-    elements.challengerUpload.addEventListener('change', handleChallengerUpload);
-  }
-
-  elements.refreshButtons.forEach((button) => {
-    if (!(button instanceof HTMLElement)) {
-      return;
-    }
-    button.addEventListener('click', handleRefresh);
-  });
-}
-
-function init() {
-  restoreFromStorage();
-  attachEvents();
-  setActiveView('period');
+  renderPeriod();
+  renderParticipants();
   loadPeriod();
-  loadChallengers();
+  loadParticipants();
 }
 
-document.addEventListener('DOMContentLoaded', init);
+initialize();

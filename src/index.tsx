@@ -5,7 +5,25 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
 
+type D1Result<T = unknown> = {
+  success: boolean
+  error?: string
+  results?: T[]
+}
+
+type D1PreparedStatement = {
+  bind(...values: unknown[]): D1PreparedStatement
+  run<T = unknown>(): Promise<D1Result<T>>
+  all<T = unknown>(): Promise<D1Result<T>>
+  first<T = unknown>(): Promise<T | null>
+}
+
+type D1Database = {
+  prepare(query: string): D1PreparedStatement
+}
+
 type Bindings = {
+  DB: D1Database
   OPENAI_API_KEY?: string
   ADMIN_EMAIL?: string
   SESSION_SECRET?: string
@@ -107,6 +125,27 @@ type MichinaUserRecord = {
   joinedAt: string
   role: string
   updatedAt: string
+}
+
+type ChallengePeriodRecord = {
+  startDate: string
+  endDate: string
+  updatedAt: string
+}
+
+type ChallengePeriodRow = {
+  id: number
+  start_date: string
+  end_date: string
+  updated_at: string
+}
+
+type ParticipantRow = {
+  id: number
+  name: string | null
+  email: string
+  joined_at: string | null
+  role: string | null
 }
 
 const ADMIN_SESSION_COOKIE = 'admin_session'
@@ -237,7 +276,7 @@ function renderAdminManagementPage() {
         color-scheme: light;
         font-family: 'Pretendard','Noto Sans KR',sans-serif;
         background-color: #f5eee9;
-        color: #333333;
+        color: #2c2520;
       }
       *, *::before, *::after {
         box-sizing: border-box;
@@ -246,371 +285,264 @@ function renderAdminManagementPage() {
         margin: 0;
         min-height: 100vh;
         background: #f5eee9;
-        color: #333333;
-      }
-      a {
-        color: inherit;
-        text-decoration: none;
+        color: #2c2520;
+        display: flex;
+        flex-direction: column;
       }
       button {
         font-family: inherit;
       }
       .admin-header {
-        background: #fef568;
-        padding: 20px 24px;
-        font-weight: 600;
-        font-size: 1.2rem;
-        text-align: center;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-      }
-      .admin-layout {
         display: flex;
-        min-height: calc(100vh - 72px);
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 20px 28px;
+        background: #fef568;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
       }
-      .admin-sidebar {
-        width: 240px;
+      .admin-header__title {
+        margin: 0;
+        font-size: 1.4rem;
+        font-weight: 700;
+      }
+      .admin-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 12px 18px;
+        border-radius: 999px;
+        border: none;
+        background: #fef568;
+        color: #2c2520;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s ease, transform 0.2s ease;
+      }
+      .admin-button:hover,
+      .admin-button:focus-visible {
+        background: #fbe743;
+        transform: translateY(-1px);
+      }
+      .admin-button--ghost {
         background: #ffffff;
-        border-right: 2px solid #fef568;
-        padding: 20px 16px;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+      }
+      .admin-main {
+        flex: 1;
+        width: min(1120px, 100%);
+        margin: 0 auto;
+        padding: 32px 24px 72px;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 24px;
       }
-      .admin-sidebar button {
-        border: none;
+      .admin-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 24px;
+      }
+      .admin-card {
         background: #ffffff;
-        padding: 12px 14px;
-        text-align: left;
-        border-radius: 10px;
-        font-weight: 600;
-        color: #333333;
-        cursor: pointer;
-        transition: background 0.2s ease, box-shadow 0.2s ease;
+        border-radius: 18px;
+        padding: 26px;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.08);
+        border: 1px solid rgba(254, 245, 104, 0.4);
       }
-      .admin-sidebar button:hover {
-        background: #fef568;
-        box-shadow: 0 4px 12px -8px rgba(0, 0, 0, 0.2);
+      .admin-card--full {
+        width: 100%;
       }
-      .admin-sidebar button.is-active {
-        background: #fef568;
-        box-shadow: 0 10px 18px -12px rgba(0, 0, 0, 0.35);
-      }
-      .admin-content {
-        flex: 1;
-        padding: 28px 36px 80px;
-        display: block;
-      }
-      .card {
-        background: #ffffff;
-        border: 1px solid #fef568;
-        border-radius: 14px;
-        padding: 24px;
-        margin-bottom: 28px;
-        box-shadow: 0 18px 32px -24px rgba(0, 0, 0, 0.35);
-      }
-      .card h2 {
+      .admin-card__title {
         margin: 0 0 12px;
-        font-size: 1.2rem;
+        font-size: 1.3rem;
         font-weight: 700;
       }
       .admin-description {
         margin: 0 0 18px;
-        color: #555555;
-        font-size: 0.95rem;
-        line-height: 1.55;
+        color: #5b5147;
+        line-height: 1.6;
+        font-size: 0.98rem;
       }
-      .form-grid {
+      .admin-form {
         display: grid;
-        gap: 16px;
-        max-width: 360px;
+        gap: 14px;
+        max-width: 320px;
       }
-      .form-grid label {
+      .admin-field {
         display: flex;
         flex-direction: column;
         gap: 6px;
         font-weight: 600;
-        color: #333333;
+        color: #2c2520;
       }
-      .form-grid input[type="date"] {
-        border: 1px solid rgba(254, 245, 104, 0.8);
-        border-radius: 10px;
+      .admin-input {
+        border: 1.5px solid #fef568;
+        border-radius: 12px;
         padding: 10px 12px;
         font-size: 1rem;
         background: #ffffff;
-        color: #333333;
+        color: inherit;
       }
-      .admin-action {
-        margin-top: 4px;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        border: none;
-        border-radius: 10px;
-        background: #fef568;
-        color: #333333;
-        padding: 10px 16px;
+      .admin-input:focus-visible {
+        outline: 3px solid rgba(254, 245, 104, 0.45);
+        outline-offset: 1px;
+      }
+      .admin-meta {
+        margin: 16px 0 0;
         font-weight: 600;
-        cursor: pointer;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        color: #4d4138;
       }
-      .admin-action:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 8px 18px -14px rgba(0, 0, 0, 0.35);
-      }
-      .admin-action--ghost {
-        background: transparent;
-        border: 1px solid rgba(0, 0, 0, 0.12);
-      }
-      .admin-summary {
-        margin: 18px 0 6px;
-        font-weight: 600;
-        color: #333333;
-      }
-      .admin-hint {
-        margin: 8px 0 0;
+      .admin-muted {
+        margin: 6px 0 0;
+        color: #7b6d63;
         font-size: 0.9rem;
-        color: #666666;
       }
-      .admin-hint[hidden] {
+      .admin-muted[hidden] {
         display: none;
       }
-      .admin-hint[data-tone="success"] {
-        color: #1b6b2c;
+      .admin-muted[data-tone='success'] {
+        color: #1c6d2d;
       }
-      .admin-hint[data-tone="danger"] {
-        color: #c02629;
+      .admin-muted[data-tone='danger'] {
+        color: #c2353b;
       }
-      .admin-hint[data-tone="warning"] {
-        color: #a16207;
-      }
-      .admin-hint[data-tone="info"] {
-        color: #555555;
-      }
-      .admin-tag-list {
-        display: flex;
-        flex-wrap: wrap;
+      .admin-upload-trigger {
+        display: inline-flex;
+        align-items: center;
         gap: 8px;
-        margin-top: 18px;
-      }
-      .admin-tag {
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: #fff1b3;
-        border: 1px solid #fef568;
-        font-size: 0.85rem;
-        color: #333333;
-      }
-      .admin-empty {
-        color: #777777;
-        font-size: 0.95rem;
-        margin-top: 12px;
       }
       .admin-table-wrapper {
-        overflow-x: auto;
         margin-top: 18px;
-        border-radius: 12px;
-        border: 1px solid rgba(254, 245, 104, 0.4);
+        border-radius: 14px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        overflow: hidden;
       }
-      .admin-table {
+      table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 420px;
+        font-size: 0.95rem;
       }
-      .admin-table th,
-      .admin-table td {
-        padding: 12px 14px;
+      thead {
+        background: rgba(254, 245, 104, 0.4);
+      }
+      th,
+      td {
+        padding: 12px 16px;
         text-align: left;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
       }
-      .admin-table th {
-        background: rgba(254, 245, 104, 0.3);
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      .admin-empty {
+        text-align: center;
+        padding: 28px 12px;
+        color: #7b6d63;
+      }
+      .admin-card__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .admin-count {
         font-weight: 600;
-      }
-      .admin-table tbody tr:nth-child(even) {
-        background: rgba(245, 238, 233, 0.6);
+        font-size: 0.95rem;
+        color: #5b5147;
       }
       .admin-toast {
         position: fixed;
-        right: 24px;
         bottom: 24px;
-        background: #333333;
+        right: 24px;
+        background: #2c2520;
         color: #ffffff;
-        padding: 14px 18px;
-        border-radius: 12px;
-        box-shadow: 0 22px 34px -22px rgba(0, 0, 0, 0.45);
+        padding: 12px 18px;
+        border-radius: 14px;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.2);
         font-size: 0.95rem;
-        font-weight: 500;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        z-index: 1200;
       }
       .admin-toast[hidden] {
         display: none;
       }
-      .admin-toast[data-tone="success"] {
-        background: #1b6b2c;
-      }
-      .admin-toast[data-tone="danger"] {
-        background: #c02629;
-      }
-      .admin-toast[data-tone="warning"] {
-        background: #a16207;
-      }
-      .admin-view {
-        display: none;
-      }
-      .admin-view.is-active {
-        display: block;
-      }
-      .card--center {
-        text-align: center;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 220px;
-        gap: 12px;
-      }
-      .admin-upload {
-        display: inline-flex;
-        flex-direction: column;
-        gap: 8px;
-        font-weight: 600;
-        color: #333333;
-      }
-      .admin-upload input[type="file"] {
-        border: 1px dashed rgba(254, 245, 104, 0.6);
-        border-radius: 12px;
-        padding: 18px;
-        background: rgba(254, 245, 104, 0.1);
-        cursor: pointer;
-      }
-      @media (max-width: 960px) {
-        .admin-layout {
+      @media (max-width: 720px) {
+        .admin-header {
           flex-direction: column;
+          align-items: flex-start;
         }
-        .admin-sidebar {
-          width: auto;
-          flex-direction: row;
-          flex-wrap: wrap;
-          gap: 8px;
-          border-right: none;
-          border-bottom: 2px solid #fef568;
+        .admin-main {
+          padding: 28px 16px 60px;
         }
-        .admin-sidebar button {
-          flex: 1 1 160px;
+        .admin-card {
+          padding: 22px;
         }
-        .admin-content {
-          padding: 24px 16px 72px;
-        }
-        .admin-table {
-          min-width: 320px;
+        table {
+          font-size: 0.9rem;
         }
       }
     </style>
   </head>
   <body>
-    <header class="admin-header">관리자 대시보드 | 미치나 챌린지 관리</header>
-    <div class="admin-layout">
-      <aside class="admin-sidebar" aria-label="관리자 메뉴">
-        <button type="button" data-view="period" class="is-active">📅 미치나 기간 설정</button>
-        <button type="button" data-view="upload">📂 챌린저 명단 업로드</button>
-        <button type="button" data-view="status">👥 챌린저 현황 보기</button>
-        <button type="button" data-view="users">🔐 로그인 DB 보기</button>
-        <button type="button" data-view="plans">💳 구독 플랜 보기 (준비 중)</button>
-      </aside>
-      <main class="admin-content">
-        <div class="admin-toast" data-role="admin-toast" hidden></div>
-        <section class="admin-view is-active" data-admin-view="period">
-          <div class="card">
-            <h2>📅 미치나 챌린지 기간 설정</h2>
-            <p class="admin-description">시작일과 종료일을 지정하면 미치나 챌린저 등급 부여가 해당 기간에 자동으로 적용됩니다.</p>
-            <form class="form-grid" data-role="period-form">
-              <label>시작일
-                <input type="date" data-role="period-start" required />
-              </label>
-              <label>종료일
-                <input type="date" data-role="period-end" required />
-              </label>
-              <button class="admin-action" type="submit">기간 저장</button>
-            </form>
-            <p class="admin-summary" data-role="period-summary">저장된 기간이 없습니다.</p>
-            <p class="admin-hint" data-role="period-meta" hidden></p>
-            <p class="admin-hint" data-role="period-status" hidden></p>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="period">기간 새로고침</button>
-          </div>
-        </section>
-        <section class="admin-view" data-admin-view="upload">
-          <div class="card">
-            <h2>📂 챌린저 명단 업로드</h2>
-            <p class="admin-description">CSV 또는 XLSX 파일에서 이메일 주소를 추출해 챌린저 명단을 업데이트합니다. 기존 명단은 새 데이터로 교체됩니다.</p>
-            <label class="admin-upload">챌린저 명단 파일 선택
-              <input type="file" accept=".csv,.xlsx" data-role="challenger-upload" />
+    <header class="admin-header">
+      <h1 class="admin-header__title">관리자 대시보드</h1>
+      <button type="button" class="admin-button admin-button--ghost" data-action="logout">로그아웃</button>
+    </header>
+    <main class="admin-main">
+      <section class="admin-grid">
+        <article class="admin-card" data-section="period">
+          <h2 class="admin-card__title">챌린지 기간 설정</h2>
+          <p class="admin-description">시작일과 종료일을 설정하면 해당 기간 동안 업로드된 명단의 참가자에게 "미치나" 등급이 부여됩니다.</p>
+          <form class="admin-form" data-role="period-form">
+            <label class="admin-field">시작일
+              <input type="date" class="admin-input" data-role="period-start" required />
             </label>
-            <p class="admin-hint" data-role="upload-status" hidden></p>
-            <p class="admin-hint" data-role="challenger-meta" hidden></p>
-            <div class="admin-tag-list" data-role="challenger-list" aria-live="polite"></div>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="challengers">명단 새로고침</button>
-          </div>
-        </section>
-        <section class="admin-view" data-admin-view="status">
-          <div class="card">
-            <h2>👥 챌린저 현황 보기</h2>
-            <p class="admin-description">업로드된 명단은 챌린저 자동 등급 부여에 사용됩니다.</p>
-            <p class="admin-summary">등록된 챌린저: <strong data-role="status-count">0</strong>명</p>
-            <div class="admin-table-wrapper">
-              <table class="admin-table">
-                <thead>
-                  <tr>
-                    <th scope="col">No.</th>
-                    <th scope="col">이메일</th>
-                  </tr>
-                </thead>
-                <tbody data-role="status-table">
-                  <tr><td colspan="2" class="admin-empty">아직 등록된 명단이 없습니다.</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="challengers">현황 새로고침</button>
-          </div>
-        </section>
-        <section class="admin-view" data-admin-view="users">
-          <div class="card">
-            <h2>🔐 로그인 DB 보기</h2>
-            <p class="admin-description">/api/users 엔드포인트에서 최신 로그인 정보를 조회합니다.</p>
-            <div class="admin-table-wrapper">
-              <table class="admin-table">
-                <thead>
-                  <tr>
-                    <th scope="col">이름</th>
-                    <th scope="col">이메일</th>
-                    <th scope="col">가입일</th>
-                    <th scope="col">등급</th>
-                  </tr>
-                </thead>
-                <tbody data-role="users-table">
-                  <tr><td colspan="4" class="admin-empty">데이터를 불러오는 중입니다…</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <button class="admin-action admin-action--ghost" type="button" data-action="refresh-view" data-target="users">DB 새로고침</button>
-          </div>
-        </section>
-        <section class="admin-view" data-admin-view="plans">
-          <div class="card card--center">
-            <h2>💳 구독 플랜 보기</h2>
-            <p class="admin-description" data-role="plans-message">현재 등록된 구독 목록 보기 기능은 준비 중입니다.</p>
-            <p class="admin-hint admin-empty">추후 /api/plans 연동 시 자동으로 업데이트됩니다.</p>
-          </div>
-        </section>
-      </main>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+            <label class="admin-field">종료일
+              <input type="date" class="admin-input" data-role="period-end" required />
+            </label>
+            <button type="submit" class="admin-button">기간 저장</button>
+          </form>
+          <p class="admin-meta" data-role="period-summary">저장된 챌린지 기간이 없습니다.</p>
+          <p class="admin-muted" data-role="period-status" hidden></p>
+        </article>
+        <article class="admin-card" data-section="upload">
+          <h2 class="admin-card__title">참가자 명단 관리</h2>
+          <p class="admin-description">CSV 파일을 업로드하면 명단에 포함된 사용자는 자동으로 "미치나" 등급이 부여됩니다.</p>
+          <button type="button" class="admin-button admin-upload-trigger" data-role="upload-trigger">CSV 업로드</button>
+          <input type="file" accept=".csv" data-role="upload-input" hidden />
+          <p class="admin-meta" data-role="upload-filename">선택된 파일이 없습니다.</p>
+          <p class="admin-muted" data-role="upload-status" hidden></p>
+        </article>
+      </section>
+      <section class="admin-card admin-card--full" data-section="participants">
+        <div class="admin-card__header">
+          <h2 class="admin-card__title">참가자 명단</h2>
+          <span class="admin-count" data-role="participant-count">0명</span>
+        </div>
+        <p class="admin-description">업로드된 명단은 아래에서 확인할 수 있으며, 기간 종료 시 자동으로 Free 등급으로 복귀합니다.</p>
+        <div class="admin-table-wrapper">
+          <table aria-label="참가자 목록">
+            <thead>
+              <tr>
+                <th scope="col">이름</th>
+                <th scope="col">이메일</th>
+                <th scope="col">등록일</th>
+                <th scope="col">등급</th>
+              </tr>
+            </thead>
+            <tbody data-role="participant-rows">
+              <tr><td colspan="4" class="admin-empty">참가자 명단을 불러오는 중입니다…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <div class="admin-toast" data-role="admin-toast" hidden></div>
     <script type="module" src="/static/admin-lite.js"></script>
   </body>
 </html>`
 }
+
 
 const inMemoryStore = new Map<string, string>()
 const inMemoryBackupStore = new Map<string, string>()
@@ -1183,6 +1115,63 @@ function isValidDateString(value: unknown) {
   return Number.isFinite(timestamp)
 }
 
+async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriodRecord | null> {
+  try {
+    const row = await db
+      .prepare('SELECT id, start_date, end_date, updated_at FROM challenge_period WHERE id = 1')
+      .first<ChallengePeriodRow>()
+    if (!row) {
+      return null
+    }
+    if (!row.start_date || !row.end_date) {
+      return null
+    }
+    const updatedAt = typeof row.updated_at === 'string' && row.updated_at
+      ? `${row.updated_at.replace(' ', 'T')}Z`
+      : ''
+    return {
+      startDate: row.start_date,
+      endDate: row.end_date,
+      updatedAt,
+    }
+  } catch (error) {
+    console.error('[d1] Failed to load challenge period', error)
+    throw error
+  }
+}
+
+async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDate: string) {
+  await db
+    .prepare(
+      "INSERT OR REPLACE INTO challenge_period (id, start_date, end_date, updated_at) VALUES (1, ?, ?, datetime('now'))",
+    )
+    .bind(startDate, endDate)
+    .run()
+  return getChallengePeriodFromDb(db)
+}
+
+async function listParticipantsFromDb(db: D1Database) {
+  const result = await db
+    .prepare('SELECT id, name, email, joined_at, role FROM participants ORDER BY joined_at DESC, id DESC')
+    .all<ParticipantRow>()
+  const rows = Array.isArray(result.results) ? result.results : []
+  return rows.map((row) => ({
+    id: row.id,
+    name: (row.name ?? '').trim(),
+    email: row.email,
+    joinedAt: (row.joined_at ?? '').trim(),
+    role: (row.role ?? '').trim() || 'free',
+  }))
+}
+
+function getDatabase(env: Bindings) {
+  const db = env.DB
+  if (!db || typeof db.prepare !== 'function') {
+    throw new Error('D1 database binding `DB` is not configured')
+  }
+  return db
+}
+
 async function getMichinaPeriodRecord(env: Bindings): Promise<MichinaPeriod | null> {
   const raw = await kvGet(env, MICHINA_PERIOD_KEY)
   if (!raw) {
@@ -1635,6 +1624,114 @@ app.post('/api/admin/login', async (c) => {
   return c.json({ success: true, message: '관리자 인증 완료', redirect: '/dashboard', email: resolvedEmail })
 })
 
+app.get('/api/admin/period', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  try {
+    const period = await getChallengePeriodFromDb(getDatabase(c.env))
+    return c.json({ period })
+  } catch (error) {
+    console.error('[admin] Failed to load challenge period', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.post('/api/admin/period', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const startDate = isValidDateString((payload as { startDate?: string }).startDate)
+    ? (payload as { startDate: string }).startDate
+    : ''
+  const endDate = isValidDateString((payload as { endDate?: string }).endDate)
+    ? (payload as { endDate: string }).endDate
+    : ''
+  if (!startDate || !endDate) {
+    return c.json({ error: 'INVALID_PERIOD' }, 400)
+  }
+  if (startDate > endDate) {
+    return c.json({ error: 'INVALID_RANGE' }, 400)
+  }
+  try {
+    const period = await saveChallengePeriodToDb(getDatabase(c.env), startDate, endDate)
+    return c.json({ success: true, period })
+  } catch (error) {
+    console.error('[admin] Failed to save challenge period', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.get('/api/admin/participants', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  try {
+    const participants = await listParticipantsFromDb(getDatabase(c.env))
+    return c.json({ participants })
+  } catch (error) {
+    console.error('[admin] Failed to load participants', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.post('/api/admin/participants', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const listSource: unknown = Array.isArray(payload)
+    ? payload
+    : (payload as { list?: unknown }).list ?? (payload as { participants?: unknown }).participants
+  if (!Array.isArray(listSource)) {
+    return c.json({ error: 'INVALID_PAYLOAD' }, 400)
+  }
+  const entries = listSource
+    .map((item) => ({
+      name: typeof item?.name === 'string' ? item.name.trim() : '',
+      email: typeof item?.email === 'string' ? item.email.trim().toLowerCase() : '',
+      joinedAt: typeof item?.joined_at === 'string' ? item.joined_at.trim() : '',
+    }))
+    .filter((item) => isValidEmail(item.email))
+
+  if (entries.length === 0) {
+    return c.json({ error: 'NO_PARTICIPANTS' }, 400)
+  }
+
+  const db = getDatabase(c.env)
+  try {
+    for (const entry of entries) {
+      const joinedAt = entry.joinedAt || new Date().toISOString().split('T')[0]
+      await db
+        .prepare(
+          "INSERT OR REPLACE INTO participants (name, email, joined_at, role) VALUES (?, ?, ?, '미치나')",
+        )
+        .bind(entry.name, entry.email, joinedAt)
+        .run()
+    }
+    const participants = await listParticipantsFromDb(db)
+    return c.json({ success: true, count: entries.length, participants })
+  } catch (error) {
+    console.error('[admin] Failed to save participants', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
 app.post('/api/auth/admin/logout', async (c) => {
   clearAdminSession(c)
   return c.json({ ok: true })
@@ -1649,6 +1746,36 @@ app.get('/api/michina/config', async (c) => {
     challengersUpdatedAt: challengers?.updatedAt ?? null,
     challengersUpdatedBy: challengers?.updatedBy ?? null,
   })
+})
+
+app.post('/api/user/check-role', async (c) => {
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const email = normalizeEmailValue((payload as { email?: string }).email)
+  if (!email) {
+    return c.json({ role: 'free' })
+  }
+  try {
+    const db = getDatabase(c.env)
+    const period = await getChallengePeriodFromDb(db)
+    const today = new Date().toISOString().split('T')[0]
+    if (period && today > period.endDate) {
+      await db.prepare("UPDATE participants SET role='free' WHERE role='미치나'").run()
+    }
+    const user = await db
+      .prepare('SELECT role FROM participants WHERE email = ? LIMIT 1')
+      .bind(email)
+      .first<{ role: string | null }>()
+    const role = (user?.role ?? '').trim() || 'free'
+    return c.json({ role })
+  } catch (error) {
+    console.error('[user] Failed to check role', error)
+    return c.json({ role: 'free' }, 500)
+  }
 })
 
 app.get('/api/admin/michina/period', async (c) => {
