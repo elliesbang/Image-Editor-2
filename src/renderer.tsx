@@ -1,5 +1,7 @@
 import { jsxRenderer } from 'hono/jsx-renderer'
 
+const ADMIN_SECRET_KEY = import.meta.env.VITE_ADMIN_SECRET_KEY ?? ''
+
 export const renderer = jsxRenderer(({ children }) => {
   return (
     <html lang="ko">
@@ -27,6 +29,11 @@ export const renderer = jsxRenderer(({ children }) => {
       </head>
       <body>
         {children}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.__ADMIN_SECRET_KEY__ = ${JSON.stringify(ADMIN_SECRET_KEY)};`,
+          }}
+        />
         <script type="module" src="/static/app.js"></script>
       </body>
     </html>
