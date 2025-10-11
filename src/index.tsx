@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
 
 type Bindings = {
@@ -44,16 +43,6 @@ type ChallengeParticipant = {
 type ChallengeSummary = ChallengeParticipant & {
   totalSubmissions: number
   missingDays: number
-}
-
-type AdminSessionPayload = {
-  sub: string
-  role: 'admin'
-  exp: number
-  iss: string
-  aud: string
-  ver: string
-  iat: number
 }
 
 type AdminConfig = {
@@ -109,8 +98,6 @@ type MichinaUserRecord = {
 }
 
 const ADMIN_SESSION_COOKIE = 'admin_session'
-const ADMIN_SESSION_ISSUER = 'easy-image-editor'
-const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
 const ADMIN_RATE_LIMIT_KEY_PREFIX = 'ratelimit:admin-login:'
 const DEFAULT_ADMIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -123,6 +110,70 @@ const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
 const MICHINA_PERIOD_KEY = 'michina:period'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
 const MICHINA_USERS_KEY = 'michina:users'
+
+const sessionEncoder = new TextEncoder()
+const sessionDecoder = new TextDecoder()
+
+function base64UrlEncode(data: Uint8Array) {
+  let binary = ''
+  for (const byte of data) {
+    binary += String.fromCharCode(byte)
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function base64UrlDecode(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padding = normalized.length % 4 === 0 ? 0 : 4 - (normalized.length % 4)
+  const padded = normalized + '='.repeat(padding)
+  const binary = atob(padded)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+const sessionKeyCache = new Map<string, CryptoKey>()
+
+async function getSessionCryptoKey(secret: string) {
+  const cached = sessionKeyCache.get(secret)
+  if (cached) {
+    return cached
+  }
+  const hashBuffer = await crypto.subtle.digest('SHA-256', sessionEncoder.encode(secret))
+  const key = await crypto.subtle.importKey('raw', hashBuffer, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  sessionKeyCache.set(secret, key)
+  return key
+}
+
+async function encryptSessionValue(value: string, secret: string) {
+  const key = await getSessionCryptoKey(secret)
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const encryptedBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, sessionEncoder.encode(value))
+  const encryptedBytes = new Uint8Array(encryptedBuffer)
+  const combined = new Uint8Array(iv.length + encryptedBytes.length)
+  combined.set(iv, 0)
+  combined.set(encryptedBytes, iv.length)
+  return base64UrlEncode(combined)
+}
+
+async function decryptSessionValue(token: string, secret: string) {
+  try {
+    const key = await getSessionCryptoKey(secret)
+    const combined = base64UrlDecode(token)
+    if (combined.length <= 12) {
+      return null
+    }
+    const iv = combined.slice(0, 12)
+    const ciphertext = combined.slice(12)
+    const decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext)
+    return sessionDecoder.decode(new Uint8Array(decryptedBuffer))
+  } catch (error) {
+    console.warn('[auth] Failed to decrypt admin session', error)
+    return null
+  }
+}
 
 function renderCommunityDashboardPage() {
   return `<!DOCTYPE html>
@@ -1477,37 +1528,36 @@ async function evaluateCompletions(env: Bindings) {
   return updated
 }
 
-async function requireAdminSession(c: Context<{ Bindings: Bindings }>) {
-  const config = getAdminConfig(c.env)
-  if (!config) {
-    return null
-  }
+async function requireAdminSession(
+  c: Context<{ Bindings: Bindings }>,
+  config?: AdminConfig,
+): Promise<string | null> {
   const token = getCookie(c, ADMIN_SESSION_COOKIE)
   if (!token) {
     return null
   }
+  const adminConfig = config ?? getAdminConfig(c.env)
+  if (!adminConfig) {
+    clearAdminSession(c)
+    return null
+  }
   try {
-    const payload = (await verify(token, config.sessionSecret)) as AdminSessionPayload
-    const nowSeconds = Math.floor(Date.now() / 1000)
-    if (payload.role !== 'admin' || !payload.sub) {
+    const decrypted = await decryptSessionValue(token, adminConfig.sessionSecret)
+    if (!decrypted) {
+      clearAdminSession(c)
       return null
     }
-    if (payload.iss !== ADMIN_SESSION_ISSUER || payload.aud !== ADMIN_SESSION_AUDIENCE) {
+    const payload = JSON.parse(decrypted) as { email?: string; role?: string }
+    const normalizedEmail = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : ''
+    if (!normalizedEmail || normalizedEmail !== adminConfig.email) {
+      clearAdminSession(c)
       return null
     }
-    if (payload.ver !== config.sessionVersion) {
+    if (payload.role !== 'admin') {
+      clearAdminSession(c)
       return null
     }
-    if (payload.sub !== config.email) {
-      return null
-    }
-    if (typeof payload.iat !== 'number' || payload.iat > nowSeconds + 60) {
-      return null
-    }
-    if (typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
-      return null
-    }
-    return payload.sub
+    return normalizedEmail
   } catch (error) {
     console.error('[auth] Failed to verify admin session', error)
     clearAdminSession(c)
@@ -1525,25 +1575,15 @@ async function createAdminSession(
     throw new Error('SESSION_SECRET_NOT_CONFIGURED')
   }
   const normalizedEmail = email.trim().toLowerCase()
-  const expiresInSeconds = 60 * 60 * 8
+  const expiresInSeconds = 60 * 60 * 24 * 7
   const issuedAt = Math.floor(Date.now() / 1000)
   const exp = issuedAt + expiresInSeconds
-  const token = await sign(
-    {
-      sub: normalizedEmail,
-      role: 'admin',
-      exp,
-      iat: issuedAt,
-      iss: ADMIN_SESSION_ISSUER,
-      aud: ADMIN_SESSION_AUDIENCE,
-      ver: adminConfig.sessionVersion,
-    },
-    adminConfig.sessionSecret,
-  )
-  setCookie(c, ADMIN_SESSION_COOKIE, token, {
+  const sessionPayload = JSON.stringify({ email: normalizedEmail, role: 'admin' })
+  const encryptedSession = await encryptSessionValue(sessionPayload, adminConfig.sessionSecret)
+  setCookie(c, ADMIN_SESSION_COOKIE, encryptedSession, {
     httpOnly: true,
-    sameSite: 'Strict',
     secure: true,
+    sameSite: 'none',
     path: '/',
     maxAge: expiresInSeconds,
   })
@@ -1551,7 +1591,7 @@ async function createAdminSession(
 }
 
 function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
-  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Strict' })
+  deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/', secure: true, sameSite: 'none' })
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -2008,60 +2048,11 @@ app.get('/api/auth/callback/google', async (c) => {
       return response
     }
 
-    const loginTime = Date.now()
-    const sessionId = generateRandomState()
     await createAdminSession(c, email, adminConfig)
 
-    const scriptContent = `(() => {
-  const payload = ${JSON.stringify({ email, sessionId, loginTime })};
-  const origin = window.location.origin;
-  try {
-    const storage = window.localStorage;
-    if (storage) {
-      storage.setItem('admin', 'true');
-      storage.setItem('role', 'admin');
-      storage.setItem('adminSessionState', JSON.stringify({ loggedIn: true, email: payload.email, loginTime: payload.loginTime, sessionId: payload.sessionId }));
-    }
-  } catch (error) {
-    console.warn('failed to persist admin session', error);
-  }
-  try {
-    const sessionStorage = window.sessionStorage;
-    if (sessionStorage) {
-      sessionStorage.setItem('adminSessionId', payload.sessionId);
-    }
-  } catch (error) {
-    console.warn('failed to persist admin session id', error);
-  }
-  if (window.opener && !window.opener.closed) {
-    try {
-      window.opener.postMessage({ type: 'admin-oauth-success', email: payload.email, sessionId: payload.sessionId, loginTime: payload.loginTime }, origin);
-    } catch (error) {
-      console.warn('failed to notify opener about admin login', error);
-    }
-    window.setTimeout(() => {
-      try {
-        window.opener.location.href = '/admin-dashboard';
-      } catch (error) {
-        window.opener.location.replace('/admin-dashboard');
-      }
-      window.close();
-    }, 500);
-  } else {
-    window.setTimeout(() => {
-      window.location.replace('/admin-dashboard');
-    }, 500);
-  }
-})();`
-
-    const response = c.html(
-      renderAdminOAuthPage({
-        title: '관리자 인증이 완료되었습니다',
-        message: '관리자 대시보드로 이동합니다.',
-        scriptContent,
-      }),
-    )
+    const response = c.redirect('/', 302)
     response.headers.set('Cache-Control', 'no-store')
+    response.headers.set('Pragma', 'no-cache')
     return response
   } catch (error) {
     console.error('[auth/google] Unexpected error', error)
