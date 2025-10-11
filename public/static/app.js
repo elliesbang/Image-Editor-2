@@ -69,15 +69,14 @@ const COMMUNITY_ROLE_STORAGE_KEY = 'role'
 const USER_IDENTITY_STORAGE_KEY = 'elliesbang:user'
 const STAGE_FLOW = ['upload', 'refine', 'export']
 const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const GOOGLE_ALLOWED_ORIGIN = 'https://image-editor-3.pages.dev'
 const GOOGLE_SIGNIN_TEXT = {
-  default: 'Google 계정으로 계속하기',
-  idle: 'Google 계정으로 계속하기',
-  initializing: 'Google 로그인 준비 중…',
-  loading: 'Google 계정을 확인하는 중…',
-  disabled: 'Google 로그인 준비 중',
-  error: 'Google 로그인 다시 시도',
-  retrying: 'Google 로그인 자동 재시도 준비 중…',
+  default: 'Google로 로그인하기',
+  idle: 'Google로 로그인하기',
+  initializing: 'Google로 로그인하기',
+  loading: 'Google로 로그인하기',
+  disabled: 'Google로 로그인하기',
+  error: 'Google로 로그인하기',
+  retrying: 'Google로 로그인하기',
 }
 
 const ENABLE_GOOGLE_LOGIN = true
@@ -2043,39 +2042,32 @@ function setGoogleButtonState(state = 'idle', labelOverride) {
     return
   }
 
-  const labelKey = typeof GOOGLE_SIGNIN_TEXT[state] === 'string' ? state : 'default'
   const label =
     typeof labelOverride === 'string' && labelOverride.trim().length > 0
       ? labelOverride.trim()
-      : GOOGLE_SIGNIN_TEXT[labelKey] ?? GOOGLE_SIGNIN_TEXT.default
+      : GOOGLE_SIGNIN_TEXT.default
 
   if (elements.googleLoginText instanceof HTMLElement) {
     elements.googleLoginText.textContent = label
   }
 
   button.setAttribute('aria-label', label)
+  button.disabled = false
+  button.removeAttribute('aria-disabled')
+  button.removeAttribute('data-state')
+  button.setAttribute('aria-busy', 'false')
+  button.hidden = false
+  button.removeAttribute('aria-hidden')
 
-  const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
-  const shouldDisable = isPending || state === 'disabled' || state === 'error'
-
-  button.disabled = shouldDisable
-  if (shouldDisable) {
-    button.setAttribute('aria-disabled', 'true')
-  } else {
-    button.removeAttribute('aria-disabled')
-  }
-  button.setAttribute('aria-busy', isPending ? 'true' : 'false')
-
-  if (isPending) {
-    button.dataset.loading = 'true'
-  } else if (button.dataset.loading) {
+  if (button.dataset.loading) {
     delete button.dataset.loading
   }
-
-  if (state === 'disabled' || state === 'error' || state === 'retrying') {
-    button.dataset.state = state
-  } else if (button.dataset.state) {
+  if (button.dataset.state) {
     delete button.dataset.state
+  }
+
+  if (elements.googleLoginSpinner instanceof HTMLElement) {
+    elements.googleLoginSpinner.hidden = true
   }
 }
 
@@ -2121,101 +2113,18 @@ function disableGoogleLoginUI() {
 }
 
 function updateGoogleProviderAvailability() {
-  if (!ENABLE_GOOGLE_LOGIN) {
-    disableGoogleLoginUI()
-    return
-  }
   if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
-    disableGoogleLoginUI()
     return
   }
 
-  const now = Date.now()
-  if (runtime.google.cooldownUntil && now < runtime.google.cooldownUntil) {
-    const remaining = Math.max(0, runtime.google.cooldownUntil - now)
-    const seconds = Math.max(1, Math.ceil(remaining / 1000))
-    if (runtime.google.cooldownAutoRetry) {
-      setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
-      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
-    } else {
-      setGoogleButtonState('error', `${seconds}초 후 다시 시도`)
-    }
-    return
-  }
-
-  if (runtime.google.retryTimer && runtime.google.retryAt && now < runtime.google.retryAt) {
-    const remaining = Math.max(0, runtime.google.retryAt - now)
-    const seconds = Math.max(1, Math.ceil(remaining / 1000))
-    setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
-    announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
-    return
-  }
-
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
-  if (runtime.google.codeClient) {
-    setGoogleButtonState('idle')
-    return
-  }
-  if (runtime.google.prefetchPromise) {
-    setGoogleButtonState('initializing')
-    return
-  }
   setGoogleButtonState('idle')
+  setGoogleLoginHelper('', 'muted')
 }
 
 async function prefetchGoogleClient() {
-  if (!ENABLE_GOOGLE_LOGIN) {
-    disableGoogleLoginUI()
-    return null
-  }
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    setGoogleButtonState('disabled')
-    return null
-  }
-  if (runtime.google.codeClient) {
-    setGoogleButtonState('idle')
-    return runtime.google.codeClient
-  }
-  if (runtime.google.prefetchPromise) {
-    return runtime.google.prefetchPromise
-  }
-
-  setGoogleButtonState('initializing')
-
-  runtime.google.prefetchPromise = ensureGoogleClient()
-    .then((client) => {
-      runtime.google.retryCount = 0
-      setGoogleButtonState('idle')
-      setGoogleLoginHelper('Google 로그인을 사용할 준비가 되었습니다.', 'info')
-      return client
-    })
-    .catch((error) => {
-      console.warn('Google client 초기화 실패', error)
-      if (error instanceof Error && error.message === 'GOOGLE_CLIENT_ID_MISSING') {
-        setGoogleButtonState('disabled')
-        setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-      } else {
-        setGoogleButtonState('error')
-        setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
-        window.setTimeout(() => {
-          updateGoogleProviderAvailability()
-        }, 2400)
-      }
-      return null
-    })
-    .finally(() => {
-      runtime.google.prefetchPromise = null
-    })
-
-  return runtime.google.prefetchPromise
+  setGoogleButtonState('idle')
+  setGoogleLoginHelper('', 'muted')
+  return null
 }
 
 function clearGoogleAutoRetry() {
@@ -4879,62 +4788,19 @@ async function handleGoogleCodeResponse(response) {
   }
 }
 
-async function handleGoogleLogin(event) {
+function handleGoogleLogin(event) {
   if (event && typeof event.preventDefault === 'function') {
     event.preventDefault()
   }
 
-  if (!ENABLE_GOOGLE_LOGIN) {
-    disableGoogleLoginUI()
-    setStatus('현재 이메일 로그인만 지원합니다.', 'info')
-    return
-  }
-
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    setStatus('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
-
-  const currentOrigin = window.location.origin
-  if (currentOrigin !== GOOGLE_ALLOWED_ORIGIN) {
-    alert('이 도메인에서는 Google 로그인을 사용할 수 없습니다.')
-    setGoogleButtonState('idle')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
+  setGoogleButtonState('idle')
+  setGoogleLoginHelper('', 'muted')
 
   try {
-    clearGoogleCooldown()
-    runtime.google.retryCount = 0
-    runtime.google.latestCredential = ''
-
-    setGoogleButtonState('loading', 'Google 로그인 준비 중…')
-    setStatus('Google 로그인 창을 열고 있습니다…', 'info', 0)
-
-    const codeClient = await ensureGoogleClient()
-    if (!codeClient || typeof codeClient.requestCode !== 'function') {
-      throw new Error('GOOGLE_SDK_UNAVAILABLE')
-    }
-
-    runtime.google.promptActive = true
-    const emailHint = state.user.email || state.auth.pendingEmail || ''
-    setGoogleLoginHelper('Google 로그인 창을 확인해주세요.', 'info')
-
-    codeClient.requestCode({
-      state: 'login',
-      hint: emailHint,
-      prompt: 'consent',
-    })
+    window.location.href = '/auth/google'
   } catch (error) {
-    runtime.google.promptActive = false
-    console.error('Google 로그인 초기화 중 오류', error)
-    setGoogleButtonState('error', 'Google 로그인 다시 시도')
-    setGoogleLoginHelper('Google 로그인 초기화 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'warning')
-    setStatus('Google 로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    console.error('Google 로그인 경로로 이동하지 못했습니다.', error)
+    window.location.assign('/auth/google')
   }
 }
 
