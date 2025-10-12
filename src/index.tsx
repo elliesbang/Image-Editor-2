@@ -3677,6 +3677,24 @@ app.get('/', async (c) => {
                     <option value="6" selected>6색</option>
                   </select>
                 </div>
+                <div class="results-toolbar__control results-toolbar__control--color">
+                  <label class="results-toolbar__label" for="svgFillColor">SVG 채우기 색상</label>
+                  <input id="svgFillColor" type="color" value="#8b5cf6" aria-label="SVG 채우기 색상 선택" />
+                  <span class="results-toolbar__color-value" data-role="svg-color-value">#8B5CF6</span>
+                </div>
+                <div class="results-toolbar__control results-toolbar__control--stroke">
+                  <span class="results-toolbar__label" id="svgStrokeModeLabel">선 처리 옵션</span>
+                  <div class="results-toolbar__radios" role="radiogroup" aria-labelledby="svgStrokeModeLabel">
+                    <label class="results-toolbar__radio">
+                      <input type="radio" name="svgStrokeMode" value="outline" checked />
+                      <span class="results-toolbar__radio-label">윤곽선 변환 모드</span>
+                    </label>
+                    <label class="results-toolbar__radio">
+                      <input type="radio" name="svgStrokeMode" value="remove" />
+                      <span class="results-toolbar__radio-label">선 제거 모드</span>
+                    </label>
+                  </div>
+                </div>
                 <label class="toggle" for="smartCropToggle">
                   <input id="smartCropToggle" type="checkbox" checked />
                   <span class="toggle__control" aria-hidden="true"></span>
@@ -3700,7 +3718,7 @@ app.get('/', async (c) => {
               </div>
             </div>
             <p class="svg-progress__notice" data-role="svg-stroke-notice" hidden>
-              Some strokes were adjusted or removed for compatibility.
+              선택한 선 처리 옵션이 적용되어 윤곽선이 자동으로 정리되었습니다.
             </p>
             <div class="gate results-gate" data-role="results-gate" data-state="locked">
               <i class="ri-lock-2-line results-gate__icon" aria-hidden="true"></i>
@@ -3774,6 +3792,8 @@ app.get('/', async (c) => {
         </div>
         <p class="site-footer__note">© {currentYear} elliesbang. 모든 권리 보유.</p>
       </footer>
+
+      <div class="app-toast" data-role="global-toast" aria-live="assertive" hidden></div>
 
       <div class="cookie-banner" data-role="cookie-banner" aria-hidden="true">
         <div class="cookie-banner__content" role="dialog" aria-modal="true" aria-labelledby="cookie-banner-title">

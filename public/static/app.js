@@ -173,6 +173,8 @@ function announceGoogleRetry(delayMs, reason = 'recoverable_error', attemptNumbe
   setGoogleLoginHelper(`${message}`, 'info')
 }
 
+const DEFAULT_SVG_FILL_COLOR = '#8b5cf6'
+
 const state = {
   uploads: [],
   results: [],
@@ -182,6 +184,11 @@ const state = {
   processing: false,
   analysis: new Map(),
   analysisMode: 'original',
+  svgOptions: {
+    fillColor: DEFAULT_SVG_FILL_COLOR,
+    strokeMode: 'outline',
+    userEditedColor: false,
+  },
   user: {
     isLoggedIn: false,
     name: '',
@@ -799,6 +806,9 @@ const elements = {
   resultDownloadButtons: document.querySelectorAll('[data-result-download]'),
   svgButton: document.querySelector('[data-result-operation="svg"]'),
   svgColorSelect: document.querySelector('#svgColorCount'),
+  svgFillColorInput: document.querySelector('#svgFillColor'),
+  svgColorValue: document.querySelector('[data-role="svg-color-value"]'),
+  svgStrokeModeInputs: document.querySelectorAll('input[name="svgStrokeMode"]'),
   smartCropToggle: document.querySelector('#smartCropToggle'),
   svgProgress: document.querySelector('[data-role="svg-progress"]'),
   svgProgressBar: document.querySelector('[data-role="svg-progress"] [role="progressbar"]'),
@@ -807,6 +817,7 @@ const elements = {
   svgProgressDetail: document.querySelector('[data-role="svg-progress-detail"]'),
   svgProgressHint: document.querySelector('[data-role="svg-progress-hint"]'),
   svgStrokeNotice: document.querySelector('[data-role="svg-stroke-notice"]'),
+  toast: document.querySelector('[data-role="global-toast"]'),
   uploadSelectAll: document.querySelector('[data-action="upload-select-all"]'),
   uploadClear: document.querySelector('[data-action="upload-clear"]'),
   uploadDeleteSelected: document.querySelector('[data-action="upload-delete-selected"]'),
@@ -926,6 +937,14 @@ const svgNoticeState = {
   hideTimer: null,
 }
 
+const toastState = {
+  hideTimer: null,
+}
+
+const svgColorState = {
+  requestId: 0,
+}
+
 function uuid() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random()}`
 }
@@ -991,6 +1010,203 @@ function persistSubscriptionState(planKey, { auto = false, email = '' } = {}) {
   } catch (error) {
     console.warn('구독 플랜 정보를 저장하지 못했습니다.', error)
   }
+}
+
+function normalizeHexColor(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+  const trimmed = value.trim()
+  if (/^#([0-9a-f]{6})$/i.test(trimmed)) {
+    return `#${trimmed.slice(1).toLowerCase()}`
+  }
+  if (/^#([0-9a-f]{3})$/i.test(trimmed)) {
+    const hex = trimmed.slice(1)
+    const expanded = hex
+      .split('')
+      .map((char) => `${char}${char}`)
+      .join('')
+    return `#${expanded.toLowerCase()}`
+  }
+  return ''
+}
+
+function updateSvgColorValueDisplay(color) {
+  if (!(elements.svgColorValue instanceof HTMLElement)) {
+    return
+  }
+  const normalized = normalizeHexColor(color)
+  elements.svgColorValue.textContent = normalized ? normalized.toUpperCase() : DEFAULT_SVG_FILL_COLOR.toUpperCase()
+}
+
+function updateSvgFillColor(color, { userInitiated = false, auto = false } = {}) {
+  const normalized = normalizeHexColor(color) || normalizeHexColor(DEFAULT_SVG_FILL_COLOR)
+  state.svgOptions.fillColor = normalized
+  if (userInitiated) {
+    state.svgOptions.userEditedColor = true
+  } else if (auto) {
+    state.svgOptions.userEditedColor = false
+  }
+  if (elements.svgFillColorInput instanceof HTMLInputElement && elements.svgFillColorInput.value !== normalized) {
+    elements.svgFillColorInput.value = normalized
+  }
+  updateSvgColorValueDisplay(normalized)
+}
+
+function getCurrentSvgFillColor() {
+  return normalizeHexColor(state.svgOptions.fillColor) || normalizeHexColor(DEFAULT_SVG_FILL_COLOR)
+}
+
+function resolveSvgStrokeMode() {
+  return state.svgOptions.strokeMode === 'remove' ? 'remove' : 'outline'
+}
+
+function applyStrokeModeToInputs(mode) {
+  const normalized = mode === 'remove' ? 'remove' : 'outline'
+  state.svgOptions.strokeMode = normalized
+  elements.svgStrokeModeInputs?.forEach((input) => {
+    if (!(input instanceof HTMLInputElement)) return
+    input.checked = input.value === normalized
+  })
+}
+
+function extractPrimaryColorFromImageData(imageData) {
+  if (!imageData || !imageData.data || imageData.data.length === 0) {
+    return DEFAULT_SVG_FILL_COLOR
+  }
+  const { data, width, height } = imageData
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return DEFAULT_SVG_FILL_COLOR
+  }
+  let r = 0
+  let g = 0
+  let b = 0
+  let count = 0
+  const totalPixels = data.length / 4
+  const step = Math.max(1, Math.floor(totalPixels / 8000))
+  for (let index = 0; index < data.length; index += 4 * step) {
+    const alpha = data[index + 3]
+    if (alpha < 32) {
+      continue
+    }
+    r += data[index]
+    g += data[index + 1]
+    b += data[index + 2]
+    count += 1
+  }
+  if (count === 0) {
+    return DEFAULT_SVG_FILL_COLOR
+  }
+  const avgR = Math.min(255, Math.max(0, Math.round(r / count)))
+  const avgG = Math.min(255, Math.max(0, Math.round(g / count)))
+  const avgB = Math.min(255, Math.max(0, Math.round(b / count)))
+  const toHex = (value) => value.toString(16).padStart(2, '0')
+  return `#${toHex(avgR)}${toHex(avgG)}${toHex(avgB)}`
+}
+
+function resolvePrimarySvgColorTarget() {
+  const selectedResultId = state.selectedResults.values().next().value
+  if (selectedResultId) {
+    const resultItem = state.results.find((item) => item.id === selectedResultId)
+    if (resultItem) {
+      return { type: 'result', item: resultItem }
+    }
+  }
+  const selectedUploadId = state.selectedUploads.values().next().value
+  if (selectedUploadId) {
+    const uploadItem = state.uploads.find((item) => item.id === selectedUploadId)
+    if (uploadItem) {
+      return { type: 'upload', item: uploadItem }
+    }
+  }
+  if (state.results.length > 0) {
+    return { type: 'result', item: state.results[0] }
+  }
+  if (state.uploads.length > 0) {
+    return { type: 'upload', item: state.uploads[0] }
+  }
+  return null
+}
+
+async function computePrimaryColorForTarget(target) {
+  if (!target || !target.item) {
+    return DEFAULT_SVG_FILL_COLOR
+  }
+  try {
+    const dataUrl = await resolveDataUrlForTarget(target)
+    const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    return extractPrimaryColorFromImageData(imageData)
+  } catch (error) {
+    console.warn('Failed to compute primary color for target', error)
+    return DEFAULT_SVG_FILL_COLOR
+  }
+}
+
+function requestAutoSelectSvgColor() {
+  if (state.svgOptions.userEditedColor) {
+    return
+  }
+  const target = resolvePrimarySvgColorTarget()
+  if (!target) {
+    return
+  }
+  const requestId = svgColorState.requestId + 1
+  svgColorState.requestId = requestId
+  autoSelectSvgColorForTarget(target, requestId)
+}
+
+async function autoSelectSvgColorForTarget(target, requestId) {
+  try {
+    const color = await computePrimaryColorForTarget(target)
+    if (svgColorState.requestId !== requestId) {
+      return
+    }
+    updateSvgFillColor(color, { auto: true })
+  } catch (error) {
+    console.warn('Auto SVG color selection failed', error)
+  }
+}
+
+function hideToast() {
+  if (!(elements.toast instanceof HTMLElement)) {
+    return
+  }
+  elements.toast.classList.remove('is-visible')
+  toastState.hideTimer = null
+  window.setTimeout(() => {
+    if (!(elements.toast instanceof HTMLElement)) {
+      return
+    }
+    if (!elements.toast.classList.contains('is-visible')) {
+      elements.toast.hidden = true
+    }
+  }, 220)
+}
+
+function showToast(message, variant = 'info') {
+  if (!(elements.toast instanceof HTMLElement)) {
+    return
+  }
+  const text = typeof message === 'string' ? message.trim() : ''
+  if (!text) {
+    return
+  }
+  if (toastState.hideTimer) {
+    window.clearTimeout(toastState.hideTimer)
+    toastState.hideTimer = null
+  }
+  elements.toast.textContent = text
+  elements.toast.dataset.variant = variant
+  elements.toast.hidden = false
+  window.requestAnimationFrame(() => {
+    if (elements.toast instanceof HTMLElement) {
+      elements.toast.classList.add('is-visible')
+    }
+  })
+  toastState.hideTimer = window.setTimeout(() => {
+    hideToast()
+  }, 3200)
 }
 
 function loadStoredMichinaPeriod() {
@@ -2363,6 +2579,15 @@ function toggleProcessing(isProcessing) {
   if (elements.svgColorSelect instanceof HTMLSelectElement) {
     elements.svgColorSelect.disabled = isProcessing
   }
+
+  if (elements.svgFillColorInput instanceof HTMLInputElement) {
+    elements.svgFillColorInput.disabled = isProcessing
+  }
+
+  elements.svgStrokeModeInputs?.forEach((input) => {
+    if (!(input instanceof HTMLInputElement)) return
+    input.disabled = isProcessing
+  })
 
   if (elements.smartCropToggle instanceof HTMLInputElement) {
     elements.smartCropToggle.disabled = isProcessing
@@ -5541,6 +5766,8 @@ async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) 
     onStep?.('vectorizing')
 
     let optimizedBlob = null
+    const fillColor = getCurrentSvgFillColor()
+    const strokeMode = resolveSvgStrokeMode()
 
     for (let step = 0; step <= adjustments.length; step += 1) {
       const candidateSvg = tracer.imagedataToSVG(imageData, options)
@@ -5570,7 +5797,7 @@ async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) 
 
     onStep?.('rendering')
 
-    const sanitizedResult = sanitizeSVG(svgString, { trackAdjustments: true })
+    const sanitizedResult = sanitizeSVG(svgString, { trackAdjustments: true, fillColor, strokeMode })
     const cleanedSvg = sanitizedResult.svgText
     let effectiveStrokeAdjusted = Boolean(sanitizedResult.strokeAdjusted)
     let outputBlob = new Blob([cleanedSvg], { type: 'image/svg+xml' })
@@ -5585,6 +5812,10 @@ async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) 
       operations.push('Smart Crop')
     }
     operations.push(`SVG 변환(${finalColors}색)`)
+    if (fillColor) {
+      operations.push(`채우기 색상 ${fillColor.toUpperCase()}`)
+    }
+    operations.push(strokeMode === 'remove' ? '선 제거 모드' : '윤곽선 변환 모드')
 
     const filenameBase = baseName(target.item.name || 'image')
     const resultName = `${filenameBase}__vector-${finalColors}c.svg`
@@ -5601,6 +5832,7 @@ async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) 
       colors: finalColors,
       reducedColors,
       strokeAdjusted: effectiveStrokeAdjusted,
+      svgOptions: { fillColor, strokeMode },
     }
   } catch (error) {
     console.error('SVG 변환 중 오류', error)
@@ -5713,6 +5945,7 @@ async function convertSelectionsToSvg() {
         operations: conversion.operations,
         name: conversion.name,
         type: 'image/svg+xml',
+        svgOptions: conversion.svgOptions,
       }
 
       appendResult(sourceReference, resultPayload)
@@ -5754,6 +5987,7 @@ async function convertSelectionsToSvg() {
     if (hadStrokeAdjustments) {
       showStrokeAdjustmentNotice()
     }
+    showToast('SVG 변환이 완료되었습니다.', 'success')
   } else if (failures.length > 0) {
     setStatus('SVG conversion failed. Please try again later.', 'danger')
   } else {
@@ -7828,6 +8062,7 @@ async function ingestFiles(fileList) {
     state.uploads.push(...newUploads)
     newUploads.forEach((upload) => state.selectedUploads.add(upload.id))
     renderUploads()
+    handleSvgSelectionUpdate()
     updateOperationAvailability()
     recomputeStage()
 
@@ -7852,6 +8087,7 @@ function deleteUploads(ids) {
     return true
   })
   renderUploads()
+  handleSvgSelectionUpdate()
   updateOperationAvailability()
   recomputeStage()
   displayAnalysisFor()
@@ -7870,6 +8106,7 @@ function deleteResults(ids) {
     return true
   })
   renderResults()
+  handleSvgSelectionUpdate()
   updateResultActionAvailability()
   updateOperationAvailability()
   recomputeStage()
@@ -8067,6 +8304,8 @@ function appendResult(upload, result, options = {}) {
     objectUrl,
     previewDataUrl,
     operations: result.operations,
+    type: typeof result.type === 'string' ? result.type : result.blob?.type || '',
+    svgOptions: result.svgOptions || null,
     createdAt: Date.now(),
   }
 
@@ -8118,6 +8357,11 @@ function replaceResult(existingResult, updatedPayload) {
         ? updatedPayload.previewDataUrl
         : previous.previewDataUrl,
     operations: updatedPayload.operations,
+    type:
+      typeof updatedPayload.type === 'string'
+        ? updatedPayload.type
+        : updatedPayload.blob?.type || previous.type,
+    svgOptions: updatedPayload.svgOptions || previous.svgOptions || null,
     updatedAt: Date.now(),
   }
 
@@ -8332,6 +8576,34 @@ async function runOperation(operation) {
   }
 }
 
+function handleSvgSelectionUpdate() {
+  if (state.selectedUploads.size === 0 && state.selectedResults.size === 0) {
+    state.svgOptions.userEditedColor = false
+  }
+  if (!state.processing) {
+    requestAutoSelectSvgColor()
+  }
+}
+
+function handleSvgFillColorInput(event) {
+  const input = event?.target
+  if (!(input instanceof HTMLInputElement)) {
+    return
+  }
+  updateSvgFillColor(input.value, { userInitiated: true })
+}
+
+function handleSvgStrokeModeChange(event) {
+  const input = event?.target
+  if (!(input instanceof HTMLInputElement) || input.name !== 'svgStrokeMode') {
+    return
+  }
+  if (!input.checked) {
+    return
+  }
+  applyStrokeModeToInputs(input.value)
+}
+
 function handleUploadListChange(event) {
   if (!elements.uploadList) return
   const input = event.target
@@ -8350,6 +8622,7 @@ function handleUploadListChange(event) {
   }
 
   card.classList.toggle('is-selected', input.checked)
+  handleSvgSelectionUpdate()
   updateOperationAvailability()
   updateResultActionAvailability()
 }
@@ -8400,6 +8673,7 @@ function handleResultListChange(event) {
   }
 
   card.classList.toggle('is-selected', input.checked)
+  handleSvgSelectionUpdate()
   updateResultActionAvailability()
   updateOperationAvailability()
 }
@@ -8445,6 +8719,7 @@ function handleResultListClick(event) {
 function selectAllUploads() {
   state.uploads.forEach((upload) => state.selectedUploads.add(upload.id))
   renderUploads()
+  handleSvgSelectionUpdate()
   updateOperationAvailability()
   updateResultActionAvailability()
 }
@@ -8452,6 +8727,7 @@ function selectAllUploads() {
 function clearUploadsSelection() {
   state.selectedUploads.clear()
   renderUploads()
+  handleSvgSelectionUpdate()
   updateOperationAvailability()
   updateResultActionAvailability()
 }
@@ -8459,6 +8735,7 @@ function clearUploadsSelection() {
 function selectAllResults() {
   state.results.forEach((result) => state.selectedResults.add(result.id))
   renderResults()
+  handleSvgSelectionUpdate()
   updateResultActionAvailability()
   updateOperationAvailability()
 }
@@ -8466,21 +8743,73 @@ function selectAllResults() {
 function clearResultsSelection() {
   state.selectedResults.clear()
   renderResults()
+  handleSvgSelectionUpdate()
   updateResultActionAvailability()
   updateOperationAvailability()
 }
 
-function fallbackSanitizeSvg(svgText) {
-  return svgText
-    .replace(/stroke="[^"]*"/g, '')
-    .replace(/stroke-width="[^"]*"/g, '')
-    .replace(/stroke-linecap="[^"]*"/g, '')
-    .replace(/stroke-linejoin="[^"]*"/g, '')
-    .replace(/stroke-opacity="[^"]*"/g, '')
-    .replace(/stroke-dasharray="[^"]*"/g, '')
-    .replace(/stroke-dashoffset="[^"]*"/g, '')
-    .replace(/stroke-miterlimit="[^"]*"/g, '')
-    .replace(/<g>\s*<\/g>/g, '')
+function fallbackSanitizeSvg(svgText, { fillColor, strokeMode } = {}) {
+  if (typeof svgText !== 'string') {
+    return ''
+  }
+  let sanitized = svgText
+    .replace(/stroke="[^"]*"/gi, '')
+    .replace(/stroke-width="[^"]*"/gi, '')
+    .replace(/stroke-linecap="[^"]*"/gi, '')
+    .replace(/stroke-linejoin="[^"]*"/gi, '')
+    .replace(/stroke-opacity="[^"]*"/gi, '')
+    .replace(/stroke-dasharray="[^"]*"/gi, '')
+    .replace(/stroke-dashoffset="[^"]*"/gi, '')
+    .replace(/stroke-miterlimit="[^"]*"/gi, '')
+    .replace(/<g>\s*<\/g>/gi, '')
+
+  const normalizedFill = normalizeHexColor(fillColor)
+  if (normalizedFill) {
+    sanitized = sanitized.replace(/fill="(?!none)[^"]*"/gi, `fill="${normalizedFill}"`)
+    sanitized = sanitized.replace(/style="([^"]*)"/gi, (match, contents) => {
+      const declarations = contents
+        .split(';')
+        .map((decl) => decl.trim())
+        .filter(Boolean)
+      let hasFill = false
+      const rewritten = declarations
+        .map((decl) => {
+          const [prop, ...rest] = decl.split(':')
+          if (!prop) return ''
+          const normalizedProp = prop.trim().toLowerCase()
+          const value = rest.join(':').trim()
+          if (normalizedProp === 'fill') {
+            hasFill = true
+            if (value.toLowerCase() === 'none' || !/^url\(/i.test(value)) {
+              return `fill: ${normalizedFill}`
+            }
+            return `fill: ${normalizedFill}`
+          }
+          return `${prop.trim()}: ${value}`
+        })
+        .filter(Boolean)
+      if (!hasFill) {
+        rewritten.push(`fill: ${normalizedFill}`)
+      }
+      return `style="${rewritten.join('; ')}"`
+    })
+
+    sanitized = sanitized.replace(/<(path|rect|circle|ellipse|polygon|polyline)([^>]*)>/gi, (match, tag, attrs) => {
+      if (/fill\s*=/.test(attrs)) {
+        return match
+      }
+      return `<${tag}${attrs} fill="${normalizedFill}">`
+    })
+
+    sanitized = sanitized.replace(/<svg([^>]*)>/i, (match, attrs) => {
+      if (/fill\s*=/.test(attrs)) {
+        return match
+      }
+      return `<svg${attrs} fill="${normalizedFill}">`
+    })
+  }
+
+  return sanitized
 }
 
 function formatSvgNumber(value) {
@@ -8554,6 +8883,69 @@ function stripStrokeFromElement(element) {
     element.setAttribute('style', filtered)
   } else {
     element.removeAttribute('style')
+  }
+}
+
+function applyFillColorToElement(element, color) {
+  if (!(element instanceof Element)) {
+    return
+  }
+  const normalized = normalizeHexColor(color)
+  if (!normalized) {
+    return
+  }
+  const existingFill = element.getAttribute('fill')
+  if (!existingFill || existingFill.toLowerCase() === 'none' || !/^url\(/i.test(existingFill)) {
+    element.setAttribute('fill', normalized)
+  }
+  if (element.hasAttribute('style')) {
+    const style = element.getAttribute('style') || ''
+    const declarations = style
+      .split(';')
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+    let hasFill = false
+    const rewritten = declarations
+      .map((declaration) => {
+        const [prop, ...rest] = declaration.split(':')
+        if (!prop) return ''
+        const normalizedProp = prop.trim().toLowerCase()
+        const value = rest.join(':').trim()
+        if (normalizedProp === 'fill') {
+          hasFill = true
+          return `fill: ${normalized}`
+        }
+        return `${prop.trim()}: ${value}`
+      })
+      .filter(Boolean)
+    if (!hasFill) {
+      rewritten.push(`fill: ${normalized}`)
+    }
+    element.setAttribute('style', rewritten.join('; '))
+  }
+}
+
+function applyFillColorToTree(root, color) {
+  if (!(root instanceof Element)) {
+    return
+  }
+  const normalized = normalizeHexColor(color)
+  if (!normalized) {
+    return
+  }
+  const skipTags = new Set(['defs', 'clipPath', 'mask', 'lineargradient', 'radialgradient', 'pattern'])
+  const stack = [root]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (!(node instanceof Element)) continue
+    const tagName = node.tagName ? node.tagName.toLowerCase() : ''
+    if (!skipTags.has(tagName)) {
+      applyFillColorToElement(node, normalized)
+    }
+    const children = Array.from(node.children)
+    for (const child of children) {
+      stack.push(child)
+    }
   }
 }
 
@@ -8710,13 +9102,18 @@ function cleanSvgTree(root) {
   }
 }
 
-function attemptStrokeConversion(element) {
+function attemptStrokeConversion(element, options = {}) {
+  const strokeMode = options.strokeMode === 'remove' ? 'remove' : 'outline'
+  const fillColor = options.fillColor
   let adjusted = false
   try {
     const strokeValue = getStyleProperty(element, 'stroke') || element.getAttribute('stroke')
     const hasStroke = strokeValue && strokeValue !== 'none'
     if (!hasStroke) {
       stripStrokeFromElement(element)
+      if (fillColor) {
+        applyFillColorToElement(element, fillColor)
+      }
       return adjusted
     }
 
@@ -8735,7 +9132,7 @@ function attemptStrokeConversion(element) {
       typeof element.getTotalLength === 'function' &&
       typeof element.getPointAtLength === 'function'
 
-    if (canApproximate) {
+    if (strokeMode === 'outline' && canApproximate) {
       const strokeWidth = getStrokeWidthValue(element)
       if (Number.isFinite(strokeWidth) && strokeWidth > 0) {
         const outlinePath = approximateStrokeOutlinePath(element, strokeWidth)
@@ -8743,7 +9140,12 @@ function attemptStrokeConversion(element) {
           const doc = element.ownerDocument
           const pathEl = doc.createElementNS('http://www.w3.org/2000/svg', 'path')
           pathEl.setAttribute('d', outlinePath)
-          pathEl.setAttribute('fill', strokeValue)
+          const normalizedFill = fillColor ? normalizeHexColor(fillColor) : normalizeHexColor(strokeValue)
+          if (normalizedFill) {
+            applyFillColorToElement(pathEl, normalizedFill)
+          } else if (strokeValue && strokeValue !== 'none') {
+            pathEl.setAttribute('fill', strokeValue)
+          }
           const strokeOpacity = getStrokeOpacityValue(element)
           if (strokeOpacity !== null) {
             pathEl.setAttribute('fill-opacity', String(strokeOpacity))
@@ -8763,26 +9165,33 @@ function attemptStrokeConversion(element) {
     }
 
     stripStrokeFromElement(element)
-    if (isShapeElement && !element.getAttribute('fill')) {
+    if (fillColor) {
+      applyFillColorToElement(element, fillColor)
+    } else if (isShapeElement && !element.getAttribute('fill')) {
       const fillStyle = getStyleProperty(element, 'fill')
       if (!fillStyle) {
         element.setAttribute('fill', 'none')
       }
     }
 
-    if (converted || hasStroke) {
+    if (strokeMode === 'remove') {
+      adjusted = hasStroke
+    } else if (converted || hasStroke) {
       adjusted = true
     }
   } catch (error) {
     console.warn('Stroke conversion failed', error)
     stripStrokeFromElement(element)
+    if (fillColor) {
+      applyFillColorToElement(element, fillColor)
+    }
   }
   return adjusted
 }
 
-function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
+function sanitizeSVG(svgText, { trackAdjustments = false, fillColor, strokeMode = 'outline' } = {}) {
   if (typeof DOMParser !== 'function') {
-    return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
+    return { svgText: fallbackSanitizeSvg(svgText, { fillColor, strokeMode }), strokeAdjusted: false }
   }
 
   let strokeAdjusted = false
@@ -8810,7 +9219,7 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
       }
     }
     for (const node of nodesToProcess) {
-      const adjusted = attemptStrokeConversion(node)
+      const adjusted = attemptStrokeConversion(node, { strokeMode, fillColor })
       if (adjusted) {
         strokeAdjusted = true
       }
@@ -8824,9 +9233,17 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
         residualStrokeNodes.add(node)
       }
     })
-    residualStrokeNodes.forEach((node) => stripStrokeFromElement(node))
+    residualStrokeNodes.forEach((node) => {
+      stripStrokeFromElement(node)
+      if (fillColor) {
+        applyFillColorToElement(node, fillColor)
+      }
+    })
 
     cleanSvgTree(svg)
+    if (fillColor) {
+      applyFillColorToTree(svg, fillColor)
+    }
 
     const serialized = new XMLSerializer().serializeToString(svg)
     return {
@@ -8835,7 +9252,7 @@ function sanitizeSVG(svgText, { trackAdjustments = false } = {}) {
     }
   } catch (error) {
     console.warn('Failed to sanitize SVG', error)
-    return { svgText: fallbackSanitizeSvg(svgText), strokeAdjusted: false }
+    return { svgText: fallbackSanitizeSvg(svgText, { fillColor, strokeMode }), strokeAdjusted: false }
   }
 }
 
@@ -8909,13 +9326,17 @@ function cleanSvgBeforeDownload(svgText) {
   }
 }
 
-async function createSanitizedSvgBlob(blob) {
+async function createSanitizedSvgBlob(blob, options = {}) {
   if (!(blob instanceof Blob)) {
     return { blob: new Blob(), strokeAdjusted: false, sanitized: false }
   }
 
   const originalText = await blob.text()
-  const cleaned = sanitizeSVG(originalText, { trackAdjustments: true })
+  const cleaned = sanitizeSVG(originalText, {
+    trackAdjustments: true,
+    fillColor: options.fillColor,
+    strokeMode: options.strokeMode,
+  })
   const fullyCleaned = cleanSvgBeforeDownload(cleaned.svgText)
   return {
     blob: new Blob([fullyCleaned], { type: 'image/svg+xml' }),
@@ -8925,7 +9346,7 @@ async function createSanitizedSvgBlob(blob) {
 }
 
 async function resolveDownloadBlob(result) {
-  const isSvg = result?.type === 'image/svg+xml'
+  const isSvg = result?.type === 'image/svg+xml' || result?.blob?.type === 'image/svg+xml'
   const blob = result?.blob instanceof Blob ? result.blob : null
 
   if (!isSvg || !blob) {
@@ -8933,7 +9354,11 @@ async function resolveDownloadBlob(result) {
   }
 
   try {
-    return await createSanitizedSvgBlob(blob)
+    const svgOptions =
+      result && typeof result.svgOptions === 'object'
+        ? result.svgOptions
+        : { fillColor: getCurrentSvgFillColor(), strokeMode: resolveSvgStrokeMode() }
+    return await createSanitizedSvgBlob(blob, svgOptions)
   } catch (error) {
     console.error('SVG 정리 중 오류가 발생했습니다.', error)
     return { blob, strokeAdjusted: false, sanitized: false }
@@ -9013,6 +9438,20 @@ async function downloadResults(ids, mode = 'selected') {
 }
 
 function attachEventListeners() {
+  updateSvgFillColor(getCurrentSvgFillColor(), { auto: true })
+  applyStrokeModeToInputs(resolveSvgStrokeMode())
+
+  if (elements.svgFillColorInput instanceof HTMLInputElement) {
+    const handleInput = (event) => handleSvgFillColorInput(event)
+    elements.svgFillColorInput.addEventListener('input', handleInput)
+    elements.svgFillColorInput.addEventListener('change', handleInput)
+  }
+
+  elements.svgStrokeModeInputs?.forEach((input) => {
+    if (!(input instanceof HTMLInputElement)) return
+    input.addEventListener('change', handleSvgStrokeModeChange)
+  })
+
   if (elements.challengeSubmitForm instanceof HTMLFormElement) {
     elements.challengeSubmitForm.addEventListener('submit', handleChallengeSubmit)
   }
@@ -9369,6 +9808,8 @@ function attachEventListeners() {
     })
 
   document.addEventListener('keydown', handleGlobalKeydown)
+
+  requestAutoSelectSvgColor()
 }
 
 function init() {
