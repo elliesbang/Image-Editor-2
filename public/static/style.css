@@ -3248,6 +3248,52 @@ body.is-modal-open {
   color: var(--text-muted);
 }
 
+.challenge-deadline-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-sm);
+  background: #fef568;
+  color: #404040;
+  font-family: 'Pretendard', 'Inter', sans-serif;
+  box-shadow: 0 12px 26px rgba(254, 245, 104, 0.35);
+  border: 1px solid rgba(64, 64, 64, 0.08);
+}
+
+.challenge-deadline-card__summary {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #404040;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.challenge-deadline-card__timer {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #404040;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.challenge-deadline-card__notice {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: rgba(64, 64, 64, 0.92);
+  background: rgba(64, 64, 64, 0.08);
+  border-radius: var(--radius-xs, 10px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .challenge-submit[data-state='loading'] {
   opacity: 0.6;
   pointer-events: none;

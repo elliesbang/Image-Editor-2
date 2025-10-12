@@ -159,6 +159,9 @@ function decodeGoogleCredentialPayload(token) {
   }
 }
 
+const CHALLENGE_TIMEZONE_OFFSET_MINUTES = 9 * 60
+const CHALLENGE_TIMEZONE_OFFSET_MS = CHALLENGE_TIMEZONE_OFFSET_MINUTES * 60 * 1000
+
 function announceGoogleRetry(delayMs, reason = 'recoverable_error', attemptNumber) {
   const seconds = Math.max(1, Math.ceil(delayMs / 1000))
   const resolvedAttempt =
@@ -859,6 +862,10 @@ const elements = {
   challengeUrlInput: document.querySelector('[data-role="challenge-url"]'),
   challengeFileInput: document.querySelector('[data-role="challenge-file"]'),
   challengeSubmitHint: document.querySelector('[data-role="challenge-submit-hint"]'),
+  challengeDeadlineCard: document.querySelector('[data-role="challenge-deadline-card"]'),
+  challengeDeadlineSummary: document.querySelector('[data-role="challenge-deadline-summary"]'),
+  challengeDeadlineRemaining: document.querySelector('[data-role="challenge-deadline-remaining"]'),
+  challengeDeadlineNotice: document.querySelector('[data-role="challenge-deadline-notice"]'),
   challengeDays: document.querySelector('[data-role="challenge-days"]'),
   challengeCertificate: document.querySelector('[data-role="challenge-certificate"]'),
   certificatePreview: document.querySelector('[data-role="certificate-preview"]'),
@@ -4137,6 +4144,183 @@ function formatDayOptionDate(value) {
   return `${month}.${day}`
 }
 
+function parseDeadlineString(value) {
+  if (typeof value !== 'string' || !value) {
+    return null
+  }
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) {
+    return null
+  }
+  return new Date(parsed)
+}
+
+function toSeoulDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null
+  }
+  const adjusted = new Date(date.getTime() + CHALLENGE_TIMEZONE_OFFSET_MS)
+  return {
+    year: adjusted.getUTCFullYear(),
+    month: String(adjusted.getUTCMonth() + 1).padStart(2, '0'),
+    day: String(adjusted.getUTCDate()).padStart(2, '0'),
+    hour: String(adjusted.getUTCHours()).padStart(2, '0'),
+    minute: String(adjusted.getUTCMinutes()).padStart(2, '0'),
+  }
+}
+
+function formatDeadlineLabel(date) {
+  const parts = toSeoulDate(date)
+  if (!parts) {
+    return ''
+  }
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`
+}
+
+function formatRemainingDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
+    return '0분'
+  }
+  const totalMinutes = Math.floor(milliseconds / 60000)
+  const days = Math.floor(totalMinutes / (60 * 24))
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60)
+  const minutes = totalMinutes % 60
+  const segments = []
+  if (days > 0) {
+    segments.push(`${days}일`)
+  }
+  if (hours > 0) {
+    segments.push(`${hours}시간`)
+  }
+  if (minutes > 0 && segments.length < 2) {
+    segments.push(`${minutes}분`)
+  }
+  if (segments.length === 0) {
+    return '1분 미만'
+  }
+  return segments.join(' ')
+}
+
+function ensureChallengeDeadlineElements() {
+  if (!(elements.challengeSubmitForm instanceof HTMLFormElement)) {
+    return
+  }
+  if (elements.challengeDeadlineCard instanceof HTMLElement) {
+    return
+  }
+  const card = document.createElement('section')
+  card.className = 'challenge-deadline-card'
+  card.dataset.role = 'challenge-deadline-card'
+  card.innerHTML = `
+    <p class="challenge-deadline-card__summary" data-role="challenge-deadline-summary"></p>
+    <p class="challenge-deadline-card__timer" data-role="challenge-deadline-remaining"></p>
+    <p class="challenge-deadline-card__notice" data-role="challenge-deadline-notice" hidden></p>
+  `
+  const grid = elements.challengeSubmitForm.querySelector('.challenge-submit__grid')
+  if (grid instanceof HTMLElement) {
+    elements.challengeSubmitForm.insertBefore(card, grid)
+  } else {
+    elements.challengeSubmitForm.insertAdjacentElement('afterbegin', card)
+  }
+  elements.challengeDeadlineCard = card
+  elements.challengeDeadlineSummary = card.querySelector('[data-role="challenge-deadline-summary"]')
+  elements.challengeDeadlineRemaining = card.querySelector('[data-role="challenge-deadline-remaining"]')
+  elements.challengeDeadlineNotice = card.querySelector('[data-role="challenge-deadline-notice"]')
+}
+
+function updateChallengeDeadlineUi({
+  profile,
+  day,
+  startDate,
+  endDate,
+  status,
+  now,
+}) {
+  ensureChallengeDeadlineElements()
+  if (!(elements.challengeDeadlineCard instanceof HTMLElement)) {
+    return
+  }
+  const summaryEl = elements.challengeDeadlineSummary instanceof HTMLElement ? elements.challengeDeadlineSummary : null
+  const timerEl = elements.challengeDeadlineRemaining instanceof HTMLElement ? elements.challengeDeadlineRemaining : null
+  const noticeEl = elements.challengeDeadlineNotice instanceof HTMLElement ? elements.challengeDeadlineNotice : null
+
+  if (!profile || !startDate || !endDate || !summaryEl || !timerEl) {
+    elements.challengeDeadlineCard.hidden = true
+    if (timerEl) timerEl.textContent = ''
+    if (noticeEl) {
+      noticeEl.textContent = ''
+      noticeEl.hidden = true
+    }
+    return
+  }
+
+  elements.challengeDeadlineCard.hidden = false
+
+  const startLabel = formatDeadlineLabel(startDate)
+  const endLabel = formatDeadlineLabel(endDate)
+  summaryEl.textContent = `📅 ${day}일차 제출 기간: ${startLabel} ~ ${endLabel}`
+
+  let timerMessage = '⏰ 제출 기간 정보를 확인할 수 없습니다.'
+  let noticeMessage = ''
+
+  if (status === 'completed') {
+    timerMessage = '✅ 이미 챌린지를 완주했습니다.'
+  } else if (status === 'expired') {
+    timerMessage = '⏰ 챌린지 전체 기간이 종료되었습니다.'
+  } else if (status === 'upcoming') {
+    timerMessage = `⏰ 제출 기간은 ${startLabel}부터 시작됩니다.`
+  } else if (status === 'closed') {
+    timerMessage = '⏰ 제출 기간이 마감되었습니다.'
+    noticeMessage = `이 미션은 제출 기간(${endLabel})이 종료되었습니다.`
+  } else if (status === 'active') {
+    const remainingMs = Math.max(0, endDate.getTime() - now.getTime())
+    timerMessage = `⏰ 남은 시간: ${formatRemainingDuration(remainingMs)}`
+  }
+
+  timerEl.textContent = timerMessage
+
+  if (noticeEl) {
+    if (noticeMessage) {
+      noticeEl.textContent = noticeMessage
+      noticeEl.hidden = false
+    } else {
+      noticeEl.textContent = ''
+      noticeEl.hidden = true
+    }
+  }
+}
+
+function logChallengeDeadlineStatus(day, status, { now, startDate, endDate }) {
+  const nowLabel = formatDeadlineLabel(now)
+  if (!nowLabel) {
+    return
+  }
+  if (status === 'active') {
+    console.log(`[LOG] ${day}일차 제출 가능 (현재시간: ${nowLabel})`)
+    return
+  }
+  if (status === 'closed') {
+    const endLabel = formatDeadlineLabel(endDate)
+    console.log(`[LOG] ${day}일차 제출 불가 (마감: ${endLabel || nowLabel})`)
+    return
+  }
+  if (status === 'upcoming') {
+    const startLabel = formatDeadlineLabel(startDate)
+    console.log(`[LOG] ${day}일차 제출 불가 (시작: ${startLabel || nowLabel})`)
+    return
+  }
+  if (status === 'expired') {
+    const endLabel = formatDeadlineLabel(endDate)
+    console.log(`[LOG] ${day}일차 제출 불가 (마감: ${endLabel || nowLabel})`)
+    return
+  }
+  if (status === 'completed') {
+    console.log(`[LOG] ${day}일차 제출 불가 (완주 상태, 현재시간: ${nowLabel})`)
+    return
+  }
+  console.log(`[LOG] ${day}일차 제출 상태 확인 필요 (현재시간: ${nowLabel})`)
+}
+
 function updateChallengeDayOptions(profile) {
   if (!(elements.challengeDaySelect instanceof HTMLSelectElement)) {
     return
@@ -4245,6 +4429,7 @@ function updateChallengeSubmitState(profile) {
   const isSubmitting = state.challenge.submitting
   const submitButton = elements.challengeSubmitForm?.querySelector('button[type="submit"]')
   const controls = [elements.challengeDaySelect, elements.challengeUrlInput, elements.challengeFileInput]
+  ensureChallengeDeadlineElements()
   if (!(elements.challengeSubmitForm instanceof HTMLFormElement)) return
   if (!profile) {
     elements.challengeSubmitForm.dataset.state = 'locked'
@@ -4255,6 +4440,9 @@ function updateChallengeSubmitState(profile) {
     if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true
     if (elements.challengeSubmitHint instanceof HTMLElement) {
       elements.challengeSubmitHint.textContent = '참가자 등록 후 제출 기능을 이용할 수 있습니다.'
+    }
+    if (elements.challengeDeadlineCard instanceof HTMLElement) {
+      elements.challengeDeadlineCard.hidden = true
     }
     return
   }
@@ -4275,8 +4463,27 @@ function updateChallengeSubmitState(profile) {
     }
   }
   const selectedDayState = resolveChallengeDayState(profile, selectedDay)
-  const isDayActive = hasDayStates ? Boolean(selectedDayState?.isActiveDay) : !isExpired
-  const shouldDisableInputs = isSubmitting || isCompleted || isExpired || !isDayActive
+  const startDate = parseDeadlineString(selectedDayState?.start)
+  const endDate = parseDeadlineString(selectedDayState?.end)
+  const now = new Date()
+  let windowStatus = 'unknown'
+  if (isCompleted) {
+    windowStatus = 'completed'
+  } else if (isExpired) {
+    windowStatus = 'expired'
+  } else if (startDate && endDate) {
+    if (now.getTime() < startDate.getTime()) {
+      windowStatus = 'upcoming'
+    } else if (now.getTime() > endDate.getTime()) {
+      windowStatus = 'closed'
+    } else {
+      windowStatus = 'active'
+    }
+  } else if (isUpcoming) {
+    windowStatus = 'upcoming'
+  }
+
+  const shouldDisableInputs = isSubmitting || windowStatus !== 'active'
   const shouldDisableSelect = isSubmitting || isCompleted
 
   const formState = isSubmitting ? 'loading' : isCompleted ? 'completed' : shouldDisableInputs ? 'locked' : 'active'
@@ -4299,13 +4506,35 @@ function updateChallengeSubmitState(profile) {
 
   if (submitButton instanceof HTMLButtonElement) {
     submitButton.disabled = shouldDisableInputs
-    const showClosedTooltip = !isSubmitting && !isCompleted && (isExpired || !isDayActive)
-    if (showClosedTooltip) {
-      submitButton.title = '마감된 일차입니다'
+    let tooltip = ''
+    if (!isSubmitting) {
+      if (windowStatus === 'closed' && endDate) {
+        tooltip = `이 미션은 제출 기간(${formatDeadlineLabel(endDate)})이 종료되었습니다.`
+      } else if (windowStatus === 'upcoming' && startDate) {
+        tooltip = `이 미션은 ${formatDeadlineLabel(startDate)}부터 제출할 수 있습니다.`
+      } else if (windowStatus === 'expired' && endDate) {
+        tooltip = `이 미션은 제출 기간(${formatDeadlineLabel(endDate)})이 종료되었습니다.`
+      } else if (windowStatus === 'completed') {
+        tooltip = '이미 완주한 챌린지입니다.'
+      }
+    }
+    if (tooltip) {
+      submitButton.title = tooltip
     } else {
       submitButton.removeAttribute('title')
     }
   }
+
+  updateChallengeDeadlineUi({
+    profile,
+    day: selectedDay,
+    startDate,
+    endDate,
+    status: windowStatus,
+    now,
+  })
+
+  logChallengeDeadlineStatus(selectedDay, windowStatus, { now, startDate, endDate })
 
   if (elements.challengeSubmitHint instanceof HTMLElement) {
     if (isCompleted) {
@@ -4315,10 +4544,15 @@ function updateChallengeSubmitState(profile) {
       elements.challengeSubmitHint.textContent = hasPeriod
         ? '챌린지 기간이 종료되었습니다. 관리자에게 문의해주세요.'
         : '챌린지 기간이 설정되지 않았습니다. 관리자에게 문의해주세요.'
-    } else if (isUpcoming) {
-      elements.challengeSubmitHint.textContent = '챌린지가 아직 시작되지 않았습니다. 시작일에 맞춰 제출해주세요.'
-    } else if (!isDayActive) {
-      elements.challengeSubmitHint.textContent = '선택한 일차는 마감되었습니다. 진행 중인 일차를 선택해주세요.'
+    } else if (windowStatus === 'upcoming') {
+      const startLabel = startDate ? formatDeadlineLabel(startDate) : ''
+      elements.challengeSubmitHint.textContent = startLabel
+        ? `⏰ 제출 기간은 ${startLabel}부터 시작됩니다. 일정에 맞춰 준비해주세요.`
+        : '챌린지가 아직 시작되지 않았습니다. 시작일에 맞춰 제출해주세요.'
+    } else if (windowStatus === 'closed') {
+      elements.challengeSubmitHint.textContent = '⏰ 제출 기간이 마감되었습니다. 다음 일차를 선택하거나 관리자에게 문의해주세요.'
+    } else if (windowStatus === 'unknown') {
+      elements.challengeSubmitHint.textContent = '제출 기간 정보를 불러오는 중입니다. 잠시 후 다시 확인해주세요.'
     } else {
       elements.challengeSubmitHint.textContent = 'URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.'
     }
