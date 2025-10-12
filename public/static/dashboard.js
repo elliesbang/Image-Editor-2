@@ -578,8 +578,16 @@
       if (!response.ok) {
         throw new Error('failed_to_upload');
       }
+      const payload = await response.json().catch(() => ({}));
+      const uploadedCount = Number(payload?.count ?? normalized.length) || normalized.length;
+      if (Array.isArray(payload?.participants)) {
+        state.participants = payload.participants;
+        renderParticipants();
+      }
       elements.participantsForm?.reset();
-      showToast('명단 업로드 완료', 'success');
+      const successMessage = `참가자 명단이 업로드되었습니다. 총 ${formatCount(uploadedCount)}명 적용되었습니다.`;
+      setStatusMessage(elements.participantsStatus, successMessage, 'success');
+      showToast('참가자 명단이 업로드되었습니다.', 'success');
       await Promise.all([loadParticipants(), loadStatus()]);
     } catch (error) {
       console.error('[dashboard] failed to upload participants', error);
@@ -663,6 +671,10 @@
       }
       const payload = await response.json();
       state.status = payload;
+      if (payload?.period && payload.period.startDate && payload.period.endDate) {
+        state.period = payload.period;
+        renderPeriod();
+      }
       renderStatus();
     } catch (error) {
       console.error('[dashboard] failed to load michina status', error);

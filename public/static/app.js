@@ -4128,6 +4128,65 @@ function formatChallengeDayBoundary(value) {
   }).format(date)
 }
 
+function formatDayOptionDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${month}.${day}`
+}
+
+function updateChallengeDayOptions(profile) {
+  if (!(elements.challengeDaySelect instanceof HTMLSelectElement)) {
+    return
+  }
+  const previousValue = elements.challengeDaySelect.value
+  elements.challengeDaySelect.innerHTML = ''
+
+  const required = Number(profile?.required ?? 15)
+  const dayStates = Array.isArray(profile?.days) ? profile.days : []
+  const startTimestamp = typeof profile?.challengePeriod?.start === 'string' ? Date.parse(profile.challengePeriod.start) : NaN
+
+  const resolveDayDate = (day) => {
+    const state = dayStates.find((entry) => Number(entry?.day) === day)
+    if (state?.start) {
+      const parsed = Date.parse(state.start)
+      if (!Number.isNaN(parsed)) {
+        return new Date(parsed)
+      }
+    }
+    if (!Number.isNaN(startTimestamp)) {
+      const base = new Date(startTimestamp)
+      const dayDate = new Date(base.getTime() + (day - 1) * 24 * 60 * 60 * 1000)
+      if (!Number.isNaN(dayDate.getTime())) {
+        return dayDate
+      }
+    }
+    return null
+  }
+
+  const totalDays = Number.isFinite(required) && required > 0 ? required : 15
+  for (let day = 1; day <= totalDays; day += 1) {
+    const option = document.createElement('option')
+    option.value = String(day)
+    let label = `${day}일차`
+    const dayDate = resolveDayDate(day)
+    if (dayDate) {
+      label += ` (${formatDayOptionDate(dayDate)})`
+    }
+    option.textContent = label
+    elements.challengeDaySelect.appendChild(option)
+  }
+
+  if (previousValue) {
+    const restored = elements.challengeDaySelect.querySelector(`option[value="${previousValue}"]`)
+    if (restored) {
+      elements.challengeDaySelect.value = previousValue
+    }
+  }
+}
+
 function renderChallengeDays(profile) {
   if (!(elements.challengeDays instanceof HTMLElement)) return
   if (!profile) {
@@ -4393,6 +4452,7 @@ function renderChallengeDashboard() {
 
   renderChallengeProgress(profile)
   renderChallengeDays(profile)
+  updateChallengeDayOptions(profile)
   if (elements.challengeDaySelect instanceof HTMLSelectElement && profile) {
     const activeDay = Number(profile.challengePeriod?.activeDay)
     if (Number.isFinite(activeDay) && activeDay > 0) {
