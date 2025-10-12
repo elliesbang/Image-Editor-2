@@ -914,13 +914,28 @@ function getClientIdentifier(c: Context<{ Bindings: Bindings }>) {
 }
 
 function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
-  const configured = c.env.GOOGLE_REDIRECT_URI?.trim()
-  if (configured) {
-    return configured
-  }
   try {
-    const url = new URL(c.req.url)
-    return `${url.origin}/api/auth/callback/google`
+    const requestUrl = new URL(c.req.url)
+    const fallback = `${requestUrl.origin}/api/auth/callback/google`
+    const configured = c.env.GOOGLE_REDIRECT_URI?.trim()
+
+    if (configured) {
+      try {
+        const candidate = new URL(configured, requestUrl.origin)
+        if (candidate.origin !== requestUrl.origin) {
+          console.warn(
+            '[auth/google] Redirect origin mismatch. Falling back to request origin to preserve session cookies.',
+          )
+          return fallback
+        }
+        return candidate.toString()
+      } catch (error) {
+        console.warn('[auth/google] Invalid GOOGLE_REDIRECT_URI value. Falling back to request origin.', error)
+        return fallback
+      }
+    }
+
+    return fallback
   } catch (error) {
     console.warn('[auth/google] Failed to derive redirect URI from request URL', error)
     return DEFAULT_GOOGLE_REDIRECT_URI
