@@ -1,5 +1,23 @@
 const TOTAL_DAYS = 15
 const STORAGE_KEY = 'michina-preview-progress'
+const challengeConfig = { deadlines: [], period: null }
+
+function formatDeadlineWindow(startIso, endIso) {
+  const start = new Date(startIso)
+  const end = new Date(endIso)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return '-'
+  }
+  const toLabel = (date) => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day} ${hours}:${minutes}`
+  }
+  return `${toLabel(start)} ~ ${toLabel(end)}`
+}
 
 function createEmptyState() {
   return {
@@ -157,11 +175,102 @@ document.addEventListener('DOMContentLoaded', () => {
     submittedDays: document.getElementById('submittedDays'),
     unsubmittedDays: document.getElementById('unsubmittedDays'),
     certificateButton: document.querySelector('[data-role="certificate-button"]'),
+    deadlineStatus: document.querySelector('[data-role="deadline-status"]'),
+  }
+
+  if (elements.submissionForm instanceof HTMLFormElement) {
+    elements.submitButton = elements.submissionForm.querySelector('button[type="submit"]')
   }
 
   if (!elements.daySelect || !elements.fileInput || !elements.submissionForm) {
     console.error('필수 폼 요소를 찾을 수 없습니다.')
     return
+  }
+
+  function getDeadlineForDay(day) {
+    const target = Number.isInteger(day) ? day : Number.NaN
+    if (!Number.isFinite(target)) {
+      return null
+    }
+    return challengeConfig.deadlines.find((deadline) => deadline.dayIndex === target) || null
+  }
+
+  function setSubmitDisabled(disabled) {
+    if (elements.submitButton instanceof HTMLButtonElement) {
+      elements.submitButton.disabled = disabled
+      if (disabled) {
+        elements.submitButton.setAttribute('aria-disabled', 'true')
+      } else {
+        elements.submitButton.removeAttribute('aria-disabled')
+      }
+    }
+  }
+
+  function updateDeadlineStatus(selectedDay) {
+    if (!(elements.deadlineStatus instanceof HTMLElement)) {
+      return
+    }
+    const deadlines = Array.isArray(challengeConfig.deadlines) ? challengeConfig.deadlines : []
+    if (!deadlines.length) {
+      elements.deadlineStatus.textContent = '⚠️ 챌린지 기간이 설정되지 않았습니다.'
+      setSubmitDisabled(true)
+      return
+    }
+    const dayNumber = Number.isInteger(selectedDay) && selectedDay > 0 ? selectedDay : deadlines[0].dayIndex
+    if (elements.daySelect instanceof HTMLSelectElement && dayNumber) {
+      const hasOption = Array.from(elements.daySelect.options).some((option) => Number(option.value) === dayNumber)
+      if (!hasOption) {
+        elements.daySelect.value = String(deadlines[0].dayIndex)
+      }
+    }
+    const deadline = getDeadlineForDay(dayNumber)
+    if (!deadline) {
+      elements.deadlineStatus.textContent = '⚠️ 선택한 일차의 데드라인 정보를 찾을 수 없습니다.'
+      setSubmitDisabled(true)
+      return
+    }
+    const now = Date.now()
+    const start = new Date(deadline.startAt).getTime()
+    const end = new Date(deadline.endAt).getTime()
+    if (Number.isNaN(start) || Number.isNaN(end)) {
+      elements.deadlineStatus.textContent = '⚠️ 데드라인 정보를 불러오지 못했습니다.'
+      setSubmitDisabled(true)
+      return
+    }
+    let message = `오늘은 ${deadline.dayIndex}일차: ${formatDeadlineWindow(deadline.startAt, deadline.endAt)}`
+    setSubmitDisabled(false)
+    if (now < start) {
+      message = `⏳ ${deadline.dayIndex}일차 제출은 ${formatDeadlineWindow(deadline.startAt, deadline.endAt)}에 가능합니다.`
+      setSubmitDisabled(true)
+    } else if (now > end) {
+      message = '⏰ 제출 기간이 지났습니다.'
+      setSubmitDisabled(true)
+    }
+    elements.deadlineStatus.textContent = message
+  }
+
+  async function loadChallengeConfig() {
+    try {
+      const response = await fetch('/api/michina/deadlines')
+      if (!response.ok) {
+        throw new Error('FAILED_TO_LOAD_DEADLINES')
+      }
+      const payload = await response.json()
+      challengeConfig.period = payload?.period || null
+      challengeConfig.deadlines = Array.isArray(payload?.deadlines) ? payload.deadlines : []
+      const active = payload?.active
+      if (elements.daySelect instanceof HTMLSelectElement && active?.dayIndex) {
+        elements.daySelect.value = String(active.dayIndex)
+      }
+      const selectedDay = elements.daySelect instanceof HTMLSelectElement ? Number(elements.daySelect.value) : Number.NaN
+      updateDeadlineStatus(selectedDay)
+    } catch (error) {
+      console.error('챌린지 기간 정보를 불러오지 못했습니다.', error)
+      if (elements.deadlineStatus instanceof HTMLElement) {
+        elements.deadlineStatus.textContent = '⚠️ 챌린지 기간 정보를 불러오지 못했습니다.'
+      }
+      setSubmitDisabled(true)
+    }
   }
 
   function populateDayOptions() {
@@ -173,6 +282,7 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.daySelect.appendChild(option)
     }
     elements.daySelect.value = String(getNextAvailableDay(state))
+    updateDeadlineStatus(Number(elements.daySelect.value))
   }
 
   function updateProgress() {
@@ -227,11 +337,47 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  if (elements.daySelect instanceof HTMLSelectElement) {
+    elements.daySelect.addEventListener('change', () => {
+      const selectedDay = Number(elements.daySelect.value)
+      updateDeadlineStatus(selectedDay)
+    })
+  }
+
   elements.submissionForm.addEventListener('submit', async (event) => {
     event.preventDefault()
     const selectedDay = Number(elements.daySelect.value)
     if (!Number.isInteger(selectedDay) || selectedDay < 1 || selectedDay > TOTAL_DAYS) {
       window.alert('제출할 일차를 선택해주세요.')
+      return
+    }
+
+    if (!challengeConfig.deadlines.length) {
+      window.alert('⚠️ 챌린지 기간이 설정되지 않았습니다.')
+      return
+    }
+
+    const deadline = getDeadlineForDay(selectedDay)
+    if (!deadline) {
+      window.alert('⚠️ 선택한 일차의 데드라인 정보를 찾을 수 없습니다.')
+      return
+    }
+
+    const now = Date.now()
+    const start = new Date(deadline.startAt).getTime()
+    const end = new Date(deadline.endAt).getTime()
+    if (Number.isNaN(start) || Number.isNaN(end)) {
+      window.alert('⚠️ 데드라인 정보를 불러오지 못했습니다.')
+      return
+    }
+    if (now < start) {
+      window.alert('⏳ 제출 가능 시간이 아직 시작되지 않았습니다.')
+      updateDeadlineStatus(selectedDay)
+      return
+    }
+    if (now > end) {
+      window.alert('⏰ 제출 기간이 지났습니다.')
+      updateDeadlineStatus(selectedDay)
       return
     }
 
@@ -254,9 +400,10 @@ document.addEventListener('DOMContentLoaded', () => {
         submittedAt: new Date().toISOString(),
       }
       saveState(state)
-      window.alert(`${selectedDay}일차 업로드 완료!`)
+      window.alert('✅ 오늘의 미션이 성공적으로 업로드되었습니다.')
       elements.fileInput.value = ''
       elements.daySelect.value = String(getNextAvailableDay(state))
+      updateDeadlineStatus(Number(elements.daySelect.value))
       updateProgress()
       updateCertificateButtonVisibility()
       await handleCompletion()
@@ -281,6 +428,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   populateDayOptions()
+  loadChallengeConfig()
   updateProgress()
   updateCertificateButtonVisibility()
 
