@@ -26,6 +26,8 @@ const elements = {
   savePeriodBtn: document.getElementById('savePeriodBtn'),
   periodStatus: document.getElementById('periodStatus'),
   statusPeriod: document.getElementById('statusPeriod'),
+  recentPeriodContainer: document.getElementById('recentPeriodContainer'),
+  recentPeriodText: document.getElementById('recentPeriodText'),
   statusMessage: document.getElementById('statusMessage'),
   uploadInput: document.getElementById('csvUpload'),
   uploadFilename: document.getElementById('uploadFilename'),
@@ -80,6 +82,27 @@ function formatDate(value) {
     return value;
   }
   return new Intl.DateTimeFormat('ko', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+function formatIsoDate(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    return trimmed;
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function formatDateTime(value) {
@@ -147,6 +170,15 @@ function renderPeriod() {
     setMessage(elements.periodStatus, '⚠️ 챌린지 기간이 아직 설정되지 않았습니다.', 'warning');
     if (elements.statusPeriod instanceof HTMLElement) {
       elements.statusPeriod.textContent = '챌린지 기간을 설정하면 현황이 계산됩니다.';
+    }
+  }
+  if (elements.recentPeriodContainer instanceof HTMLElement && elements.recentPeriodText instanceof HTMLElement) {
+    if (period && period.startDate && period.endDate) {
+      const startLabel = formatIsoDate(period.startDate);
+      const endLabel = formatIsoDate(period.endDate);
+      elements.recentPeriodText.textContent = `최근 저장된 기간: ${startLabel} ~ ${endLabel}`;
+    } else {
+      elements.recentPeriodText.textContent = '저장된 기간이 없습니다';
     }
   }
 }
@@ -322,12 +354,14 @@ async function savePeriod(startDate, endDate) {
     state.period = payload?.period ?? null;
     renderPeriod();
     const summaryText = buildPeriodSummary(state.period);
-    const message = summaryText ? `챌린지 기간이 저장되었습니다. ${summaryText}` : '챌린지 기간이 저장되었습니다.';
+    const message = summaryText ? `✔️ 기간이 저장되었습니다. ${summaryText}` : '✔️ 기간이 저장되었습니다.';
     setMessage(elements.periodStatus, message, 'success');
-    showToast('챌린지 기간이 저장되었습니다.');
+    showToast('✔️ 기간이 저장되었습니다');
+    console.log('기간이 D1에 저장되었습니다');
     await loadMichinaStatus();
   } catch (error) {
-    setMessage(elements.periodStatus, '기간을 저장하지 못했습니다. 입력 값을 확인해주세요.', 'danger');
+    setMessage(elements.periodStatus, '❌ 저장에 실패했습니다. 다시 시도해주세요.', 'danger');
+    showToast('❌ 저장에 실패했습니다. 다시 시도해주세요.');
   } finally {
     state.isSavingPeriod = false;
     if (elements.savePeriodBtn instanceof HTMLButtonElement) {
