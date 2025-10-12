@@ -1,6 +1,9 @@
 {
   "name": "easy-image-editer",
   "type": "module",
+  "imports": {
+    "openai": "./utils/openai-lite.js"
+  },
   "scripts": {
     "dev": "vite",
     "dev:sandbox": "wrangler pages dev dist --local --ip 0.0.0.0 --port 3000",
