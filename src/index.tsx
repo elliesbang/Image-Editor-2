@@ -393,63 +393,79 @@ function renderAdminManagementPage() {
         <div class="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
           <div class="space-y-6">
             <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
-              <h2 class="mb-4 flex items-center gap-2 text-lg font-semibold text-gray-900">
-                <span class="text-xl">📅</span>
-                챌린지 기간 설정
-              </h2>
-              <form data-role="period-form" class="space-y-3">
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <div class="space-y-1.5">
-                    <label class="block text-xs font-semibold uppercase tracking-wide text-[#6f5a26]" for="startDate">시작일</label>
+              <div class="space-y-8">
+                <h2 class="text-lg font-semibold text-gray-900">📊 미치나 챌린저 관리</h2>
+                <div class="space-y-3 rounded-lg border border-[#f5eee9] bg-white/70 p-4 shadow-inner">
+                  <h3 class="text-base font-medium text-gray-800">📅 챌린지 기간 설정</h3>
+                  <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
                     <input
                       id="startDate"
                       type="date"
-                      required
-                      data-role="period-start"
-                      class="w-full rounded-lg border border-yellow-200 bg-ivory/60 px-3 py-2 text-sm text-gray-800 shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/60"
+                      class="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/60"
                     />
-                  </div>
-                  <div class="space-y-1.5">
-                    <label class="block text-xs font-semibold uppercase tracking-wide text-[#6f5a26]" for="endDate">종료일</label>
                     <input
                       id="endDate"
                       type="date"
-                      required
-                      data-role="period-end"
-                      class="w-full rounded-lg border border-yellow-200 bg-ivory/60 px-3 py-2 text-sm text-gray-800 shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/60"
+                      class="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/60"
                     />
+                    <button
+                      id="savePeriodBtn"
+                      type="button"
+                      class="whitespace-nowrap rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-[#fbe743] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    >
+                      저장
+                    </button>
+                  </div>
+                  <p id="periodStatus" class="text-sm text-gray-600"></p>
+                </div>
+                <div class="space-y-3 rounded-lg border border-[#f5eee9] bg-white/70 p-4 shadow-inner">
+                  <h3 class="text-base font-medium text-gray-800">📈 참여 현황</h3>
+                  <p id="statusPeriod" class="text-sm text-gray-600"></p>
+                  <div id="michinaStats" class="flex flex-col justify-between gap-3 text-center sm:flex-row">
+                    <div class="flex-1 rounded-lg bg-white/90 p-4 shadow-sm">
+                      <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">총 인원</p>
+                      <p id="totalCount" class="mt-2 text-2xl font-bold text-primary">0</p>
+                    </div>
+                    <div class="flex-1 rounded-lg bg-white/90 p-4 shadow-sm">
+                      <p class="text-xs font-semibold uppercase tracking-wide text-[#3f6212]">활성 인원</p>
+                      <p id="activeCount" class="mt-2 text-2xl font-bold text-green-500">0</p>
+                    </div>
+                    <div class="flex-1 rounded-lg bg-white/90 p-4 shadow-sm">
+                      <p class="text-xs font-semibold uppercase tracking-wide text-[#9a3412]">종료 인원</p>
+                      <p id="expiredCount" class="mt-2 text-2xl font-bold text-red-400">0</p>
+                    </div>
+                  </div>
+                  <p id="statusMessage" class="text-sm text-gray-600"></p>
+                </div>
+                <div class="space-y-3 rounded-lg border border-[#f5eee9] bg-white/70 p-4 shadow-inner">
+                  <h3 class="text-base font-medium text-gray-800">📂 미치나 명단 관리</h3>
+                  <div class="flex flex-col gap-3">
+                    <input
+                      id="csvUpload"
+                      type="file"
+                      accept=".csv"
+                      class="block w-full cursor-pointer rounded-lg border border-dashed border-yellow-200 bg-ivory/60 px-4 py-4 text-sm text-gray-600 transition file:mr-4 file:cursor-pointer file:rounded-md file:border-0 file:bg-primary file:px-4 file:py-2 file:font-semibold file:text-gray-900 hover:border-primary hover:bg-white"
+                    />
+                    <p id="uploadFilename" class="text-sm text-gray-500">선택된 파일이 없습니다.</p>
+                    <div class="flex flex-col gap-2 sm:flex-row">
+                      <button
+                        id="uploadBtn"
+                        type="button"
+                        class="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-[#fbe743] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      >
+                        명단 업로드
+                      </button>
+                      <button
+                        id="deleteListBtn"
+                        type="button"
+                        class="rounded-lg bg-red-400 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                      >
+                        명단 전체 삭제
+                      </button>
+                    </div>
+                    <p id="uploadStatus" class="text-sm text-gray-600"></p>
                   </div>
                 </div>
-                <button
-                  id="savePeriodBtn"
-                  type="submit"
-                  data-role="period-submit"
-                  class="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-gray-900 shadow-md transition hover:-translate-y-0.5 hover:bg-[#fbe743] hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                >
-                  기간 저장
-                </button>
-              </form>
-              <div class="mt-4 space-y-2 text-sm text-gray-700">
-                <p data-role="period-summary">저장된 챌린지 기간이 없습니다.</p>
-                <p class="rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium shadow-inner" data-role="period-status" hidden></p>
-              </div>
-            </section>
-            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
-              <h2 class="mb-4 flex items-center gap-2 text-lg font-semibold text-gray-900">
-                <span class="text-xl">📋</span>
-                명단 업로드
-              </h2>
-              <div class="space-y-3">
-                <label class="block text-xs font-semibold uppercase tracking-wide text-[#6f5a26]">CSV 업로드</label>
-                <input
-                  id="csvUpload"
-                  type="file"
-                  accept=".csv"
-                  data-role="upload-input"
-                  class="block w-full cursor-pointer rounded-xl border border-dashed border-yellow-200 bg-ivory/60 px-4 py-6 text-sm text-gray-600 transition file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-primary file:px-4 file:py-2 file:font-semibold file:text-gray-900 hover:border-primary hover:bg-white"
-                />
-                <p class="text-sm text-gray-500" data-role="upload-filename">선택된 파일이 없습니다.</p>
-                <p id="uploadStatus" class="rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium shadow-inner" data-role="upload-status" hidden></p>
               </div>
             </section>
             <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
@@ -482,28 +498,6 @@ function renderAdminManagementPage() {
             </section>
           </div>
           <div class="space-y-6">
-            <section class="rounded-3xl border border-yellow-100 bg-[#fffdf4]/90 p-6 shadow-ellie backdrop-blur">
-              <h2 class="mb-1 flex items-center gap-2 text-lg font-semibold text-gray-900">
-                <span class="text-xl">📊</span>
-                미치나 챌린저 현황
-              </h2>
-              <p class="text-sm text-[#6f5a26]" data-role="status-period">챌린지 기간을 설정하면 현황이 계산됩니다.</p>
-              <div id="michinaStats" class="mt-6 grid gap-4 sm:grid-cols-3">
-                <article class="rounded-2xl border border-yellow-100 bg-white/90 p-4 text-center shadow-md">
-                  <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">총 인원</p>
-                  <p id="totalCount" class="mt-2 text-2xl font-bold text-primary">0</p>
-                </article>
-                <article class="rounded-2xl border border-yellow-100 bg-white/90 p-4 text-center shadow-md">
-                  <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">활성 인원</p>
-                  <p id="activeCount" class="mt-2 text-2xl font-bold text-green-500">0</p>
-                </article>
-                <article class="rounded-2xl border border-yellow-100 bg-white/90 p-4 text-center shadow-md">
-                  <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">종료 인원</p>
-                  <p id="expiredCount" class="mt-2 text-2xl font-bold text-red-400">0</p>
-                </article>
-              </div>
-              <p class="mt-5 rounded-xl bg-white/70 px-3 py-2 text-sm font-medium text-[#6f5a26] shadow-inner" data-role="status-message" hidden></p>
-            </section>
             <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
               <h2 class="mb-3 flex items-center gap-2 text-lg font-semibold text-gray-900">
                 <span class="text-xl">🗂️</span>
@@ -2076,6 +2070,26 @@ app.post('/api/admin/participants', async (c) => {
     console.error('[admin] Failed to save participants', error)
     return c.json({ error: 'DATABASE_ERROR' }, 500)
   }
+})
+
+app.delete('/api/admin/participants/delete', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const db = getDatabase(c.env)
+  try {
+    await db.prepare('DELETE FROM participants').run()
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such table: participants/i.test(message)) {
+      console.warn('[admin] participants table missing while attempting delete; treating as empty state')
+    } else {
+      console.error('[admin] Failed to delete participants', error)
+      return c.json({ error: 'DATABASE_ERROR' }, 500)
+    }
+  }
+  return c.json({ success: true })
 })
 
 app.get('/api/admin/michina-status', async (c) => {
