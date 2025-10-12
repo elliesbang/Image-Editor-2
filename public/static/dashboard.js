@@ -6,6 +6,29 @@
   const ADMIN_EMAIL = document.body?.dataset?.adminEmail || 'admin@local';
   const LOGIN_URL = new URL('/login.html', window.location.origin).toString();
 
+  const DEFAULT_UPLOAD_FILENAME = '선택된 파일이 없습니다.';
+
+  const MESSAGE_TONES = {
+    info: 'text-[#6f5a26]',
+    success: 'text-emerald-600',
+    warning: 'text-amber-600',
+    danger: 'text-red-500',
+  };
+
+  const BADGE_TONES = {
+    info: 'bg-primary/80 text-[#3f2f00]',
+    success: 'bg-emerald-200 text-emerald-800',
+    warning: 'bg-amber-200 text-amber-800',
+    danger: 'bg-rose-200 text-rose-800',
+  };
+
+  const MESSAGE_TONE_CLASS_LIST = Object.values(MESSAGE_TONES)
+    .map((value) => value.split(' '))
+    .flat();
+  const BADGE_TONE_CLASS_LIST = Object.values(BADGE_TONES)
+    .map((value) => value.split(' '))
+    .flat();
+
   const elements = {
     toast: document.querySelector('[data-role="dashboard-toast"]'),
     welcome: document.querySelector('[data-role="welcome"]'),
@@ -19,9 +42,13 @@
     periodUpdated: document.querySelector('[data-role="period-updated"]'),
     participantsForm: document.querySelector('[data-role="participants-form"]'),
     participantsFile: document.querySelector('[data-role="participants-file"]'),
+    participantsFilename: document.querySelector('[data-role="participants-filename"]'),
+    participantsStatus: document.querySelector('[data-role="participants-status"]'),
     participantsMessage: document.querySelector('[data-role="participants-message"]'),
     participantsTable: document.querySelector('[data-role="participants-table"]'),
     participantsCount: document.querySelector('[data-role="participants-count"]'),
+    participantsDelete: document.querySelector('[data-role="participants-delete"]'),
+    participantsUploadButton: document.querySelector('[data-role="participants-form"] button[type="submit"]'),
     statusPeriod: document.querySelector('[data-role="status-period"]'),
     statusTotal: document.querySelector('[data-role="status-total"]'),
     statusActive: document.querySelector('[data-role="status-active"]'),
@@ -38,6 +65,8 @@
     participants: [],
     status: null,
     users: [],
+    isUploading: false,
+    isDeleting: false,
   };
 
   let broadcast = null;
@@ -57,6 +86,27 @@
       return '';
     }
     return String(value).replace(/[&<>"']/g, (char) => ENTITY_MAP[char] || char);
+  }
+
+  function setBadgeTone(element, tone = 'info') {
+    if (!(element instanceof HTMLElement)) return;
+    element.classList.remove(...BADGE_TONE_CLASS_LIST);
+    const toneClass = BADGE_TONES[tone] || BADGE_TONES.info;
+    toneClass
+      .split(' ')
+      .filter(Boolean)
+      .forEach((className) => element.classList.add(className));
+  }
+
+  function setStatusMessage(element, message, tone = 'info') {
+    if (!(element instanceof HTMLElement)) return;
+    element.classList.remove(...MESSAGE_TONE_CLASS_LIST);
+    const toneClass = MESSAGE_TONES[tone] || MESSAGE_TONES.info;
+    toneClass
+      .split(' ')
+      .filter(Boolean)
+      .forEach((className) => element.classList.add(className));
+    element.textContent = message;
   }
 
   function setAdminSessionFlag(active) {
@@ -210,6 +260,11 @@
     return `${year}-${month}-${day} ${hour}:${minute}`;
   }
 
+  function formatCount(value) {
+    const numberValue = Number.isFinite(Number(value)) ? Number(value) : 0;
+    return numberValue.toLocaleString('ko-KR');
+  }
+
   async function loadPeriod() {
     try {
       const response = await fetch('/api/admin/period', { credentials: 'include' });
@@ -225,6 +280,8 @@
       renderPeriod();
     } catch (error) {
       console.error('[dashboard] failed to load period', error);
+      state.period = null;
+      renderPeriod();
       showToast('챌린지 기간 정보를 불러오지 못했습니다.', 'danger');
     }
   }
@@ -233,24 +290,30 @@
     const period = state.period;
     const today = new Date().toISOString().slice(0, 10);
     let statusLabel = '기간 미설정';
-    let statusColor = '#6b4b00';
+    let statusTone = 'warning';
     let summary = '시작일과 종료일을 선택한 뒤 저장하면 챌린지 기준 기간이 업데이트됩니다.';
     let updated = '최근 업데이트 정보가 여기에 표시됩니다.';
+    let startLabel = '';
+    let endLabel = '';
 
     if (period && period.startDate && period.endDate) {
-      const startLabel = formatDate(period.startDate);
-      const endLabel = formatDate(period.endDate);
+      startLabel = formatDate(period.startDate);
+      endLabel = formatDate(period.endDate);
       summary = `설정된 기간: ${startLabel} ~ ${endLabel}`;
       if (period.updatedAt) {
         updated = `최근 업데이트: ${formatDateTime(period.updatedAt)} 저장`;
       }
       const ended = today > period.endDate;
+      const upcoming = today < period.startDate;
       if (ended) {
         statusLabel = '⚠️ 챌린지 기간 종료됨';
-        statusColor = '#b91c1c';
+        statusTone = 'danger';
+      } else if (upcoming) {
+        statusLabel = '시작 예정';
+        statusTone = 'info';
       } else {
         statusLabel = '진행 중';
-        statusColor = '#245501';
+        statusTone = 'success';
       }
       if (elements.periodStart instanceof HTMLInputElement) {
         elements.periodStart.value = period.startDate;
@@ -269,7 +332,7 @@
 
     if (elements.periodStatus instanceof HTMLElement) {
       elements.periodStatus.textContent = statusLabel;
-      elements.periodStatus.style.color = statusColor;
+      setBadgeTone(elements.periodStatus, statusTone);
     }
     if (elements.periodSummary instanceof HTMLElement) {
       elements.periodSummary.textContent = summary;
@@ -278,71 +341,226 @@
       elements.periodUpdated.textContent = updated;
     }
     if (elements.statusPeriod instanceof HTMLElement) {
-      if (period && period.startDate && period.endDate) {
-        elements.statusPeriod.textContent = `${formatDate(period.startDate)} ~ ${formatDate(period.endDate)}`;
+      if (startLabel && endLabel) {
+        elements.statusPeriod.textContent = `${startLabel} ~ ${endLabel}`;
+        setBadgeTone(elements.statusPeriod, statusTone === 'danger' ? 'danger' : 'success');
       } else {
         elements.statusPeriod.textContent = '기간이 설정되지 않았습니다';
+        setBadgeTone(elements.statusPeriod, 'warning');
       }
     }
+  }
+
+  function splitCsvLine(line) {
+    const cells = [];
+    let current = '';
+    let inQuotes = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      if (char === '"') {
+        if (inQuotes && line[index + 1] === '"') {
+          current += '"';
+          index += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        cells.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    cells.push(current);
+    return cells.map((value) => value.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
   }
 
   function parseCsv(text) {
-    if (!text) return [];
-    const lines = text.split(/?
-/).map((line) => line.trim()).filter(Boolean);
-    if (!lines.length) return [];
-    const headers = lines[0].split(',').map((value) => value.trim().toLowerCase());
-    const records = [];
+    if (typeof text !== 'string') return [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length < 2) return [];
 
-    for (let index = 1; index < lines.length; index += 1) {
-      const columns = lines[index].split(',').map((value) => value.trim());
-      if (!columns.length) continue;
-      const record = {};
-      headers.forEach((header, headerIndex) => {
-        record[header] = columns[headerIndex] || '';
-      });
-      const email =
-        record.email ||
-        record['e-mail'] ||
-        record['메일'] ||
-        record['이메일'] ||
-        columns.find((value) => value.includes('@')) ||
-        '';
-      if (!email) continue;
-      records.push({
-        name: record.name || record['이름'] || '',
-        email: email.toLowerCase(),
-        joined_at:
-          record.joined_at ||
-          record.joinedat ||
-          record.joined ||
-          record['가입일'] ||
-          record['등록일'] ||
-          '',
-      });
+    const headerCells = splitCsvLine(lines[0].replace(/﻿/g, ''));
+    const normalizedHeaders = headerCells.map((value) => value.toLowerCase());
+    const emailIndex = normalizedHeaders.findIndex((value) => value.includes('이메일') || value === 'email');
+    if (emailIndex === -1) {
+      return [];
     }
-
-    return records;
+    const nameIndex = normalizedHeaders.findIndex((value) => value.includes('이름') || value === 'name');
+    const joinedIndex = normalizedHeaders.findIndex(
+      (value) =>
+        value.includes('등록일') ||
+        value.includes('가입') ||
+        value === 'joined_at' ||
+        value === 'joined',
+    );
+    const records = [];
+      const cells = splitCsvLine(lines[index]);
+      if (cells.every((value) => value.trim() === '')) {
+        continue;
+      }
+      const emailRaw = cells[emailIndex] ? cells[emailIndex].trim().toLowerCase() : '';
+      if (!emailRaw.includes('@')) {
+        continue;
+      }
+      const name = nameIndex >= 0 && cells[nameIndex] ? cells[nameIndex].trim() : '';
+      const joinedRaw = joinedIndex >= 0 && cells[joinedIndex] ? cells[joinedIndex].trim() : '';
+        name,
+        email: emailRaw,
+        joined_at: joinedRaw,
+    if (state.isUploading || state.isDeleting) {
+      return;
+    }
+      setStatusMessage(elements.participantsStatus, 'CSV 파일을 선택해주세요.', 'warning');
+    state.isUploading = true;
+    if (elements.participantsUploadButton instanceof HTMLButtonElement) {
+      elements.participantsUploadButton.disabled = true;
+      elements.participantsUploadButton.textContent = '업로드 중...';
+    }
+    if (elements.participantsDelete instanceof HTMLButtonElement) {
+      elements.participantsDelete.disabled = true;
+    }
+    if (elements.participantsFile instanceof HTMLInputElement) {
+      elements.participantsFile.disabled = true;
+    }
+    if (elements.participantsFilename instanceof HTMLElement) {
+      elements.participantsFilename.textContent = file.name;
+    }
+    setStatusMessage(elements.participantsStatus, 'CSV 파일을 확인하고 있습니다...', 'info');
+        setStatusMessage(elements.participantsStatus, '유효한 참가자 데이터를 찾지 못했습니다.', 'warning');
+        setStatusMessage(elements.participantsStatus, '관리자 세션이 만료되었습니다.', 'danger');
+      const payload = await response.json();
+      const uploadedCount = Number(payload?.count ?? normalized.length) || normalized.length;
+      setStatusMessage(
+        elements.participantsStatus,
+        `명단이 저장되었습니다. 총 ${formatCount(uploadedCount)}명 적용되었습니다.`,
+        'success',
+      );
+      setStatusMessage(elements.participantsStatus, '참가자 명단 업로드 중 오류가 발생했습니다.', 'danger');
+    } finally {
+      state.isUploading = false;
+      if (elements.participantsUploadButton instanceof HTMLButtonElement) {
+        elements.participantsUploadButton.disabled = false;
+        elements.participantsUploadButton.textContent = '명단 업로드';
+      }
+      if (elements.participantsDelete instanceof HTMLButtonElement && !state.isDeleting) {
+        elements.participantsDelete.disabled = false;
+      }
+      if (elements.participantsFile instanceof HTMLInputElement) {
+        elements.participantsFile.disabled = false;
+        elements.participantsFile.value = '';
+      }
+      if (elements.participantsFilename instanceof HTMLElement) {
+        elements.participantsFilename.textContent = DEFAULT_UPLOAD_FILENAME;
+      }
+    }
   }
 
-  async function handleParticipantsUpload(event) {
-    event.preventDefault();
-    if (!(elements.participantsFile instanceof HTMLInputElement)) {
+  async function handleParticipantsDelete() {
+    if (state.isDeleting || state.isUploading) {
       return;
     }
-    const file = elements.participantsFile.files?.[0];
-    if (!file) {
-      showToast('업로드할 CSV 파일을 선택해주세요.', 'warning');
+    if (typeof window !== 'undefined' && !window.confirm('정말로 모든 명단을 삭제하시겠습니까?')) {
       return;
     }
+    state.isDeleting = true;
+    if (elements.participantsDelete instanceof HTMLButtonElement) {
+      elements.participantsDelete.disabled = true;
+      elements.participantsDelete.textContent = '삭제 중...';
+    }
+    if (elements.participantsUploadButton instanceof HTMLButtonElement) {
+      elements.participantsUploadButton.disabled = true;
+    }
+    if (elements.participantsFile instanceof HTMLInputElement) {
+      elements.participantsFile.disabled = true;
+      elements.participantsFile.value = '';
+    }
+    if (elements.participantsFilename instanceof HTMLElement) {
+      elements.participantsFilename.textContent = DEFAULT_UPLOAD_FILENAME;
+    }
+    setStatusMessage(elements.participantsStatus, '미치나 명단을 삭제하는 중입니다...', 'warning');
     try {
-      const text = await file.text();
-      const parsed = parseCsv(text);
-      if (!parsed.length) {
-        showToast('유효한 참가자 데이터를 찾지 못했습니다.', 'warning');
+      const response = await fetch('/api/admin/participants/delete', {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.status === 401) {
+        setStatusMessage(elements.participantsStatus, '관리자 세션이 만료되었습니다.', 'danger');
+        redirectToLogin('관리자 세션이 만료되었습니다.', 'danger');
         return;
       }
-      const normalized = parsed.map((item) => ({
+      if (!response.ok) {
+        throw new Error('failed_to_delete');
+      }
+      state.participants = [];
+      renderParticipants();
+      setStatusMessage(elements.participantsStatus, '미치나 명단이 모두 삭제되었습니다.', 'success');
+      showToast('명단을 모두 삭제했습니다.', 'success');
+      await Promise.all([loadParticipants(), loadStatus()]);
+    } catch (error) {
+      console.error('[dashboard] failed to delete participants', error);
+      setStatusMessage(elements.participantsStatus, '명단 삭제에 실패했습니다. 다시 시도해주세요.', 'danger');
+      showToast('명단 삭제 중 오류가 발생했습니다.', 'danger');
+    } finally {
+      state.isDeleting = false;
+      if (elements.participantsDelete instanceof HTMLButtonElement) {
+        elements.participantsDelete.disabled = false;
+        elements.participantsDelete.textContent = '명단 전체 삭제';
+      }
+      if (elements.participantsUploadButton instanceof HTMLButtonElement && !state.isUploading) {
+        elements.participantsUploadButton.disabled = false;
+      }
+      if (elements.participantsFile instanceof HTMLInputElement) {
+        elements.participantsFile.disabled = false;
+      }
+      if (state.participants.length > 0) {
+        setStatusMessage(elements.participantsStatus, '미치나 참가자 명단이 최신 상태입니다.', 'info');
+      } else {
+        setStatusMessage(elements.participantsStatus, '미치나 참가자 데이터가 아직 등록되지 않았습니다.', 'warning');
+      }
+      setStatusMessage(elements.participantsStatus, '참가자 정보를 불러오지 못했습니다.', 'danger');
+        '<tr class="transition hover:bg-primary/30">' +
+        '<td class="px-4 py-3 align-top text-sm font-medium text-[#3f2f00]">' +
+        '<td class="px-4 py-3 align-top text-sm text-[#6f5a26]">' +
+        '<td class="px-4 py-3 align-top text-sm text-[#6f5a26]">' +
+        '<td class="px-4 py-3 align-top text-sm text-[#6f5a26]">' +
+        '<tr><td colspan="4" class="px-4 py-6 text-center text-sm text-[#7a5a00]">등록된 참가자 정보가 없습니다.</td></tr>';
+      elements.participantsCount.textContent = `${formatCount(state.participants.length)}명`;
+      elements.participantsMessage.textContent = state.participants.length
+        ? `최근 불러온 참가자 ${formatCount(state.participants.length)}명`
+        : '등록된 참가자 정보가 없습니다.';
+    const period = status.period;
+    const today = new Date().toISOString().slice(0, 10);
+      elements.statusTotal.textContent = formatCount(total);
+      elements.statusActive.textContent = formatCount(active);
+    }
+      elements.statusExpired.textContent = formatCount(expired);
+        const startLabel = formatDate(period.startDate);
+        const endLabel = formatDate(period.endDate);
+        elements.statusPeriod.textContent = `${startLabel} ~ ${endLabel}`;
+        const ended = today > period.endDate;
+        const upcoming = today < period.startDate;
+        if (ended) {
+          setBadgeTone(elements.statusPeriod, 'danger');
+        } else if (upcoming) {
+          setBadgeTone(elements.statusPeriod, 'info');
+        } else {
+          setBadgeTone(elements.statusPeriod, 'success');
+        }
+        setBadgeTone(elements.statusPeriod, 'warning');
+        lines.push(`총 ${formatCount(total)}명의 미치나 참여자를 관리 중입니다.`);
+        lines.push(`현재 ${formatCount(active)}명이 챌린지 기간 내에 있으며 ${formatCount(expired)}명은 종료 상태입니다.`);
+    try {
+        '<tr class="transition hover:bg-primary/30">' +
+        '<td class="px-4 py-3 align-top text-sm font-medium text-[#3f2f00]">' +
+        '<td class="px-4 py-3 align-top text-sm text-[#6f5a26]">' +
+        '<td class="px-4 py-3 align-top text-sm text-[#6f5a26]">' +
+        '<td class="px-4 py-3 align-top text-sm text-[#6f5a26]">' +
+        '<tr><td colspan="4" class="px-4 py-6 text-center text-sm text-[#7a5a00]">불러온 사용자 정보가 없습니다.</td></tr>';
+      elements.usersCount.textContent = `${formatCount(state.users.length)}명`;
         name: item.name || '',
         email: item.email,
         joined_at: item.joined_at || new Date().toISOString().slice(0, 10),
@@ -616,6 +834,24 @@
     showToast('로그아웃되었습니다. 로그인 페이지로 이동합니다.', 'success', 1100);
     window.setTimeout(() => {
       window.location.replace(LOGIN_URL);
+  if (elements.participantsDelete instanceof HTMLButtonElement) {
+    elements.participantsDelete.addEventListener('click', handleParticipantsDelete);
+  }
+  if (elements.participantsFile instanceof HTMLInputElement) {
+    elements.participantsFile.addEventListener('change', () => {
+      const file = elements.participantsFile?.files?.[0];
+      if (elements.participantsFilename instanceof HTMLElement) {
+        elements.participantsFilename.textContent = file ? file.name : DEFAULT_UPLOAD_FILENAME;
+      }
+      if (!file) {
+        setStatusMessage(elements.participantsStatus, 'CSV 파일을 선택하면 상태가 표시됩니다.', 'info');
+      }
+    });
+  }
+  if (elements.participantsFilename instanceof HTMLElement) {
+    elements.participantsFilename.textContent = DEFAULT_UPLOAD_FILENAME;
+  }
+  setStatusMessage(elements.participantsStatus, 'CSV 파일을 선택하면 상태가 표시됩니다.', 'info');
     }, 1100);
   }
 
