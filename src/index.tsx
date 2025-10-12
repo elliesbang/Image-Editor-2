@@ -36,6 +36,7 @@ type Bindings = {
   ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
   CHALLENGE_KV?: KVNamespace
   CHALLENGE_KV_BACKUP?: KVNamespace
+  VITE_GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REDIRECT_URI?: string
@@ -2790,7 +2791,7 @@ app.get('/api/users', async (c) => {
 })
 
 app.get('/auth/google', (c) => {
-  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+  const clientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim()
   const redirectUri = c.env.GOOGLE_REDIRECT_URI?.trim()
 
   if (!clientId || !redirectUri) {
@@ -2816,7 +2817,7 @@ app.get('/api/auth/callback/google', async (c) => {
     return c.text('Authorization code is required.', 400)
   }
 
-  const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
+  const clientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim()
   const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
   const redirectUri = c.env.GOOGLE_REDIRECT_URI?.trim()
 
@@ -3687,7 +3688,7 @@ app.get('/', async (c) => {
   }
 
   const currentYear = new Date().getFullYear()
-  const googleClientId = c.env.GOOGLE_CLIENT_ID?.trim() ?? ''
+  const googleClientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
 

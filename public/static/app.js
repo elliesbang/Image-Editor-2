@@ -80,6 +80,8 @@ const GOOGLE_SIGNIN_TEXT = {
   retrying: 'Google 로그인 자동 재시도 준비 중…',
 }
 
+const GOOGLE_TOKEN_STORAGE_KEY = 'token'
+
 const ENABLE_GOOGLE_LOGIN = true
 
 const GOOGLE_MAX_AUTO_RETRY = 3
@@ -156,6 +158,44 @@ function decodeGoogleCredentialPayload(token) {
   } catch (error) {
     console.error('Failed to decode Google credential payload', error)
     return null
+  }
+}
+
+function storeGoogleCredential(token) {
+  try {
+    if (!window.localStorage) {
+      return
+    }
+  } catch (error) {
+    return
+  }
+
+  try {
+    window.localStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, token)
+  } catch (error) {
+    console.warn('Google 로그인 토큰을 저장하지 못했습니다.', error)
+  }
+}
+
+function loadStoredGoogleCredential() {
+  try {
+    const storage = window.localStorage
+    if (!storage) {
+      return ''
+    }
+    const token = storage.getItem(GOOGLE_TOKEN_STORAGE_KEY)
+    return typeof token === 'string' ? token : ''
+  } catch (error) {
+    console.warn('Google 로그인 토큰을 불러오지 못했습니다.', error)
+    return ''
+  }
+}
+
+function clearStoredGoogleCredential() {
+  try {
+    window.localStorage?.removeItem(GOOGLE_TOKEN_STORAGE_KEY)
+  } catch (error) {
+    console.warn('Google 로그인 토큰을 삭제하지 못했습니다.', error)
   }
 }
 
@@ -245,7 +285,7 @@ const runtime = {
     controller: null,
   },
   google: {
-    codeClient: null,
+    idClient: null,
     idInitialized: false,
     promptActive: false,
     latestCredential: '',
@@ -662,7 +702,9 @@ function getAppConfig() {
 function waitForGoogleSdk(timeout = 8000) {
   const start = Date.now()
   return new Promise((resolve, reject) => {
-    const isReady = () => Boolean(window.google?.accounts?.oauth2?.initCodeClient)
+    const isReady = () =>
+      Boolean(window.google?.accounts?.id?.initialize) ||
+      Boolean(window.google?.accounts?.oauth2?.initCodeClient)
     if (isReady()) {
       resolve(window.google.accounts)
       return
@@ -774,38 +816,47 @@ async function ensureGoogleClient() {
     throw new Error('GOOGLE_CLIENT_ID_MISSING')
   }
 
-  await loadGoogleSdk()
-  const accounts = await waitForGoogleSdk()
-  const oauth2 = accounts?.oauth2
-
-  if (!oauth2 || typeof oauth2.initCodeClient !== 'function') {
-    throw new Error('GOOGLE_SDK_UNAVAILABLE')
+  if (runtime.google.idInitialized && runtime.google.idClient) {
+    return runtime.google.idClient
   }
 
-  if (!runtime.google.codeClient) {
-    const redirectUri =
-      typeof config.googleRedirectUri === 'string' && config.googleRedirectUri.trim().length > 0
-        ? config.googleRedirectUri.trim()
-        : `${window.location.origin}/auth/google/callback`
+  if (runtime.google.prefetchPromise) {
+    return runtime.google.prefetchPromise
+  }
 
-    runtime.google.codeClient = oauth2.initCodeClient({
+  const initializePromise = (async () => {
+    await loadGoogleSdk()
+    const accounts = await waitForGoogleSdk()
+    const idLibrary = accounts?.id
+
+    if (!idLibrary || typeof idLibrary.initialize !== 'function') {
+      throw new Error('GOOGLE_SDK_UNAVAILABLE')
+    }
+
+    idLibrary.initialize({
       client_id: clientId,
-      scope: 'openid email profile',
-      ux_mode: 'popup',
-      redirect_uri: redirectUri,
-      callback: (response) => {
-        handleGoogleCodeResponse(response).catch((error) => {
-          console.error('Google OAuth 처리 중 오류', error)
-          setGoogleLoginHelper('Google 로그인 처리 중 오류가 발생했습니다. 다시 시도해주세요.', 'danger')
-          setGoogleButtonState('error', 'Google 로그인 다시 시도')
-          setStatus('Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-        })
-      },
+      callback: handleCredentialResponse,
+      auto_select: false,
+      cancel_on_tap_outside: false,
+      context: 'signin',
     })
-    runtime.google.idInitialized = true
-  }
 
-  return runtime.google.codeClient
+    runtime.google.idInitialized = true
+    runtime.google.idClient = idLibrary
+    return idLibrary
+  })()
+
+  runtime.google.prefetchPromise = initializePromise
+    .catch((error) => {
+      runtime.google.idInitialized = false
+      runtime.google.idClient = null
+      throw error
+    })
+    .finally(() => {
+      runtime.google.prefetchPromise = null
+    })
+
+  return runtime.google.prefetchPromise
 }
 
 const elements = {
@@ -2192,7 +2243,7 @@ function updateGoogleProviderAvailability() {
     setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
   }
-  if (runtime.google.codeClient) {
+  if (runtime.google.idInitialized && runtime.google.idClient) {
     setGoogleButtonState('idle')
     return
   }
@@ -2204,10 +2255,16 @@ function updateGoogleProviderAvailability() {
 }
 
 async function prefetchGoogleClient() {
-  runtime.google.prefetchPromise = Promise.resolve(null)
-  setGoogleButtonState('idle')
-  setGoogleLoginHelper('', 'muted')
-  return runtime.google.prefetchPromise
+  try {
+    setGoogleButtonState('initializing')
+    await ensureGoogleClient()
+    setGoogleButtonState('idle')
+    setGoogleLoginHelper('', 'muted')
+  } catch (error) {
+    console.warn('Google 로그인 초기화에 실패했습니다.', error)
+    setGoogleButtonState('error', 'Google 로그인 다시 시도')
+    setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  }
 }
 
 function clearGoogleAutoRetry() {
@@ -3213,6 +3270,39 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
   persistUserIdentity(state.user.email, state.user.role)
 }
 
+function restoreLoginFromToken() {
+  const stored = loadStoredGoogleCredential()
+  if (!stored) {
+    return false
+  }
+
+  const payload = decodeGoogleCredentialPayload(stored)
+  if (!payload || typeof payload !== 'object') {
+    clearStoredGoogleCredential()
+    return false
+  }
+
+  const email = typeof payload.email === 'string' ? payload.email.trim() : ''
+  if (!email) {
+    clearStoredGoogleCredential()
+    return false
+  }
+
+  const baseName =
+    typeof payload.name === 'string' && payload.name.trim().length > 0
+      ? payload.name.trim()
+      : email
+        ? email.split('@')[0]
+        : 'Google 사용자'
+  const picture =
+    typeof payload.picture === 'string' && payload.picture.trim().length > 0 ? payload.picture.trim() : ''
+
+  runtime.google.latestCredential = stored
+  applyLoginProfile({ name: baseName, email, plan: 'freemium', picture })
+  state.user.isLoggedIn = true
+  return true
+}
+
 function applyCommunityRoleFromStorage() {
   if (state.user.isLoggedIn || state.admin.isLoggedIn) {
     return false
@@ -3297,6 +3387,8 @@ async function handleLogout(event) {
     button.textContent = '로그아웃 중…'
   }
 
+  clearStoredGoogleCredential()
+  state.user.isLoggedIn = false
   clearBrowserStorage()
   removeAuthCookies()
 
@@ -5154,64 +5246,48 @@ function closeLoginModal() {
   resetLoginFlow()
 }
 
-async function handleGoogleCodeResponse(response) {
+async function handleCredentialResponse(response) {
   let finalButtonState = 'idle'
 
   try {
     setGoogleButtonState('loading', 'Google 계정을 확인하는 중…')
 
     if (!response || typeof response !== 'object') {
-      throw new Error('GOOGLE_CODE_MISSING')
+      throw new Error('GOOGLE_CREDENTIAL_MISSING')
     }
 
-    if ('error' in response && response.error) {
-      const errorCode = typeof response.error === 'string' ? response.error : 'access_denied'
-      throw new Error(errorCode)
-    }
-
-    const code = typeof response.code === 'string' ? response.code.trim() : ''
-    if (!code) {
-      throw new Error('GOOGLE_CODE_MISSING')
+    const credential = typeof response.credential === 'string' ? response.credential.trim() : ''
+    if (!credential) {
+      throw new Error('GOOGLE_CREDENTIAL_MISSING')
     }
 
     runtime.google.promptActive = false
-    runtime.google.latestCredential = code
+    runtime.google.latestCredential = credential
+    storeGoogleCredential(credential)
 
-    const exchangeResponse = await fetch('/api/auth/google', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    })
-
-    if (!exchangeResponse.ok) {
-      let serverError = 'GOOGLE_TOKEN_EXCHANGE_FAILED'
-      try {
-        const detail = await exchangeResponse.json()
-        if (detail && typeof detail.error === 'string') {
-          serverError = detail.error
-        }
-      } catch (error) {
-        // ignore JSON parse errors
-      }
-      throw new Error(serverError)
+    const payload = decodeGoogleCredentialPayload(credential)
+    if (!payload || typeof payload !== 'object') {
+      clearStoredGoogleCredential()
+      throw new Error('GOOGLE_CREDENTIAL_INVALID')
     }
 
-    const payload = await exchangeResponse.json()
-    if (!payload || typeof payload !== 'object' || !payload.ok || !payload.profile) {
-      const errorCode = payload && typeof payload.error === 'string' ? payload.error : 'GOOGLE_PROFILE_MISSING'
-      throw new Error(errorCode)
+    const email = typeof payload.email === 'string' ? payload.email.trim() : ''
+    if (!email) {
+      clearStoredGoogleCredential()
+      throw new Error('GOOGLE_CREDENTIAL_INVALID')
     }
 
-    const profile = payload.profile || {}
-    const email = typeof profile.email === 'string' ? profile.email.trim() : ''
-    const picture = typeof profile.picture === 'string' ? profile.picture.trim() : ''
-    const baseName = typeof profile.name === 'string' && profile.name.trim().length > 0
-      ? profile.name.trim()
-      : email
-        ? email.split('@')[0]
-        : 'Google 사용자'
+    const baseName =
+      typeof payload.name === 'string' && payload.name.trim().length > 0
+        ? payload.name.trim()
+        : email
+          ? email.split('@')[0]
+          : 'Google 사용자'
+    const picture =
+      typeof payload.picture === 'string' && payload.picture.trim().length > 0 ? payload.picture.trim() : ''
 
-    applyLoginProfile({ name: baseName, email: email || undefined, plan: 'freemium', picture })
+    applyLoginProfile({ name: baseName, email, plan: 'freemium', picture })
+    state.user.isLoggedIn = true
     runtime.google.retryCount = 0
     runtime.google.lastErrorHint = ''
     runtime.google.lastErrorTone = 'muted'
@@ -5235,15 +5311,17 @@ async function handleGoogleCodeResponse(response) {
 
     finalButtonState = 'idle'
   } catch (error) {
-    console.error('Google OAuth 처리 중 오류', error)
+    console.error('Google 로그인 처리 중 오류', error)
     let message = 'Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.'
     let helperTone = 'danger'
     let helperState = 'error'
 
     if (error instanceof Error) {
-      if (error.message === 'GOOGLE_CODE_MISSING') {
-        message = 'Google 인증 코드가 전달되지 않았습니다. 다시 시도해주세요.'
-      } else if (error.message === 'access_denied' || error.message === 'user_cancel') {
+      if (error.message === 'GOOGLE_CREDENTIAL_MISSING') {
+        message = 'Google 계정 인증 정보를 확인하지 못했습니다. 다시 시도해주세요.'
+      } else if (error.message === 'GOOGLE_CREDENTIAL_INVALID') {
+        message = 'Google 계정 정보를 확인할 수 없습니다. 다시 시도해주세요.'
+      } else if (error.message === 'GOOGLE_LOGIN_CANCELLED') {
         message = 'Google 로그인이 취소되었습니다.'
         helperTone = 'warning'
         helperState = 'idle'
@@ -5251,22 +5329,10 @@ async function handleGoogleCodeResponse(response) {
         message = '현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.'
         helperTone = 'info'
         helperState = 'disabled'
-      } else if (GOOGLE_POPUP_DISMISSED_ERRORS.has(error.message)) {
-        message = 'Google 로그인 창이 닫혔습니다. 다시 시도해주세요.'
-        helperTone = 'warning'
-        helperState = 'idle'
-      } else if (error.message === 'GOOGLE_TOKEN_EXCHANGE_FAILED') {
-        message = 'Google 인증 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.'
+      } else if (GOOGLE_RECOVERABLE_ERRORS.has(error.message)) {
+        message = describeGoogleRetry(error.message)
         helperTone = 'warning'
         helperState = 'retrying'
-      } else if (error.message === 'GOOGLE_EMAIL_NOT_VERIFIED') {
-        message = 'Google 계정 이메일 인증을 완료한 뒤 다시 시도해주세요.'
-        helperTone = 'warning'
-        helperState = 'idle'
-      } else if (error.message === 'GOOGLE_EMAIL_INVALID') {
-        message = 'Google 계정 정보를 확인할 수 없습니다. 다시 시도해주세요.'
-      } else if (error.message === 'GOOGLE_AUTH_UNEXPECTED_ERROR') {
-        message = 'Google 로그인 중 알 수 없는 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
       }
     }
 
@@ -5276,7 +5342,6 @@ async function handleGoogleCodeResponse(response) {
     finalButtonState = helperState === 'disabled' || helperState === 'retrying' ? helperState : 'idle'
   } finally {
     runtime.google.promptActive = false
-    runtime.google.latestCredential = runtime.google.latestCredential || ''
     runtime.google.cooldownUntil = 0
     runtime.google.cooldownAutoRetry = false
     runtime.google.retryTimer = null
@@ -5293,7 +5358,37 @@ async function handleGoogleLogin(event) {
   if (event && typeof event.preventDefault === 'function') {
     event.preventDefault()
   }
-  window.location.href = '/auth/google'
+
+  try {
+    setGoogleButtonState('loading', 'Google 계정을 확인하는 중…')
+    const idLibrary = await ensureGoogleClient()
+    runtime.google.promptActive = true
+    idLibrary.prompt((notification) => {
+      const notDisplayed =
+        typeof notification?.isNotDisplayed === 'function' && notification.isNotDisplayed()
+      const skipped = typeof notification?.isSkippedMoment === 'function' && notification.isSkippedMoment()
+      const dismissed =
+        typeof notification?.isDismissedMoment === 'function' && notification.isDismissedMoment()
+
+      if (notDisplayed) {
+        runtime.google.promptActive = false
+        setGoogleButtonState('error', 'Google 로그인 다시 시도')
+        setGoogleLoginHelper(
+          'Google 로그인 창을 표시할 수 없습니다. 팝업 차단을 해제한 뒤 다시 시도해주세요.',
+          'danger',
+        )
+      } else if (skipped || dismissed) {
+        runtime.google.promptActive = false
+        setGoogleButtonState('idle')
+        setGoogleLoginHelper('Google 로그인이 취소되었습니다.', 'warning')
+      }
+    })
+  } catch (error) {
+    console.error('Google 로그인 초기화 중 오류', error)
+    setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    setStatus('Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    setGoogleButtonState('error', 'Google 로그인 다시 시도')
+  }
 }
 
 
@@ -9906,14 +10001,14 @@ function attachEventListeners() {
   if (ENABLE_GOOGLE_LOGIN && elements.googleLoginButton instanceof HTMLButtonElement) {
     elements.googleLoginButton.addEventListener('click', handleGoogleLogin)
     elements.googleLoginButton.addEventListener('pointerenter', () => {
-      if (!runtime.google.codeClient && !runtime.google.prefetchPromise) {
+      if (!runtime.google.idInitialized && !runtime.google.prefetchPromise) {
         prefetchGoogleClient().catch((error) => {
           console.warn('Google client prefetch 중 오류', error)
         })
       }
     })
     elements.googleLoginButton.addEventListener('focus', () => {
-      if (!runtime.google.codeClient && !runtime.google.prefetchPromise) {
+      if (!runtime.google.idInitialized && !runtime.google.prefetchPromise) {
         prefetchGoogleClient().catch((error) => {
           console.warn('Google client prefetch 중 오류', error)
         })
@@ -10102,7 +10197,8 @@ function attachEventListeners() {
 function init() {
   const config = getAppConfig()
   const sessionUser = config && typeof config.user === 'object' ? config.user : null
-  if (sessionUser && typeof sessionUser.email === 'string' && sessionUser.email.trim()) {
+  const restoredFromToken = restoreLoginFromToken()
+  if (!restoredFromToken && sessionUser && typeof sessionUser.email === 'string' && sessionUser.email.trim()) {
     applyLoginProfile({
       name: typeof sessionUser.name === 'string' ? sessionUser.name : undefined,
       email: sessionUser.email,
