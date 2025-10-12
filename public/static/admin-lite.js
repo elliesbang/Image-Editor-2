@@ -1,7 +1,7 @@
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 const DEFAULT_UPLOAD_FILENAME = '선택된 파일이 없습니다.';
 const toneClassMap = {
-  info: 'text-[#6f5a26]',
+  info: 'text-gray-600',
   success: 'text-green-600',
   danger: 'text-red-500',
   warning: 'text-yellow-600',
@@ -17,20 +17,21 @@ const state = {
   users: [],
   isSavingPeriod: false,
   isUploading: false,
+  isDeleting: false,
 };
 
 const elements = {
-  periodForm: document.querySelector('[data-role="period-form"]'),
-  periodStart: document.getElementById('startDate'),
-  periodEnd: document.getElementById('endDate'),
-  periodSummary: document.querySelector('[data-role="period-summary"]'),
-  periodStatus: document.querySelector('[data-role="period-status"]'),
-  periodSubmit: document.getElementById('savePeriodBtn'),
-  uploadInput: document.querySelector('[data-role="upload-input"]'),
-  uploadFilename: document.querySelector('[data-role="upload-filename"]'),
-  uploadStatus: document.querySelector('[data-role="upload-status"]'),
-  statusPeriod: document.querySelector('[data-role="status-period"]'),
-  statusMessage: document.querySelector('[data-role="status-message"]'),
+  startDate: document.getElementById('startDate'),
+  endDate: document.getElementById('endDate'),
+  savePeriodBtn: document.getElementById('savePeriodBtn'),
+  periodStatus: document.getElementById('periodStatus'),
+  statusPeriod: document.getElementById('statusPeriod'),
+  statusMessage: document.getElementById('statusMessage'),
+  uploadInput: document.getElementById('csvUpload'),
+  uploadFilename: document.getElementById('uploadFilename'),
+  uploadStatus: document.getElementById('uploadStatus'),
+  uploadBtn: document.getElementById('uploadBtn'),
+  deleteBtn: document.getElementById('deleteListBtn'),
   totalCount: document.getElementById('totalCount'),
   activeCount: document.getElementById('activeCount'),
   expiredCount: document.getElementById('expiredCount'),
@@ -119,34 +120,32 @@ function formatCount(value) {
   return numberValue.toLocaleString('ko-KR');
 }
 
+function buildPeriodSummary(period) {
+  if (!period || !period.startDate || !period.endDate) {
+    return '';
+  }
+  const startLabel = formatDate(period.startDate);
+  const endLabel = formatDate(period.endDate);
+  return `현재 설정 기간: ${startLabel} ~ ${endLabel}`;
+}
+
 function renderPeriod() {
   const period = state.period;
-  if (elements.periodSummary instanceof HTMLElement) {
-    if (period && period.startDate && period.endDate) {
-      const startLabel = formatDate(period.startDate);
-      const endLabel = formatDate(period.endDate);
-      elements.periodSummary.textContent = `${startLabel} ~ ${endLabel}`;
-    } else {
-      elements.periodSummary.textContent = '저장된 챌린지 기간이 없습니다.';
+  if (elements.startDate instanceof HTMLInputElement) {
+    elements.startDate.value = period?.startDate ?? '';
+  }
+  if (elements.endDate instanceof HTMLInputElement) {
+    elements.endDate.value = period?.endDate ?? '';
+  }
+  if (period && period.startDate && period.endDate) {
+    const summaryText = buildPeriodSummary(period);
+    setMessage(elements.periodStatus, summaryText, 'info');
+    if (elements.statusPeriod instanceof HTMLElement) {
+      elements.statusPeriod.textContent = summaryText;
     }
-  }
-  if (elements.periodStart instanceof HTMLInputElement) {
-    elements.periodStart.value = period?.startDate ?? '';
-  }
-  if (elements.periodEnd instanceof HTMLInputElement) {
-    elements.periodEnd.value = period?.endDate ?? '';
-  }
-  if (period && period.updatedAt) {
-    setMessage(elements.periodStatus, `마지막 저장: ${formatDateTime(period.updatedAt)}`, 'success');
   } else {
-    setMessage(elements.periodStatus, '', 'info');
-  }
-  if (elements.statusPeriod instanceof HTMLElement) {
-    if (period && period.startDate && period.endDate) {
-      const startLabel = formatDate(period.startDate);
-      const endLabel = formatDate(period.endDate);
-      elements.statusPeriod.textContent = `현재 기간: ${startLabel} ~ ${endLabel}`;
-    } else {
+    setMessage(elements.periodStatus, '⚠️ 챌린지 기간이 아직 설정되지 않았습니다.', 'warning');
+    if (elements.statusPeriod instanceof HTMLElement) {
       elements.statusPeriod.textContent = '챌린지 기간을 설정하면 현황이 계산됩니다.';
     }
   }
@@ -162,6 +161,20 @@ function renderMichinaStatus() {
   }
   if (elements.expiredCount instanceof HTMLElement) {
     elements.expiredCount.textContent = formatCount(summary.expired);
+  }
+  if (elements.statusMessage instanceof HTMLElement) {
+    if (summary.total === 0) {
+      setMessage(elements.statusMessage, '미치나 챌린저 데이터가 아직 등록되지 않았습니다.', 'warning');
+    } else {
+      const totalLabel = formatCount(summary.total);
+      const activeLabel = formatCount(summary.active);
+      const expiredLabel = formatCount(summary.expired);
+      setMessage(
+        elements.statusMessage,
+        `총 ${totalLabel}명 중 ${activeLabel}명이 진행 중이며 ${expiredLabel}명은 종료 상태입니다.`,
+        'info',
+      );
+    }
   }
 }
 
@@ -258,7 +271,12 @@ async function loadPeriod() {
   try {
     const response = await fetch('/api/admin/period', { credentials: 'include' });
     if (response.status === 401) {
+      state.period = null;
+      renderPeriod();
       setMessage(elements.periodStatus, '관리자 인증이 필요합니다.', 'danger');
+      if (elements.statusPeriod instanceof HTMLElement) {
+        elements.statusPeriod.textContent = '관리자 인증 후 기간 정보를 확인할 수 있습니다.';
+      }
       return;
     }
     if (!response.ok) {
@@ -268,7 +286,12 @@ async function loadPeriod() {
     state.period = payload?.period ?? null;
     renderPeriod();
   } catch (error) {
+    state.period = null;
+    renderPeriod();
     setMessage(elements.periodStatus, '기간 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger');
+    if (elements.statusPeriod instanceof HTMLElement) {
+      elements.statusPeriod.textContent = '기간 정보를 불러오지 못했습니다.';
+    }
   }
 }
 
@@ -277,9 +300,9 @@ async function savePeriod(startDate, endDate) {
     return;
   }
   state.isSavingPeriod = true;
-  if (elements.periodSubmit instanceof HTMLButtonElement) {
-    elements.periodSubmit.disabled = true;
-    elements.periodSubmit.textContent = '저장 중...';
+  if (elements.savePeriodBtn instanceof HTMLButtonElement) {
+    elements.savePeriodBtn.disabled = true;
+    elements.savePeriodBtn.textContent = '저장 중...';
   }
   try {
     const response = await fetch('/api/admin/period', {
@@ -298,16 +321,18 @@ async function savePeriod(startDate, endDate) {
     const payload = await response.json();
     state.period = payload?.period ?? null;
     renderPeriod();
-    setMessage(elements.periodStatus, '챌린지 기간이 저장되었습니다.', 'success');
+    const summaryText = buildPeriodSummary(state.period);
+    const message = summaryText ? `챌린지 기간이 저장되었습니다. ${summaryText}` : '챌린지 기간이 저장되었습니다.';
+    setMessage(elements.periodStatus, message, 'success');
     showToast('챌린지 기간이 저장되었습니다.');
     await loadMichinaStatus();
   } catch (error) {
     setMessage(elements.periodStatus, '기간을 저장하지 못했습니다. 입력 값을 확인해주세요.', 'danger');
   } finally {
     state.isSavingPeriod = false;
-    if (elements.periodSubmit instanceof HTMLButtonElement) {
-      elements.periodSubmit.disabled = false;
-      elements.periodSubmit.textContent = '기간 저장';
+    if (elements.savePeriodBtn instanceof HTMLButtonElement) {
+      elements.savePeriodBtn.disabled = false;
+      elements.savePeriodBtn.textContent = '저장';
     }
   }
 }
@@ -382,6 +407,8 @@ async function loadMichinaStatus() {
   try {
     const response = await fetch('/api/admin/michina-status', { credentials: 'include' });
     if (response.status === 401) {
+      state.summary = { total: 0, active: 0, expired: 0 };
+      renderMichinaStatus();
       setMessage(elements.statusMessage, '관리자 인증이 필요합니다.', 'danger');
       return;
     }
@@ -399,8 +426,9 @@ async function loadMichinaStatus() {
       state.period = payload.period;
       renderPeriod();
     }
-    setMessage(elements.statusMessage, '', 'info');
   } catch (error) {
+    state.summary = { total: 0, active: 0, expired: 0 };
+    renderMichinaStatus();
     setMessage(elements.statusMessage, '챌린지 현황을 불러오지 못했습니다.', 'danger');
   }
 }
@@ -432,10 +460,17 @@ async function loadUsers() {
 }
 
 async function handleUploadFile(file) {
-  if (!file || state.isUploading) {
+  if (!file || state.isUploading || state.isDeleting) {
     return;
   }
   state.isUploading = true;
+  if (elements.uploadBtn instanceof HTMLButtonElement) {
+    elements.uploadBtn.disabled = true;
+    elements.uploadBtn.textContent = '업로드 중...';
+  }
+  if (elements.deleteBtn instanceof HTMLButtonElement) {
+    elements.deleteBtn.disabled = true;
+  }
   if (elements.uploadInput instanceof HTMLInputElement) {
     elements.uploadInput.disabled = true;
   }
@@ -447,7 +482,7 @@ async function handleUploadFile(file) {
     const text = await file.text();
     const records = parseCsv(text);
     if (records.length === 0) {
-      setMessage(elements.uploadStatus, 'CSV에서 유효한 참가자를 찾지 못했습니다.', 'danger');
+      setMessage(elements.uploadStatus, 'CSV에서 유효한 참가자를 찾지 못했습니다.', 'warning');
       return;
     }
     const response = await fetch('/api/admin/participants', {
@@ -473,14 +508,83 @@ async function handleUploadFile(file) {
       };
       renderMichinaStatus();
     }
-    setMessage(elements.uploadStatus, '명단이 저장되었습니다.', 'success');
+    const uploadedCount = Number(payload?.count ?? records.length) || records.length;
+    const successMessage = `명단이 저장되었습니다. 총 ${uploadedCount.toLocaleString('ko-KR')}명 적용.`;
+    setMessage(elements.uploadStatus, successMessage, 'success');
     showToast('명단이 저장되었습니다.');
-    await loadMichinaStatus();
-    await loadUsers();
+    await Promise.all([loadMichinaStatus(), loadUsers()]);
   } catch (error) {
     setMessage(elements.uploadStatus, '업로드에 실패했습니다. CSV 파일을 확인해주세요.', 'danger');
   } finally {
     state.isUploading = false;
+    if (elements.uploadInput instanceof HTMLInputElement) {
+      elements.uploadInput.disabled = false;
+      elements.uploadInput.value = '';
+    }
+    if (elements.uploadBtn instanceof HTMLButtonElement) {
+      elements.uploadBtn.disabled = false;
+      elements.uploadBtn.textContent = '명단 업로드';
+    }
+    if (elements.deleteBtn instanceof HTMLButtonElement) {
+      elements.deleteBtn.disabled = state.isDeleting;
+    }
+    if (elements.uploadFilename instanceof HTMLElement) {
+      elements.uploadFilename.textContent = DEFAULT_UPLOAD_FILENAME;
+    }
+  }
+}
+
+async function handleDeleteList() {
+  if (state.isDeleting || state.isUploading) {
+    return;
+  }
+  if (typeof window !== 'undefined' && !window.confirm('정말로 모든 명단을 삭제하시겠습니까?')) {
+    return;
+  }
+  state.isDeleting = true;
+  if (elements.deleteBtn instanceof HTMLButtonElement) {
+    elements.deleteBtn.disabled = true;
+    elements.deleteBtn.textContent = '삭제 중...';
+  }
+  if (elements.uploadBtn instanceof HTMLButtonElement) {
+    elements.uploadBtn.disabled = true;
+  }
+  if (elements.uploadInput instanceof HTMLInputElement) {
+    elements.uploadInput.disabled = true;
+  }
+  setMessage(elements.uploadStatus, '명단을 삭제하는 중입니다...', 'warning');
+  try {
+    const response = await fetch('/api/admin/participants/delete', {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    if (response.status === 401) {
+      setMessage(elements.uploadStatus, '관리자 인증이 필요합니다.', 'danger');
+      return;
+    }
+    if (!response.ok) {
+      throw new Error('failed');
+    }
+    state.summary = { total: 0, active: 0, expired: 0 };
+    renderMichinaStatus();
+    setMessage(elements.uploadStatus, '명단이 모두 삭제되었습니다.', 'success');
+    showToast('명단을 모두 삭제했습니다.');
+    if (typeof window !== 'undefined') {
+      window.alert('기존 명단이 초기화되었습니다.');
+    }
+    await Promise.all([loadMichinaStatus(), loadUsers()]);
+  } catch (error) {
+    setMessage(elements.uploadStatus, '명단 삭제에 실패했습니다. 다시 시도해주세요.', 'danger');
+  } finally {
+    state.isDeleting = false;
+    if (elements.deleteBtn instanceof HTMLButtonElement) {
+      elements.deleteBtn.disabled = false;
+      elements.deleteBtn.textContent = '명단 전체 삭제';
+    }
+    if (elements.uploadBtn instanceof HTMLButtonElement) {
+      elements.uploadBtn.disabled = false;
+      elements.uploadBtn.textContent = '명단 업로드';
+    }
     if (elements.uploadInput instanceof HTMLInputElement) {
       elements.uploadInput.disabled = false;
       elements.uploadInput.value = '';
@@ -508,14 +612,13 @@ function initialize() {
   if (elements.logoutButton instanceof HTMLButtonElement) {
     elements.logoutButton.addEventListener('click', handleLogout);
   }
-  if (elements.periodForm instanceof HTMLFormElement) {
-    elements.periodForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      if (!(elements.periodStart instanceof HTMLInputElement) || !(elements.periodEnd instanceof HTMLInputElement)) {
+  if (elements.savePeriodBtn instanceof HTMLButtonElement) {
+    elements.savePeriodBtn.addEventListener('click', () => {
+      if (!(elements.startDate instanceof HTMLInputElement) || !(elements.endDate instanceof HTMLInputElement)) {
         return;
       }
-      const startDate = elements.periodStart.value;
-      const endDate = elements.periodEnd.value;
+      const startDate = elements.startDate.value;
+      const endDate = elements.endDate.value;
       if (!startDate || !endDate) {
         setMessage(elements.periodStatus, '시작일과 종료일을 모두 입력해주세요.', 'danger');
         return;
@@ -530,15 +633,37 @@ function initialize() {
   if (elements.uploadInput instanceof HTMLInputElement) {
     elements.uploadInput.addEventListener('change', () => {
       const [file] = elements.uploadInput.files || [];
+      if (elements.uploadFilename instanceof HTMLElement) {
+        elements.uploadFilename.textContent = file ? file.name : DEFAULT_UPLOAD_FILENAME;
+      }
       if (!file) {
+        return;
+      }
+      setMessage(elements.uploadStatus, '', 'info');
+    });
+  }
+  if (elements.uploadBtn instanceof HTMLButtonElement) {
+    elements.uploadBtn.addEventListener('click', () => {
+      if (!(elements.uploadInput instanceof HTMLInputElement)) {
+        return;
+      }
+      const [file] = elements.uploadInput.files || [];
+      if (!file) {
+        setMessage(elements.uploadStatus, 'CSV 파일을 선택해주세요.', 'warning');
         return;
       }
       handleUploadFile(file);
     });
   }
+  if (elements.deleteBtn instanceof HTMLButtonElement) {
+    elements.deleteBtn.addEventListener('click', () => {
+      handleDeleteList();
+    });
+  }
   if (elements.uploadFilename instanceof HTMLElement) {
     elements.uploadFilename.textContent = DEFAULT_UPLOAD_FILENAME;
   }
+  setMessage(elements.uploadStatus, '', 'info');
   renderPeriod();
   renderMichinaStatus();
   renderUsers();
