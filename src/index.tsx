@@ -1327,12 +1327,31 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
       updatedAt,
     }
   } catch (error) {
+    const message = String(error || '')
+    if (/no such table: challenge_period/i.test(message)) {
+      console.warn('[d1] challenge_period table is not available; returning empty state')
+      return null
+    }
     console.error('[d1] Failed to load challenge period', error)
     throw error
   }
 }
 
+async function ensureChallengePeriodTable(db: D1Database) {
+  try {
+    await db
+      .prepare(
+        "CREATE TABLE IF NOT EXISTS challenge_period (id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      )
+      .run()
+  } catch (error) {
+    console.error('[d1] Failed to ensure challenge_period table', error)
+    throw error
+  }
+}
+
 async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDate: string) {
+  await ensureChallengePeriodTable(db)
   await db
     .prepare(
       "INSERT OR REPLACE INTO challenge_period (id, start_date, end_date, updated_at) VALUES (1, ?, ?, datetime('now'))",
@@ -2716,7 +2735,13 @@ app.post('/api/challenge/submit', async (c) => {
   const timeline = await resolveChallengeTimeline(c.env, { now })
   const dayState = timeline?.days.find((entry) => entry.day === day)
   if (!timeline || timeline.expired || !dayState || !dayState.isActiveDay) {
-    return c.json({ error: 'DAY_CLOSED', message: '이 일차는 마감되었습니다' }, 400)
+    return c.json(
+      {
+        error: 'DAY_CLOSED',
+        message: '해당 일차는 00:00~23:59 사이에만 인증할 수 있습니다.',
+      },
+      400,
+    )
   }
 
   const submission: ChallengeSubmission = {
@@ -4084,27 +4109,31 @@ app.get('/dashboard', async (c) => {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fef568" />
     <title>관리자 대시보드 | 미치나 챌린지 관리</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
-    <script src="https://cdn.tailwindcss.com"></script>
     <script>
-      tailwind.config = {
+      window.tailwind = window.tailwind || {};
+      window.tailwind.config = {
         theme: {
           extend: {
             colors: {
-              elliePrimary: '#fef568',
-              ellieBackground: '#f5eee9',
-              ellieText: '#333333',
+              primary: '#fef568',
+              ivory: '#f5eee9',
             },
             fontFamily: {
               pretendard: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+            },
+            boxShadow: {
+              ellie: '0 25px 50px -12px rgba(250, 204, 21, 0.35)',
             },
           },
         },
       };
     </script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
       :root {
         color-scheme: light;
@@ -4112,17 +4141,11 @@ app.get('/dashboard', async (c) => {
       body {
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         background-color: #f5eee9;
-        color: #333333;
-      }
-      .card-surface {
-        box-shadow: 0 24px 50px -36px rgba(50, 32, 0, 0.4);
-      }
-      .pill-muted {
-        background: rgba(254, 245, 104, 0.55);
+        color: #4f3b0f;
       }
     </style>
   </head>
-  <body data-admin-email="${ADMIN_LOGIN_EMAIL}" class="bg-ellieBackground text-ellieText">
+  <body data-admin-email="${ADMIN_LOGIN_EMAIL}" class="bg-[#f5eee9] text-[#4f3b0f]">
     <div class="pointer-events-none fixed inset-x-0 top-6 z-50 flex justify-center px-4">
       <div
         data-role="dashboard-toast"
@@ -4131,116 +4154,157 @@ app.get('/dashboard', async (c) => {
         aria-live="assertive"
       ></div>
     </div>
-    <div class="flex min-h-screen flex-col">
-      <header class="bg-elliePrimary/90 shadow-sm backdrop-blur">
-        <div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-6 py-8 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.28em] text-[#8a6c00]">Ellie's Bang</p>
-            <h1 class="mt-2 text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
-            <p data-role="welcome" class="mt-3 max-w-2xl text-sm text-[#7a5a00]">
-              관리자 전용 대시보드 영역입니다.
-            </p>
-          </div>
-          <div class="flex flex-wrap items-center gap-3">
-            <span
-              data-role="session-info"
-              class="pill-muted rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-widest text-[#7c5a00]"
-            >
-              세션 정보 확인 중
-            </span>
-            <button
-              type="button"
-              data-role="logout"
-              class="rounded-full bg-[#333] px-6 py-2.5 text-sm font-semibold text-[#fef568] shadow-md transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
-            >
-              로그아웃
-            </button>
-          </div>
+    <div class="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-6 md:px-10 md:py-12">
+      <header class="mb-8 flex flex-col gap-6 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 class="text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
+          <p data-role="welcome" class="mt-2 text-sm text-[#6f5a26]">관리자 전용 대시보드 영역입니다.</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <span
+            data-role="session-info"
+            class="rounded-full bg-primary/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.28em] text-[#4f3b0f]"
+          >
+            세션 정보 확인 중
+          </span>
+          <button
+            type="button"
+            data-role="logout"
+            class="rounded-full bg-[#333] px-6 py-2.5 text-sm font-semibold text-[#fef568] shadow-md transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
+          >
+            로그아웃
+          </button>
         </div>
       </header>
-      <main class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-7 px-6 py-10">
-        <section class="grid grid-cols-1 gap-7 lg:grid-cols-2">
-          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-period">
-            <div class="flex items-start justify-between gap-4">
-              <h2 id="dashboard-period" class="text-xl font-semibold text-[#2f2f2f]">챌린지 기간 설정</h2>
+      <div class="flex flex-1 flex-col gap-6 lg:flex-row">
+        <aside class="lg:w-64">
+          <nav class="sticky top-8 space-y-8 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur">
+            <div>
+              <h2 class="text-xs font-semibold uppercase tracking-[0.32em] text-[#7c5a00]">미치나</h2>
+              <ul class="mt-4 space-y-2 text-sm font-semibold text-[#5b4100]">
+                <li>
+                  <a data-role="sidebar-link" href="#michina-period" class="flex items-center justify-between rounded-xl bg-primary/80 px-4 py-2 text-[#3f2f00] transition hover:bg-[#fbe743]">
+                    <span>챌린지 기간 설정</span>
+                    <span class="text-xs text-[#7a5a00]">설정</span>
+                  </a>
+                </li>
+                <li>
+                  <a data-role="sidebar-link" href="#michina-upload" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
+                    <span>참가자 명단 업로드</span>
+                    <span class="text-xs text-[#7a5a00]">관리</span>
+                  </a>
+                </li>
+                <li>
+                  <a data-role="sidebar-link" href="#michina-status" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
+                    <span>챌린저 참여 현황</span>
+                    <span class="text-xs text-[#7a5a00]">현황</span>
+                  </a>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <h2 class="text-xs font-semibold uppercase tracking-[0.32em] text-[#7c5a00]">디비</h2>
+              <ul class="mt-4 space-y-2 text-sm font-semibold text-[#5b4100]">
+                <li>
+                  <a data-role="sidebar-link" href="#database-users" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
+                    <span>전체 사용자 디비 조회</span>
+                    <span class="text-xs text-[#7a5a00]">데이터</span>
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </nav>
+        </aside>
+        <main class="flex-1 space-y-6">
+          <section id="michina-period" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 class="text-lg font-semibold text-[#3f2f00]">📅 챌린지 기간 설정</h2>
+                <p data-role="period-summary" class="mt-1 text-sm text-[#6f5a26]">시작일과 종료일을 선택한 뒤 저장하면 챌린지 기준 기간이 업데이트됩니다.</p>
+              </div>
               <span
                 data-role="period-status"
-                class="rounded-full bg-[#fef568]/60 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]"
+                class="rounded-full bg-primary/80 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#3f2f00]"
               >
                 기간 미설정
               </span>
             </div>
-            <p data-role="period-summary" class="mt-3 text-sm leading-relaxed text-[#555]">
-              시작일과 종료일을 선택한 뒤 저장하면 챌린지 기준 기간이 업데이트됩니다.
-            </p>
-            <form class="mt-6 grid gap-4 md:grid-cols-2" data-role="period-form">
-              <label class="flex flex-col gap-2 text-sm font-medium text-[#3f3f3f]">
+            <form data-role="period-form" class="mt-5 grid gap-4 md:grid-cols-2">
+              <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
                 시작일
                 <input
                   type="date"
                   required
                   data-role="period-start"
-                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#333] shadow-inner focus:border-[#f1cc2b] focus:outline-none focus:ring-2 focus:ring-[#fef568]"
+                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#3f2f00] shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/80"
                 />
               </label>
-              <label class="flex flex-col gap-2 text-sm font-medium text-[#3f3f3f]">
+              <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
                 종료일
                 <input
                   type="date"
                   required
                   data-role="period-end"
-                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#333] shadow-inner focus:border-[#f1cc2b] focus:outline-none focus:ring-2 focus:ring-[#fef568]"
+                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#3f2f00] shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/80"
                 />
               </label>
               <div class="md:col-span-2 flex flex-wrap items-center justify-between gap-3">
-                <p data-role="period-updated" class="text-xs text-[#777]">최근 업데이트 정보가 여기에 표시됩니다.</p>
+                <p data-role="period-updated" class="text-xs text-[#8c7a4f]">최근 업데이트 정보가 여기에 표시됩니다.</p>
                 <button
                   type="submit"
-                  class="rounded-full bg-[#fef568] px-5 py-2 text-sm font-semibold text-[#333] transition hover:bg-[#fbe642] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
-                  data-role="period-submit"
+                  class="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-[#3f2f00] shadow-sm transition hover:bg-[#fbe743] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                 >
                   저장
                 </button>
               </div>
             </form>
-          </article>
-          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-upload">
-            <div class="flex items-start justify-between gap-4">
+          </section>
+          <section id="michina-upload" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+            <div class="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h2 id="dashboard-upload" class="text-xl font-semibold text-[#2f2f2f]">참가자 명단 업로드</h2>
-                <p class="mt-2 text-sm text-[#555]">CSV 파일을 업로드하면 참가자 테이블이 자동으로 갱신됩니다.</p>
+                <h2 class="text-lg font-semibold text-[#3f2f00]">📂 참가자 명단 업로드</h2>
+                <p class="mt-1 text-sm text-[#6f5a26]">CSV 파일을 업로드하면 참가자 정보가 자동으로 갱신됩니다.</p>
               </div>
             </div>
-            <form class="mt-5 space-y-4" data-role="participants-form">
-              <div>
-                <label class="flex flex-col gap-2 text-sm font-medium text-[#3f3f3f]">
-                  CSV 파일 선택
-                  <input
-                    type="file"
-                    accept=".csv,text/csv"
-                    data-role="participants-file"
-                    class="block w-full cursor-pointer rounded-2xl border border-dashed border-[#f0dba5] bg-[#fefdf4] px-3 py-3 text-sm text-[#333] transition hover:border-[#f1cc2b] focus:border-[#f1cc2b] focus:outline-none"
-                  />
-                </label>
+            <form data-role="participants-form" class="mt-5 space-y-4">
+              <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
+                CSV 파일 선택
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  data-role="participants-file"
+                  class="block w-full cursor-pointer rounded-2xl border border-dashed border-[#f0dba5] bg-[#fefdf4] px-4 py-3 text-sm text-[#3f2f00] transition hover:border-primary focus:border-primary focus:outline-none"
+                />
+              </label>
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span data-role="participants-filename" class="text-xs text-[#7a5a00]">선택된 파일이 없습니다.</span>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    type="submit"
+                    class="rounded-full bg-[#333] px-4 py-2 text-sm font-semibold text-primary transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
+                  >
+                    명단 업로드
+                  </button>
+                  <button
+                    type="button"
+                    data-role="participants-delete"
+                    class="rounded-full bg-red-400 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                  >
+                    명단 전체 삭제
+                  </button>
+                </div>
               </div>
-              <button
-                type="submit"
-                class="w-full rounded-full bg-[#333] px-4 py-2.5 text-sm font-semibold text-[#fef568] transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#fef568]"
-              >
-                업로드
-              </button>
             </form>
-            <div class="mt-6">
-              <div class="flex items-center justify-between">
-                <h3 class="text-sm font-semibold text-[#444]">업로드 결과</h3>
-                <span data-role="participants-count" class="text-xs text-[#777]">0명</span>
+            <p data-role="participants-status" class="mt-4 text-sm text-[#6f5a26]">CSV 파일을 선택하면 상태가 표시됩니다.</p>
+            <div class="mt-5 rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold text-[#4f3b0f]">최근 업로드 명단</h3>
+                <span data-role="participants-count" class="rounded-full bg-primary/70 px-3 py-1 text-xs font-semibold text-[#3f2f00]">0명</span>
               </div>
-              <p data-role="participants-message" class="mt-1 text-xs text-[#777]">
-                최근 업로드 내역이 여기에 표시됩니다.
-              </p>
-              <div class="mt-3 max-h-64 overflow-y-auto rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70">
-                <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#333]">
-                  <thead class="bg-[#fef568]/60 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]">
+              <p data-role="participants-message" class="mt-1 text-xs text-[#7a5a00]">등록된 참가자 정보가 없습니다.</p>
+              <div class="mt-3 max-h-64 overflow-y-auto rounded-2xl border border-[#f0dba5] bg-white">
+                <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#3f2f00]">
+                  <thead class="bg-primary/70 text-xs font-semibold uppercase tracking-widest text-[#4f3b0f]">
                     <tr>
                       <th scope="col" class="px-4 py-3">이름</th>
                       <th scope="col" class="px-4 py-3">이메일</th>
@@ -4250,77 +4314,67 @@ app.get('/dashboard', async (c) => {
                   </thead>
                   <tbody data-role="participants-table" class="divide-y divide-[#f0dba5]/80 bg-white">
                     <tr>
-                      <td colspan="4" class="px-4 py-6 text-center text-sm text-[#777]">
-                        등록된 참가자 정보가 없습니다.
-                      </td>
+                      <td colspan="4" class="px-4 py-6 text-center text-sm text-[#7a5a00]">등록된 참가자 정보가 없습니다.</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </div>
-          </article>
-          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-status">
-            <div class="flex items-start justify-between gap-4">
+          </section>
+          <section id="michina-status" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+            <div class="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h2 id="dashboard-status" class="text-xl font-semibold text-[#2f2f2f]">미치나 챌린저 참여 현황</h2>
-                <p class="mt-2 text-sm text-[#555]">현재 챌린지 기간과 비교한 참여자 상태를 확인하세요.</p>
+                <h2 class="text-lg font-semibold text-[#3f2f00]">📊 미치나 챌린저 참여 현황</h2>
+                <p class="mt-1 text-sm text-[#6f5a26]">설정된 챌린지 기간에 맞춰 현재 참여 상태를 확인하세요.</p>
               </div>
               <span
                 data-role="status-period"
-                class="rounded-full bg-[#fef568]/60 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]"
+                class="rounded-full bg-primary/80 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#3f2f00]"
               >
                 데이터 준비 중
               </span>
             </div>
-            <div class="mt-6 grid grid-cols-3 gap-3 text-center text-sm font-semibold text-[#333]">
-              <div class="rounded-3xl bg-[#fef568]/60 px-4 py-5">
-                <p class="text-xs uppercase tracking-wide text-[#6b4b00]">전체</p>
-                <p data-role="status-total" class="mt-2 text-3xl font-bold text-[#2f2f2f]">0</p>
+            <div class="mt-6 grid gap-3 text-center text-sm font-semibold text-[#3f2f00] sm:grid-cols-3">
+              <div class="rounded-3xl bg-primary/70 px-4 py-5">
+                <p class="text-xs uppercase tracking-wide text-[#7a5a00]">전체</p>
+                <p data-role="status-total" class="mt-2 text-3xl font-bold text-[#3f2f00]">0</p>
               </div>
-              <div class="rounded-3xl bg-[#d6f8a1]/70 px-4 py-5">
+              <div class="rounded-3xl bg-[#d6f8a1]/80 px-4 py-5">
                 <p class="text-xs uppercase tracking-wide text-[#3f6212]">진행</p>
                 <p data-role="status-active" class="mt-2 text-3xl font-bold text-[#245501]">0</p>
               </div>
-              <div class="rounded-3xl bg-[#fcd1c5]/70 px-4 py-5">
+              <div class="rounded-3xl bg-[#fcd1c5]/80 px-4 py-5">
                 <p class="text-xs uppercase tracking-wide text-[#9a3412]">종료</p>
                 <p data-role="status-expired" class="mt-2 text-3xl font-bold text-[#7c2d12]">0</p>
               </div>
             </div>
             <div class="mt-8 flex flex-col items-center gap-5 lg:flex-row">
-              <div
-                data-role="status-chart"
-                class="relative h-36 w-36 rounded-full border-[12px] border-[#f5eee9] bg-[conic-gradient(#d6f8a1_0%,#fcd1c5_0%)]"
-                aria-hidden="true"
-              >
-                <div class="absolute inset-6 rounded-full bg-white/90"></div>
-                <span
-                  data-role="status-chart-label"
-                  class="absolute inset-0 flex items-center justify-center text-lg font-semibold text-[#333]"
-                >
-                  0%
-                </span>
+              <div class="relative h-36 w-36">
+                <div
+                  data-role="status-chart"
+                  class="absolute inset-0 rounded-full bg-[conic-gradient(#d6f8a1_0%,#fcd1c5_0%)] shadow-inner"
+                  aria-hidden="true"
+                ></div>
+                <div class="absolute inset-4 rounded-full bg-white/90 shadow">
+                  <span data-role="status-chart-label" class="flex h-full items-center justify-center text-lg font-semibold text-[#3f2f00]">0%</span>
+                </div>
               </div>
-              <ul class="flex-1 space-y-2 text-sm text-[#555]" data-role="status-description">
+              <ul data-role="status-description" class="flex-1 space-y-2 text-sm text-[#6f5a26]">
                 <li>참여자 데이터가 수집되면 현황이 자동으로 업데이트됩니다.</li>
               </ul>
             </div>
-          </article>
-          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-users">
-            <div class="flex items-start justify-between gap-4">
+          </section>
+          <section id="database-users" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+            <div class="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h2 id="dashboard-users" class="text-xl font-semibold text-[#2f2f2f]">전체 사용자 DB 조회</h2>
-                <p class="mt-2 text-sm text-[#555]">로그인한 모든 사용자를 최신 순으로 확인할 수 있습니다.</p>
+                <h2 class="text-lg font-semibold text-[#3f2f00]">👥 전체 사용자 DB 조회</h2>
+                <p class="mt-1 text-sm text-[#6f5a26]">로그인한 모든 사용자를 최신 순으로 확인하세요.</p>
               </div>
-              <span
-                data-role="users-count"
-                class="rounded-full bg-[#fef568]/60 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]"
-              >
-                0명
-              </span>
+              <span data-role="users-count" class="rounded-full bg-primary/80 px-3 py-1 text-xs font-semibold text-[#3f2f00]">0명</span>
             </div>
             <div class="mt-4 max-h-72 overflow-y-auto rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70">
-              <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#333]">
-                <thead class="bg-[#fef568]/60 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]">
+              <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#3f2f00]">
+                <thead class="bg-primary/70 text-xs font-semibold uppercase tracking-widest text-[#4f3b0f]">
                   <tr>
                     <th scope="col" class="px-4 py-3">이름</th>
                     <th scope="col" class="px-4 py-3">이메일</th>
@@ -4330,25 +4384,22 @@ app.get('/dashboard', async (c) => {
                 </thead>
                 <tbody data-role="users-table" class="divide-y divide-[#f0dba5]/80 bg-white">
                   <tr>
-                    <td colspan="4" class="px-4 py-6 text-center text-sm text-[#777]">불러온 사용자 정보가 없습니다.</td>
+                    <td colspan="4" class="px-4 py-6 text-center text-sm text-[#7a5a00]">불러온 사용자 정보가 없습니다.</td>
                   </tr>
                 </tbody>
               </table>
             </div>
-          </article>
-        </section>
-      </main>
-      <footer class="bg-transparent py-8">
-        <div class="mx-auto w-full max-w-6xl px-6">
-          <p class="text-center text-xs text-[#777]">
-            &copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.
-          </p>
-        </div>
+          </section>
+        </main>
+      </div>
+      <footer class="mt-10 border-t border-yellow-100 pt-6 text-center text-xs text-[#7a5a00]">
+        &copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.
       </footer>
     </div>
     <script type="module" src="/static/dashboard.js"></script>
   </body>
 </html>`
+
 
   const response = c.html(dashboardPage)
   response.headers.set('Cache-Control', 'no-store')
