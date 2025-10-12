@@ -3438,7 +3438,7 @@ app.get('/', async (c) => {
               <span class="login-modal__icon" aria-hidden="true">
                 <i class="ri-google-fill"></i>
               </span>
-              <span class="login-modal__option-title" data-role="google-login-text" aria-live="polite">Google로 로그인</span>
+              <span class="login-modal__option-title" data-role="google-login-text" aria-live="polite">Google로 로그인하기</span>
               <span class="login-modal__spinner" data-role="google-login-spinner" aria-hidden="true"></span>
             </button>
           </div>
