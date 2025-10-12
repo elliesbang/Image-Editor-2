@@ -350,7 +350,8 @@
       endLabel = formatDate(period.endDate);
       summary = `설정된 기간: ${startLabel} ~ ${endLabel}`;
       if (period.updatedAt) {
-        updated = `최근 업데이트: ${formatDateTime(period.updatedAt)} 저장`;
+        const updatedByLabel = period.updatedBy ? ` · 담당 ${period.updatedBy}` : '';
+        updated = `최근 업데이트: ${formatDateTime(period.updatedAt)} 저장${updatedByLabel}`;
       }
       const ended = today > period.endDate;
       const upcoming = today < period.startDate;
@@ -418,7 +419,7 @@
         elements.periodHistory.innerHTML = '';
         elements.periodHistory.setAttribute('hidden', 'true');
       } else {
-        const rows = history.map((item) => {
+        const rows = history.map((item, index) => {
           const start = formatDate(item.startDate);
           const end = formatDate(item.endDate);
           const range = `${start} ~ ${end}`;
@@ -430,11 +431,19 @@
           if (item.updatedBy) {
             details.push(`담당 ${escapeHtml(item.updatedBy)}`);
           }
+          const isLatest = index === 0;
+          const badge = isLatest
+            ? '<span class="ml-2 inline-flex items-center rounded-full bg-primary/80 px-2 py-0.5 text-[10px] font-semibold text-[#3f2f00]">현재 적용</span>'
+            : '';
+          const itemClasses =
+            'rounded-2xl border border-[#f0dba5] bg-white/90 p-3 shadow-inner' +
+            (isLatest ? ' ring-2 ring-primary/40' : '');
           return (
-            '<li class="rounded-2xl border border-[#f0dba5] bg-white/90 p-3 shadow-inner">' +
+            `<li class="${itemClasses}">` +
             '<p class="text-sm font-semibold text-[#3f2f00]">' +
             escapeHtml(range) +
             '</p>' +
+            badge +
             (details.length
               ? '<p class="mt-1 text-xs text-[#7a5a00]">' + details.join(' · ') + '</p>'
               : '') +
@@ -501,6 +510,7 @@
         value === 'joined',
     );
     const records = [];
+    for (let index = 1; index < lines.length; index += 1) {
       const cells = splitCsvLine(lines[index]);
       if (cells.every((value) => value.trim() === '')) {
         continue;
@@ -511,13 +521,28 @@
       }
       const name = nameIndex >= 0 && cells[nameIndex] ? cells[nameIndex].trim() : '';
       const joinedRaw = joinedIndex >= 0 && cells[joinedIndex] ? cells[joinedIndex].trim() : '';
+      records.push({
         name,
         email: emailRaw,
         joined_at: joinedRaw,
+      });
+    }
+    return records;
+
+  async function handleParticipantsUpload(event) {
+    event.preventDefault();
     if (state.isUploading || state.isDeleting) {
       return;
     }
+
+    const fileInput = elements.participantsFile instanceof HTMLInputElement ? elements.participantsFile : null;
+    const file = fileInput?.files?.[0];
+    if (!file) {
       setStatusMessage(elements.participantsStatus, 'CSV 파일을 선택해주세요.', 'warning');
+      showToast('업로드할 CSV 파일을 선택해주세요.', 'warning');
+      return;
+    }
+
     state.isUploading = true;
     if (elements.participantsUploadButton instanceof HTMLButtonElement) {
       elements.participantsUploadButton.disabled = true;
@@ -526,22 +551,62 @@
     if (elements.participantsDelete instanceof HTMLButtonElement) {
       elements.participantsDelete.disabled = true;
     }
-    if (elements.participantsFile instanceof HTMLInputElement) {
-      elements.participantsFile.disabled = true;
+    if (fileInput) {
+      fileInput.disabled = true;
     }
     if (elements.participantsFilename instanceof HTMLElement) {
       elements.participantsFilename.textContent = file.name;
     }
     setStatusMessage(elements.participantsStatus, 'CSV 파일을 확인하고 있습니다...', 'info');
+
+    try {
+      const text = await file.text();
+      const records = parseCsv(text);
+      if (!records.length) {
         setStatusMessage(elements.participantsStatus, '유효한 참가자 데이터를 찾지 못했습니다.', 'warning');
+        showToast('유효한 참가자 데이터가 없습니다.', 'warning');
+        return;
+      }
+
+      const normalized = records.map((item) => ({
+        name: item.name || '',
+        email: item.email,
+        joined_at: item.joined_at || new Date().toISOString().slice(0, 10),
+      }));
+
+      const response = await fetch('/api/admin/participants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ participants: normalized }),
+      });
+      if (response.status === 401) {
         setStatusMessage(elements.participantsStatus, '관리자 세션이 만료되었습니다.', 'danger');
-      const payload = await response.json();
+        redirectToLogin('관리자 세션이 만료되었습니다.', 'danger');
+        return;
+      }
+      if (!response.ok) {
+        throw new Error('failed_to_upload');
+      }
+      const payload = await response.json().catch(() => ({}));
       const uploadedCount = Number(payload?.count ?? normalized.length) || normalized.length;
+      if (Array.isArray(payload?.participants)) {
+        state.participants = payload.participants;
+        renderParticipants();
+      }
+      if (elements.participantsForm instanceof HTMLFormElement) {
+        elements.participantsForm.reset();
+      }
       setStatusMessage(
         elements.participantsStatus,
         `명단이 저장되었습니다. 총 ${formatCount(uploadedCount)}명 적용되었습니다.`,
         'success',
       );
+      showToast('참가자 명단이 업로드되었습니다.', 'success');
+      await Promise.all([loadParticipants(), loadStatus()]);
+    } catch (error) {
+      console.error('[dashboard] failed to upload participants', error);
+      showToast('참가자 명단 업로드 중 오류가 발생했습니다.', 'danger');
       setStatusMessage(elements.participantsStatus, '참가자 명단 업로드 중 오류가 발생했습니다.', 'danger');
     } finally {
       state.isUploading = false;
@@ -552,9 +617,9 @@
       if (elements.participantsDelete instanceof HTMLButtonElement && !state.isDeleting) {
         elements.participantsDelete.disabled = false;
       }
-      if (elements.participantsFile instanceof HTMLInputElement) {
-        elements.participantsFile.disabled = false;
-        elements.participantsFile.value = '';
+      if (fileInput) {
+        fileInput.disabled = false;
+        fileInput.value = '';
       }
       if (elements.participantsFilename instanceof HTMLElement) {
         elements.participantsFilename.textContent = DEFAULT_UPLOAD_FILENAME;
