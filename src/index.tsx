@@ -214,6 +214,20 @@ type ChallengeTimeline = {
   days: ChallengeDayState[]
 }
 
+type ChallengeDayDeadline = {
+  day: number
+  startAt: string
+  endAt: string
+  updatedAt?: string
+}
+
+type ChallengeDayDeadlineRow = {
+  day: number
+  start_at: string
+  end_at: string
+  updated_at: string
+}
+
 const ADMIN_SESSION_COOKIE = 'admin_session'
 const ADMIN_SESSION_ISSUER = 'easy-image-editor'
 const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
@@ -1185,9 +1199,45 @@ function parseChallengeDate(value: string, options: { endOfDay?: boolean } = {})
   return base
 }
 
+function normalizeDeadlineDateTime(value: unknown) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  let candidate = trimmed.replace(' ', 'T')
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(candidate)) {
+    candidate += ':00'
+  }
+  if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(candidate)) {
+    candidate += CHALLENGE_TIMEZONE_SUFFIX
+  }
+
+  const parsed = Date.parse(candidate)
+  if (!Number.isFinite(parsed)) {
+    return ''
+  }
+
+  return new Date(parsed).toISOString()
+}
+
+function parseDeadlineDate(value: string | undefined | null) {
+  if (!value) {
+    return null
+  }
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) {
+    return null
+  }
+  return new Date(timestamp)
+}
+
 function buildChallengeTimeline(
   period: ChallengePeriodRecord,
-  options: { now?: Date; requiredDays?: number } = {},
+  options: { now?: Date; requiredDays?: number; dayDeadlines?: ChallengeDayDeadline[] } = {},
 ): ChallengeTimeline {
   const requiredDays = options.requiredDays ?? REQUIRED_SUBMISSIONS
   const now = options.now ?? new Date()
@@ -1201,23 +1251,68 @@ function buildChallengeTimeline(
   const endMs = periodEnd.getTime()
   const nowMs = now.getTime()
   const days: ChallengeDayState[] = []
+  const deadlines = Array.isArray(options.dayDeadlines) ? options.dayDeadlines : []
+  const deadlineMap = new Map<number, ChallengeDayDeadline>()
+  for (const deadline of deadlines) {
+    if (Number.isFinite(deadline?.day)) {
+      deadlineMap.set(Number(deadline.day), deadline)
+    }
+  }
+
+  let timelineStartMs = startMs
+  let timelineEndMs = endMs
 
   for (let index = 0; index < requiredDays; index += 1) {
     const day = index + 1
-    const dayStart = new Date(startMs + index * CHALLENGE_DAY_MS)
-    const dayStartMs = dayStart.getTime()
-    const theoreticalEnd = new Date(dayStartMs + CHALLENGE_DAY_MS - 1)
-    const canOpen = dayStartMs <= endMs
-    const clampedEndMs = canOpen ? Math.min(theoreticalEnd.getTime(), endMs) : theoreticalEnd.getTime()
-    const effectiveEndMs = clampedEndMs < dayStartMs ? dayStartMs : clampedEndMs
-    const isActiveDay = canOpen && nowMs >= dayStartMs && nowMs <= clampedEndMs
-    const isUpcoming = canOpen && nowMs < dayStartMs
-    const isClosed = !isActiveDay && (!canOpen || nowMs > clampedEndMs)
+    const fallbackStartMs = startMs + index * CHALLENGE_DAY_MS
+    const fallbackEndMs = Math.min(fallbackStartMs + CHALLENGE_DAY_MS - 1, endMs)
+    const customDeadline = deadlineMap.get(day)
+    const customStart = parseDeadlineDate(customDeadline?.startAt)
+    const customEnd = parseDeadlineDate(customDeadline?.endAt)
+
+    let dayStartMs = fallbackStartMs
+    if (customStart) {
+      const value = customStart.getTime()
+      if (Number.isFinite(value)) {
+        dayStartMs = value
+      }
+    }
+
+    let dayEndMs = fallbackEndMs
+    if (customEnd) {
+      const value = customEnd.getTime()
+      if (Number.isFinite(value)) {
+        dayEndMs = Math.max(value, dayStartMs)
+        dayEndMs += 59 * 1000
+      }
+    } else if (customStart && !customEnd) {
+      dayEndMs = Math.max(dayStartMs, dayStartMs + CHALLENGE_DAY_MS - 1)
+      dayEndMs = Math.min(dayEndMs, endMs)
+    }
+
+    if (!customEnd) {
+      dayEndMs = Math.min(dayEndMs, fallbackEndMs)
+    }
+
+    if (dayEndMs < dayStartMs) {
+      dayEndMs = dayStartMs
+    }
+
+    if (dayStartMs < timelineStartMs) {
+      timelineStartMs = dayStartMs
+    }
+    if (dayEndMs > timelineEndMs) {
+      timelineEndMs = dayEndMs
+    }
+
+    const isActiveDay = nowMs >= dayStartMs && nowMs <= dayEndMs
+    const isUpcoming = nowMs < dayStartMs
+    const isClosed = nowMs > dayEndMs
 
     days.push({
       day,
-      start: formatChallengeDateTime(dayStart),
-      end: formatChallengeDateTime(new Date(effectiveEndMs)),
+      start: formatChallengeDateTime(new Date(dayStartMs)),
+      end: formatChallengeDateTime(new Date(dayEndMs)),
       isActiveDay,
       isUpcoming,
       isClosed,
@@ -1225,12 +1320,12 @@ function buildChallengeTimeline(
   }
 
   const activeDayState = days.find((entry) => entry.isActiveDay)
-  const upcoming = nowMs < startMs
-  const expired = nowMs > endMs
+  const upcoming = nowMs < timelineStartMs
+  const expired = nowMs > timelineEndMs
 
   return {
-    start: formatChallengeDateTime(periodStart),
-    end: formatChallengeDateTime(periodEnd),
+    start: formatChallengeDateTime(new Date(timelineStartMs)),
+    end: formatChallengeDateTime(new Date(timelineEndMs)),
     now: formatChallengeDateTime(now),
     activeDay: activeDayState ? activeDayState.day : null,
     expired,
@@ -1247,14 +1342,59 @@ async function resolveChallengeTimeline(env: Bindings, options: { now?: Date } =
   }
 
   try {
-    const period = await getChallengePeriodFromDb(dbBinding)
+    const [period, deadlines] = await Promise.all([
+      getChallengePeriodFromDb(dbBinding),
+      listChallengeDayDeadlinesFromDb(dbBinding).catch((error) => {
+        console.warn('[challenge] Failed to load challenge day deadlines; continuing without overrides', error)
+        return [] as ChallengeDayDeadline[]
+      }),
+    ])
     if (!period) {
       return null
     }
-    return buildChallengeTimeline(period, { now, requiredDays: REQUIRED_SUBMISSIONS })
+    return buildChallengeTimeline(period, {
+      now,
+      requiredDays: REQUIRED_SUBMISSIONS,
+      dayDeadlines: deadlines,
+    })
   } catch (error) {
     console.error('[challenge] Failed to resolve challenge timeline', error)
     return null
+  }
+}
+
+async function listChallengeDayDeadlinesFromDb(db: D1Database): Promise<ChallengeDayDeadline[]> {
+  try {
+    const result = await db
+      .prepare('SELECT day, start_at, end_at, updated_at FROM challenge_day_deadlines ORDER BY day ASC')
+      .all<ChallengeDayDeadlineRow>()
+
+    const rows = Array.isArray(result.results) ? result.results : []
+    return rows
+      .map((row) => {
+        const day = Number(row.day)
+        if (!Number.isFinite(day)) {
+          return null
+        }
+        const startAt = normalizeDeadlineDateTime(row.start_at)
+        const endAt = normalizeDeadlineDateTime(row.end_at)
+        if (!startAt || !endAt) {
+          return null
+        }
+        const updatedAt = typeof row.updated_at === 'string' && row.updated_at
+          ? `${row.updated_at.replace(' ', 'T')}Z`
+          : ''
+        return { day, startAt, endAt, updatedAt }
+      })
+      .filter((value): value is ChallengeDayDeadline => Boolean(value))
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such table: challenge_day_deadlines/i.test(message)) {
+      console.warn('[d1] challenge_day_deadlines table is not available; returning empty state')
+      return []
+    }
+    console.error('[d1] Failed to list challenge day deadlines', error)
+    throw error
   }
 }
 
