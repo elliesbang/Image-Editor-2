@@ -12,7 +12,7 @@ async function runStatement(statement) {
 
 export async function ensureAuthTables(db) {
   if (!db) {
-    throw new Error('D1 database binding `DB` is not configured')
+    throw new Error('D1 database binding `DB_MAIN` is not configured')
   }
 
   if (initialized) {
@@ -22,9 +22,37 @@ export async function ensureAuthTables(db) {
   await runStatement(
     db.prepare(`
       CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
         email TEXT UNIQUE,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        role TEXT DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP
+      )
+    `)
+  )
+
+  await runStatement(
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS credits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        credits INTEGER DEFAULT 30,
+        last_reset DATE,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `)
+  )
+
+  await runStatement(
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS processed_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        image_url TEXT,
+        process_type TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
       )
     `)
   )

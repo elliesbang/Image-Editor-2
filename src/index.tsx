@@ -26,7 +26,8 @@ type D1Database = {
 }
 
 type Bindings = {
-  DB: D1Database
+  DB_MAIN: D1Database
+  DB_MICHINA: D1Database
   OPENAI_API_KEY?: string
   ADMIN_EMAIL?: string
   SESSION_SECRET?: string
@@ -242,8 +243,8 @@ type ChallengeDayDeadline = {
 
 type ChallengeDayDeadlineRow = {
   day: number
-  start_at: string
-  end_at: string
+  start_time: string
+  end_time: string
   updated_at: string
 }
 
@@ -1385,7 +1386,7 @@ async function resolveChallengeTimeline(env: Bindings, options: { now?: Date } =
   let period: ChallengePeriodRecord | null = null
   let deadlines: ChallengeDayDeadline[] = []
 
-  const dbBinding = env.DB
+  const dbBinding = env.DB_MICHINA
   if (dbBinding && typeof dbBinding.prepare === 'function') {
     try {
       const [dbPeriod, dbDeadlines] = await Promise.all([
@@ -1405,7 +1406,7 @@ async function resolveChallengeTimeline(env: Bindings, options: { now?: Date } =
       console.error('[challenge] Failed to resolve challenge timeline via D1', error)
     }
   } else {
-    console.warn('[challenge] D1 binding `DB` is not available; falling back to KV period record')
+    console.warn('[challenge] D1 binding `DB_MICHINA` is not available; falling back to KV period record')
   }
 
   if (!period) {
@@ -1438,8 +1439,9 @@ async function resolveChallengeTimeline(env: Bindings, options: { now?: Date } =
 
 async function listChallengeDayDeadlinesFromDb(db: D1Database): Promise<ChallengeDayDeadline[]> {
   try {
+    await ensureMichinaDeadlineTable(db)
     const result = await db
-      .prepare('SELECT day, start_at, end_at, updated_at FROM challenge_day_deadlines ORDER BY day ASC')
+      .prepare('SELECT day, start_time, end_time, updated_at FROM michina_deadline ORDER BY day ASC')
       .all<ChallengeDayDeadlineRow>()
 
     const rows = Array.isArray(result.results) ? result.results : []
@@ -1449,8 +1451,8 @@ async function listChallengeDayDeadlinesFromDb(db: D1Database): Promise<Challeng
         if (!Number.isFinite(day)) {
           return null
         }
-        const startAt = normalizeDeadlineDateTime(row.start_at)
-        const endAt = normalizeDeadlineDateTime(row.end_at)
+        const startAt = normalizeDeadlineDateTime(row.start_time)
+        const endAt = normalizeDeadlineDateTime(row.end_time)
         if (!startAt || !endAt) {
           return null
         }
@@ -1462,8 +1464,8 @@ async function listChallengeDayDeadlinesFromDb(db: D1Database): Promise<Challeng
       .filter((value): value is ChallengeDayDeadline => Boolean(value))
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: challenge_day_deadlines/i.test(message)) {
-      console.warn('[d1] challenge_day_deadlines table is not available; returning empty state')
+    if (/no such table: michina_deadline/i.test(message)) {
+      console.warn('[d1] michina_deadline table is not available; returning empty state')
       return []
     }
     console.error('[d1] Failed to list challenge day deadlines', error)
@@ -1532,7 +1534,7 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
   try {
     await ensureChallengePeriodTable(db)
     const row = await db
-      .prepare('SELECT id, start_date, end_date, updated_at, updated_by FROM challenge_period WHERE id = 1')
+      .prepare('SELECT id, start_date, end_date, updated_at, updated_by FROM michina_period WHERE id = 1')
       .first<ChallengePeriodRow>()
     if (!row) {
       return null
@@ -1555,8 +1557,8 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
     return period
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: challenge_period/i.test(message)) {
-      console.warn('[d1] challenge_period table is not available; returning empty state')
+    if (/no such table: michina_period/i.test(message)) {
+      console.warn('[d1] michina_period table is not available; returning empty state')
       return null
     }
     console.error('[d1] Failed to load challenge period', error)
@@ -1568,19 +1570,27 @@ async function ensureChallengePeriodTable(db: D1Database) {
   try {
     await db
       .prepare(
-        "CREATE TABLE IF NOT EXISTS challenge_period (id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT)",
+        "CREATE TABLE IF NOT EXISTS michina_period (id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT)",
       )
       .run()
     try {
-      await db.prepare('ALTER TABLE challenge_period ADD COLUMN updated_by TEXT').run()
+      await db.prepare('ALTER TABLE michina_period ADD COLUMN updated_by TEXT').run()
     } catch (error) {
       const message = String(error || '')
       if (!/duplicate column name: updated_by/i.test(message)) {
         throw error
       }
     }
+    try {
+      await db.prepare('ALTER TABLE michina_period ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: created_at/i.test(message)) {
+        throw error
+      }
+    }
   } catch (error) {
-    console.error('[d1] Failed to ensure challenge_period table', error)
+    console.error('[d1] Failed to ensure michina_period table', error)
     throw error
   }
 }
@@ -1589,11 +1599,41 @@ async function ensureChallengePeriodHistoryTable(db: D1Database) {
   try {
     await db
       .prepare(
-        "CREATE TABLE IF NOT EXISTS challenge_period_history (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, saved_by TEXT)",
+        "CREATE TABLE IF NOT EXISTS michina_period_history (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, saved_by TEXT)",
       )
       .run()
   } catch (error) {
-    console.error('[d1] Failed to ensure challenge_period_history table', error)
+    console.error('[d1] Failed to ensure michina_period_history table', error)
+    throw error
+  }
+}
+
+async function ensureMichinaDeadlineTable(db: D1Database) {
+  try {
+    await db
+      .prepare(
+        "CREATE TABLE IF NOT EXISTS michina_deadline (id INTEGER PRIMARY KEY AUTOINCREMENT, day INTEGER, start_time TEXT, end_time TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)",
+      )
+      .run()
+    try {
+      await db.prepare('ALTER TABLE michina_deadline ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: updated_at/i.test(message)) {
+        throw error
+      }
+    }
+    try {
+      await db.prepare('ALTER TABLE michina_deadline ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: created_at/i.test(message)) {
+        throw error
+      }
+    }
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_michina_deadline_day ON michina_deadline(day)').run()
+  } catch (error) {
+    console.error('[d1] Failed to ensure michina_deadline table', error)
     throw error
   }
 }
@@ -1602,11 +1642,19 @@ async function ensureParticipantsTable(db: D1Database) {
   try {
     await db
       .prepare(
-        "CREATE TABLE IF NOT EXISTS participants (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT NOT NULL, joined_at TEXT, role TEXT, start_date TEXT, end_date TEXT)",
+        "CREATE TABLE IF NOT EXISTS michina_participants (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT NOT NULL, round TEXT, joined_at TEXT, role TEXT, start_date TEXT, end_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)",
       )
       .run()
     try {
-      await db.prepare('ALTER TABLE participants ADD COLUMN start_date TEXT').run()
+      await db.prepare('ALTER TABLE michina_participants ADD COLUMN round TEXT').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: round/i.test(message)) {
+        throw error
+      }
+    }
+    try {
+      await db.prepare('ALTER TABLE michina_participants ADD COLUMN start_date TEXT').run()
     } catch (error) {
       const message = String(error || '')
       if (!/duplicate column name: start_date/i.test(message)) {
@@ -1614,16 +1662,40 @@ async function ensureParticipantsTable(db: D1Database) {
       }
     }
     try {
-      await db.prepare('ALTER TABLE participants ADD COLUMN end_date TEXT').run()
+      await db.prepare('ALTER TABLE michina_participants ADD COLUMN end_date TEXT').run()
     } catch (error) {
       const message = String(error || '')
       if (!/duplicate column name: end_date/i.test(message)) {
         throw error
       }
     }
-    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_participants_email ON participants(email)').run()
+    try {
+      await db.prepare('ALTER TABLE michina_participants ADD COLUMN role TEXT').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: role/i.test(message)) {
+        throw error
+      }
+    }
+    try {
+      await db.prepare('ALTER TABLE michina_participants ADD COLUMN joined_at TEXT').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: joined_at/i.test(message)) {
+        throw error
+      }
+    }
+    try {
+      await db.prepare('ALTER TABLE michina_participants ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: created_at/i.test(message)) {
+        throw error
+      }
+    }
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_michina_participants_email ON michina_participants(email)').run()
   } catch (error) {
-    console.error('[d1] Failed to ensure participants table', error)
+    console.error('[d1] Failed to ensure michina_participants table', error)
     throw error
   }
 }
@@ -1633,13 +1705,13 @@ async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDat
   await ensureChallengePeriodHistoryTable(db)
   await db
     .prepare(
-      "INSERT OR REPLACE INTO challenge_period (id, start_date, end_date, updated_at, updated_by) VALUES (1, ?, ?, datetime('now'), ?)",
+      "INSERT OR REPLACE INTO michina_period (id, start_date, end_date, updated_at, updated_by) VALUES (1, ?, ?, datetime('now'), ?)",
     )
     .bind(startDate, endDate, options.updatedBy ?? null)
     .run()
   await db
     .prepare(
-      "INSERT INTO challenge_period_history (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)",
+      "INSERT INTO michina_period_history (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)",
     )
     .bind(startDate, endDate, options.updatedBy ?? null)
     .run()
@@ -1651,7 +1723,7 @@ async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeri
     await ensureChallengePeriodHistoryTable(db)
     const result = await db
       .prepare(
-        'SELECT id, start_date, end_date, saved_at, saved_by FROM challenge_period_history ORDER BY saved_at DESC, id DESC',
+        'SELECT id, start_date, end_date, saved_at, saved_by FROM michina_period_history ORDER BY saved_at DESC, id DESC',
       )
       .all<ChallengePeriodHistoryRow>()
     const rows = Array.isArray(result.results) ? result.results : []
@@ -1678,8 +1750,8 @@ async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeri
       .filter((value): value is ChallengePeriodSummary => Boolean(value))
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: challenge_period_history/i.test(message)) {
-      console.warn('[d1] challenge_period_history table is not available')
+    if (/no such table: michina_period_history/i.test(message)) {
+      console.warn('[d1] michina_period_history table is not available')
       return []
     }
     console.error('[d1] Failed to list challenge periods', error)
@@ -1699,8 +1771,8 @@ async function listParticipantsFromDb(db: D1Database, options: ParticipantListOp
   }
 
   const where = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''
-  const query = `SELECT id, name, email, joined_at, role, start_date, end_date FROM participants ${where} ORDER BY joined_at DESC, id DESC`
-  const fallbackQuery = `SELECT id, name, email, joined_at, role FROM participants ${where} ORDER BY joined_at DESC, id DESC`
+  const query = `SELECT id, name, email, joined_at, role, start_date, end_date FROM michina_participants ${where} ORDER BY joined_at DESC, id DESC`
+  const fallbackQuery = `SELECT id, name, email, joined_at, role FROM michina_participants ${where} ORDER BY joined_at DESC, id DESC`
 
   let rows: ParticipantRow[] = []
 
@@ -1742,10 +1814,18 @@ async function listParticipantsFromDb(db: D1Database, options: ParticipantListOp
   })
 }
 
-function getDatabase(env: Bindings) {
-  const db = env.DB
+function getMainDatabase(env: Bindings) {
+  const db = env.DB_MAIN
   if (!db || typeof db.prepare !== 'function') {
-    throw new Error('D1 database binding `DB` is not configured')
+    throw new Error('D1 database binding `DB_MAIN` is not configured')
+  }
+  return db
+}
+
+function getMichinaDatabase(env: Bindings) {
+  const db = env.DB_MICHINA
+  if (!db || typeof db.prepare !== 'function') {
+    throw new Error('D1 database binding `DB_MICHINA` is not configured')
   }
   return db
 }
@@ -2320,7 +2400,7 @@ app.get('/api/admin/period', async (c) => {
   let db: D1Database | null = null
 
   try {
-    db = getDatabase(c.env)
+    db = getMichinaDatabase(c.env)
   } catch (error) {
     console.warn('[admin] D1 database is not available for period fetch; using fallback storage', error)
   }
@@ -2386,7 +2466,7 @@ app.post('/api/admin/period', async (c) => {
   let db: D1Database | null = null
 
   try {
-    db = getDatabase(c.env)
+    db = getMichinaDatabase(c.env)
   } catch (error) {
     console.warn('[admin] D1 database is not available for period save; using fallback storage', error)
   }
@@ -2436,18 +2516,18 @@ app.delete('/api/admin/period', async (c) => {
 
   let db: D1Database | null = null
   try {
-    db = getDatabase(c.env)
+    db = getMichinaDatabase(c.env)
   } catch (error) {
     console.warn('[admin] D1 database is not available for period delete; using fallback storage', error)
   }
 
   if (db) {
     try {
-      await db.prepare('DELETE FROM challenge_period WHERE id = 1').run()
+      await db.prepare('DELETE FROM michina_period WHERE id = 1').run()
     } catch (error) {
       const message = String(error || '')
-      if (/no such table: challenge_period/i.test(message)) {
-        console.warn('[admin] challenge_period table missing during delete; skipping')
+      if (/no such table: michina_period/i.test(message)) {
+        console.warn('[admin] michina_period table missing during delete; skipping')
       } else {
         console.error('[admin] Failed to delete challenge period from D1', error)
         return c.json({ error: 'DATABASE_ERROR' }, 500)
@@ -2481,7 +2561,7 @@ app.get('/api/admin/participants', async (c) => {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
   try {
-    const db = getDatabase(c.env)
+    const db = getMichinaDatabase(c.env)
     const roleQuery = c.req.query('role')
     const statusQuery = c.req.query('status')
     const periodQuery = c.req.query('periodId')
@@ -2575,14 +2655,14 @@ app.post('/api/admin/participants', async (c) => {
     return c.json({ error: 'NO_PARTICIPANTS' }, 400)
   }
 
-  const db = getDatabase(c.env)
+  const db = getMichinaDatabase(c.env)
   try {
     await ensureParticipantsTable(db)
     try {
-      await db.prepare('DELETE FROM participants WHERE role = ?').bind('미치나').run()
+      await db.prepare('DELETE FROM michina_participants WHERE role = ?').bind('미치나').run()
     } catch (error) {
       const message = String(error || '')
-      if (/no such table: participants/i.test(message)) {
+      if (/no such table: michina_participants/i.test(message)) {
         console.warn('[admin] participants table is not available while replacing list; creating entries from scratch')
       } else {
         throw error
@@ -2593,7 +2673,7 @@ app.post('/api/admin/participants', async (c) => {
       const joinedAt = entry.joinedAt || new Date().toISOString().split('T')[0]
       await db
         .prepare(
-          "INSERT OR REPLACE INTO participants (name, email, joined_at, role) VALUES (?, ?, ?, '미치나')",
+          "INSERT OR REPLACE INTO michina_participants (name, email, joined_at, role) VALUES (?, ?, ?, '미치나')",
         )
         .bind(entry.name, entry.email, joinedAt)
         .run()
@@ -2612,13 +2692,13 @@ app.delete('/api/admin/participants/delete', async (c) => {
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
-  const db = getDatabase(c.env)
+  const db = getMichinaDatabase(c.env)
   try {
     await ensureParticipantsTable(db)
-    await db.prepare('DELETE FROM participants WHERE role = ?').bind('미치나').run()
+    await db.prepare('DELETE FROM michina_participants WHERE role = ?').bind('미치나').run()
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: participants/i.test(message)) {
+    if (/no such table: michina_participants/i.test(message)) {
       console.warn('[admin] participants table missing while attempting delete; treating as empty state')
     } else {
       console.error('[admin] Failed to delete participants', error)
@@ -2633,14 +2713,14 @@ app.get('/api/admin/michina-status', async (c) => {
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
-  const db = getDatabase(c.env)
+  const db = getMichinaDatabase(c.env)
   let period: ChallengePeriodRecord | null = null
   try {
     period = await getChallengePeriodFromDb(db)
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: challenge_period/i.test(message)) {
-      console.warn('[admin] challenge_period table is not available')
+    if (/no such table: michina_period/i.test(message)) {
+      console.warn('[admin] michina_period table is not available')
     } else {
       console.error('[admin] Failed to load challenge period for status', error)
       return c.json({ error: 'DATABASE_ERROR' }, 500)
@@ -2650,13 +2730,13 @@ app.get('/api/admin/michina-status', async (c) => {
   let totalCount = 0
   try {
     const row = await db
-      .prepare('SELECT COUNT(*) AS cnt FROM participants WHERE role = ?')
+      .prepare('SELECT COUNT(*) AS cnt FROM michina_participants WHERE role = ?')
       .bind('미치나')
       .first<{ cnt: number | null }>()
     totalCount = Number(row?.cnt ?? 0)
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: participants/i.test(message)) {
+    if (/no such table: michina_participants/i.test(message)) {
       console.warn('[admin] participants table is not available; returning zero counts')
     } else {
       console.error('[admin] Failed to count michina participants', error)
@@ -2676,7 +2756,7 @@ app.get('/api/admin/users', async (c) => {
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
-  const db = getDatabase(c.env)
+  const db = getMainDatabase(c.env)
   let rows: UserRow[] = []
   try {
     const result = await db
@@ -2737,14 +2817,14 @@ app.post('/api/user/check-role', async (c) => {
     return c.json({ role: 'free' })
   }
   try {
-    const db = getDatabase(c.env)
+    const db = getMichinaDatabase(c.env)
     const period = await getChallengePeriodFromDb(db)
     const today = new Date().toISOString().split('T')[0]
     if (period && today > period.endDate) {
-      await db.prepare("UPDATE participants SET role='free' WHERE role='미치나'").run()
+      await db.prepare("UPDATE michina_participants SET role='free' WHERE role='미치나'").run()
     }
     const user = await db
-      .prepare('SELECT role FROM participants WHERE email = ? LIMIT 1')
+      .prepare('SELECT role FROM michina_participants WHERE email = ? LIMIT 1')
       .bind(email)
       .first<{ role: string | null }>()
     const role = (user?.role ?? '').trim() || 'free'

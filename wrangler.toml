@@ -5,6 +5,11 @@ compatibility_date = "2024-10-12"
 # Add environment variables such as AI keys here.
 
 [[d1_databases]]
-binding = "DB"
-database_name = "elliesbang_db"
-# database_id = "<ADD_DATABASE_ID>"
+binding = "DB_MAIN"
+database_name = "elliesbang_main"
+database_id = "D1_MAIN_ID"
+
+[[d1_databases]]
+binding = "DB_MICHINA"
+database_name = "elliesbang_michina"
+database_id = "D1_MICHINA_ID"
