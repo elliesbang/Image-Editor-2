@@ -313,281 +313,202 @@ function renderAdminManagementPage() {
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
     <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <script>
+      window.tailwind = window.tailwind || {}
+      window.tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#fef568',
+              ivory: '#f5eee9',
+            },
+            fontFamily: {
+              pretendard: ['Pretendard', 'sans-serif'],
+            },
+            boxShadow: {
+              ellie: '0 25px 50px -12px rgba(250, 204, 21, 0.35)',
+            },
+          },
+        },
+      }
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
       :root {
         color-scheme: light;
-        font-family: 'Pretendard','Noto Sans KR',sans-serif;
-        background-color: #f5eee9;
-        color: #2c2520;
-      }
-      *, *::before, *::after {
-        box-sizing: border-box;
       }
       body {
         margin: 0;
-        min-height: 100vh;
-        background: #f5eee9;
-        color: #2c2520;
-        display: flex;
-        flex-direction: column;
-      }
-      button {
-        font-family: inherit;
-      }
-      .admin-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 20px 28px;
-        background: #fef568;
-        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
-      }
-      .admin-header__title {
-        margin: 0;
-        font-size: 1.4rem;
-        font-weight: 700;
-      }
-      .admin-button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        padding: 12px 18px;
-        border-radius: 999px;
-        border: none;
-        background: #fef568;
-        color: #2c2520;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background 0.2s ease, transform 0.2s ease;
-      }
-      .admin-button:hover,
-      .admin-button:focus-visible {
-        background: #fbe743;
-        transform: translateY(-1px);
-      }
-      .admin-button--ghost {
-        background: #ffffff;
-        border: 1px solid rgba(0, 0, 0, 0.1);
-      }
-      .admin-main {
-        flex: 1;
-        width: min(1120px, 100%);
-        margin: 0 auto;
-        padding: 32px 24px 72px;
-        display: flex;
-        flex-direction: column;
-        gap: 24px;
-      }
-      .admin-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 24px;
-      }
-      .admin-card {
-        background: #ffffff;
-        border-radius: 18px;
-        padding: 26px;
-        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.08);
-        border: 1px solid rgba(254, 245, 104, 0.4);
-      }
-      .admin-card--full {
-        width: 100%;
-      }
-      .admin-card__title {
-        margin: 0 0 12px;
-        font-size: 1.3rem;
-        font-weight: 700;
-      }
-      .admin-description {
-        margin: 0 0 18px;
-        color: #5b5147;
-        line-height: 1.6;
-        font-size: 0.98rem;
-      }
-      .admin-form {
-        display: grid;
-        gap: 14px;
-        max-width: 320px;
-      }
-      .admin-field {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        font-weight: 600;
-        color: #2c2520;
-      }
-      .admin-input {
-        border: 1.5px solid #fef568;
-        border-radius: 12px;
-        padding: 10px 12px;
-        font-size: 1rem;
-        background: #ffffff;
-        color: inherit;
-      }
-      .admin-input:focus-visible {
-        outline: 3px solid rgba(254, 245, 104, 0.45);
-        outline-offset: 1px;
-      }
-      .admin-meta {
-        margin: 16px 0 0;
-        font-weight: 600;
-        color: #4d4138;
-      }
-      .admin-muted {
-        margin: 6px 0 0;
-        color: #7b6d63;
-        font-size: 0.9rem;
-      }
-      .admin-muted[hidden] {
-        display: none;
-      }
-      .admin-muted[data-tone='success'] {
-        color: #1c6d2d;
-      }
-      .admin-muted[data-tone='danger'] {
-        color: #c2353b;
-      }
-      .admin-upload-trigger {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .admin-table-wrapper {
-        margin-top: 18px;
-        border-radius: 14px;
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        overflow: hidden;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.95rem;
-      }
-      thead {
-        background: rgba(254, 245, 104, 0.4);
-      }
-      th,
-      td {
-        padding: 12px 16px;
-        text-align: left;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-      }
-      tbody tr:last-child td {
-        border-bottom: none;
-      }
-      .admin-empty {
-        text-align: center;
-        padding: 28px 12px;
-        color: #7b6d63;
-      }
-      .admin-card__header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 12px;
-      }
-      .admin-count {
-        font-weight: 600;
-        font-size: 0.95rem;
-        color: #5b5147;
-      }
-      .admin-toast {
-        position: fixed;
-        bottom: 24px;
-        right: 24px;
-        background: #2c2520;
-        color: #ffffff;
-        padding: 12px 18px;
-        border-radius: 14px;
-        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.2);
-        font-size: 0.95rem;
-      }
-      .admin-toast[hidden] {
-        display: none;
-      }
-      @media (max-width: 720px) {
-        .admin-header {
-          flex-direction: column;
-          align-items: flex-start;
-        }
-        .admin-main {
-          padding: 28px 16px 60px;
-        }
-        .admin-card {
-          padding: 22px;
-        }
-        table {
-          font-size: 0.9rem;
-        }
       }
     </style>
   </head>
-  <body>
-    <header class="admin-header">
-      <h1 class="admin-header__title">관리자 대시보드</h1>
-      <button type="button" class="admin-button admin-button--ghost" data-action="logout">로그아웃</button>
-    </header>
-    <main class="admin-main">
-      <section class="admin-grid">
-        <article class="admin-card" data-section="period">
-          <h2 class="admin-card__title">챌린지 기간 설정</h2>
-          <p class="admin-description">시작일과 종료일을 설정하면 해당 기간 동안 업로드된 명단의 참가자에게 "미치나" 등급이 부여됩니다.</p>
-          <form class="admin-form" data-role="period-form">
-            <label class="admin-field">시작일
-              <input type="date" class="admin-input" data-role="period-start" required />
-            </label>
-            <label class="admin-field">종료일
-              <input type="date" class="admin-input" data-role="period-end" required />
-            </label>
-            <button type="submit" class="admin-button">기간 저장</button>
-          </form>
-          <p class="admin-meta" data-role="period-summary">저장된 챌린지 기간이 없습니다.</p>
-          <p class="admin-muted" data-role="period-status" hidden></p>
-        </article>
-        <article class="admin-card" data-section="upload">
-          <h2 class="admin-card__title">참가자 명단 관리</h2>
-          <p class="admin-description">CSV 파일을 업로드하면 명단에 포함된 사용자는 자동으로 "미치나" 등급이 부여됩니다.</p>
-          <button type="button" class="admin-button admin-upload-trigger" data-role="upload-trigger">CSV 업로드</button>
-          <input type="file" accept=".csv" data-role="upload-input" hidden />
-          <p class="admin-meta" data-role="upload-filename">선택된 파일이 없습니다.</p>
-          <p class="admin-muted" data-role="upload-status" hidden></p>
-        </article>
-      </section>
-      <section class="admin-card admin-card--full" data-section="participants">
-        <div class="admin-card__header">
-          <h2 class="admin-card__title">참가자 명단</h2>
-          <span class="admin-count" data-role="participant-count">0명</span>
+  <body class="min-h-screen bg-ivory text-gray-800 font-pretendard">
+    <div class="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-6 md:px-10 md:py-12">
+      <header class="mb-10 flex flex-col gap-5 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p class="text-sm font-medium uppercase tracking-[0.25em] text-yellow-600">Ellie's Bang Admin</p>
+          <h1 class="mt-2 text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
+          <p class="mt-2 text-sm text-[#6f5a26]">
+            엘리의방 감성으로 미치나 챌린지를 관리하고, 전체 사용자 데이터를 한눈에 확인하세요.
+          </p>
         </div>
-        <p class="admin-description">업로드된 명단은 아래에서 확인할 수 있으며, 기간 종료 시 자동으로 Free 등급으로 복귀합니다.</p>
-        <div class="admin-table-wrapper">
-          <table aria-label="참가자 목록">
-            <thead>
-              <tr>
-                <th scope="col">이름</th>
-                <th scope="col">이메일</th>
-                <th scope="col">등록일</th>
-                <th scope="col">등급</th>
-              </tr>
-            </thead>
-            <tbody data-role="participant-rows">
-              <tr><td colspan="4" class="admin-empty">참가자 명단을 불러오는 중입니다…</td></tr>
-            </tbody>
-          </table>
+        <button
+          type="button"
+          data-action="logout"
+          class="inline-flex items-center justify-center rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-gray-900 shadow-md transition hover:-translate-y-0.5 hover:bg-[#fbe743] hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          로그아웃
+        </button>
+      </header>
+      <main class="flex-1">
+        <div class="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+          <div class="space-y-6">
+            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+              <h2 class="mb-4 flex items-center gap-2 text-lg font-semibold text-gray-900">
+                <span class="text-xl">📅</span>
+                챌린지 기간 설정
+              </h2>
+              <form data-role="period-form" class="space-y-3">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="space-y-1.5">
+                    <label class="block text-xs font-semibold uppercase tracking-wide text-[#6f5a26]" for="startDate">시작일</label>
+                    <input
+                      id="startDate"
+                      type="date"
+                      required
+                      data-role="period-start"
+                      class="w-full rounded-lg border border-yellow-200 bg-ivory/60 px-3 py-2 text-sm text-gray-800 shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/60"
+                    />
+                  </div>
+                  <div class="space-y-1.5">
+                    <label class="block text-xs font-semibold uppercase tracking-wide text-[#6f5a26]" for="endDate">종료일</label>
+                    <input
+                      id="endDate"
+                      type="date"
+                      required
+                      data-role="period-end"
+                      class="w-full rounded-lg border border-yellow-200 bg-ivory/60 px-3 py-2 text-sm text-gray-800 shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/60"
+                    />
+                  </div>
+                </div>
+                <button
+                  id="savePeriodBtn"
+                  type="submit"
+                  data-role="period-submit"
+                  class="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-gray-900 shadow-md transition hover:-translate-y-0.5 hover:bg-[#fbe743] hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                >
+                  기간 저장
+                </button>
+              </form>
+              <div class="mt-4 space-y-2 text-sm text-gray-700">
+                <p data-role="period-summary">저장된 챌린지 기간이 없습니다.</p>
+                <p class="rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium shadow-inner" data-role="period-status" hidden></p>
+              </div>
+            </section>
+            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+              <h2 class="mb-4 flex items-center gap-2 text-lg font-semibold text-gray-900">
+                <span class="text-xl">📋</span>
+                명단 업로드
+              </h2>
+              <div class="space-y-3">
+                <label class="block text-xs font-semibold uppercase tracking-wide text-[#6f5a26]">CSV 업로드</label>
+                <input
+                  id="csvUpload"
+                  type="file"
+                  accept=".csv"
+                  data-role="upload-input"
+                  class="block w-full cursor-pointer rounded-xl border border-dashed border-yellow-200 bg-ivory/60 px-4 py-6 text-sm text-gray-600 transition file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-primary file:px-4 file:py-2 file:font-semibold file:text-gray-900 hover:border-primary hover:bg-white"
+                />
+                <p class="text-sm text-gray-500" data-role="upload-filename">선택된 파일이 없습니다.</p>
+                <p id="uploadStatus" class="rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium shadow-inner" data-role="upload-status" hidden></p>
+              </div>
+            </section>
+            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+              <div class="mb-4 flex items-center justify-between gap-4">
+                <h2 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
+                  <span class="text-xl">👥</span>
+                  전체 사용자 DB 조회
+                </h2>
+                <span class="rounded-full bg-primary/60 px-3 py-1 text-xs font-semibold text-[#5b4100]">
+                  실시간 조회
+                </span>
+              </div>
+              <div class="overflow-hidden rounded-2xl border border-yellow-100 bg-white">
+                <div class="grid gap-3 border-b border-yellow-100 bg-ivory/70 p-4 text-sm text-gray-700" data-role="users-breakdown"></div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-left text-sm text-gray-700">
+                    <thead class="bg-ivory/80 text-gray-700">
+                      <tr>
+                        <th class="px-4 py-3 font-semibold">이름</th>
+                        <th class="px-4 py-3 font-semibold">이메일</th>
+                        <th class="px-4 py-3 font-semibold">등급</th>
+                        <th class="px-4 py-3 font-semibold">최근 로그인</th>
+                      </tr>
+                    </thead>
+                    <tbody id="userTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <p class="mt-3 rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium text-gray-700 shadow-inner" data-role="users-status" hidden></p>
+            </section>
+          </div>
+          <div class="space-y-6">
+            <section class="rounded-3xl border border-yellow-100 bg-[#fffdf4]/90 p-6 shadow-ellie backdrop-blur">
+              <h2 class="mb-1 flex items-center gap-2 text-lg font-semibold text-gray-900">
+                <span class="text-xl">📊</span>
+                미치나 챌린저 현황
+              </h2>
+              <p class="text-sm text-[#6f5a26]" data-role="status-period">챌린지 기간을 설정하면 현황이 계산됩니다.</p>
+              <div id="michinaStats" class="mt-6 grid gap-4 sm:grid-cols-3">
+                <article class="rounded-2xl border border-yellow-100 bg-white/90 p-4 text-center shadow-md">
+                  <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">총 인원</p>
+                  <p id="totalCount" class="mt-2 text-2xl font-bold text-primary">0</p>
+                </article>
+                <article class="rounded-2xl border border-yellow-100 bg-white/90 p-4 text-center shadow-md">
+                  <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">활성 인원</p>
+                  <p id="activeCount" class="mt-2 text-2xl font-bold text-green-500">0</p>
+                </article>
+                <article class="rounded-2xl border border-yellow-100 bg-white/90 p-4 text-center shadow-md">
+                  <p class="text-xs font-semibold uppercase tracking-wide text-[#8c731e]">종료 인원</p>
+                  <p id="expiredCount" class="mt-2 text-2xl font-bold text-red-400">0</p>
+                </article>
+              </div>
+              <p class="mt-5 rounded-xl bg-white/70 px-3 py-2 text-sm font-medium text-[#6f5a26] shadow-inner" data-role="status-message" hidden></p>
+            </section>
+            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+              <h2 class="mb-3 flex items-center gap-2 text-lg font-semibold text-gray-900">
+                <span class="text-xl">🗂️</span>
+                데이터 관리 가이드
+              </h2>
+              <ul class="space-y-2 text-sm text-[#6f5a26]">
+                <li class="flex items-start gap-2">
+                  <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
+                  기간 변경 후에는 명단을 다시 확인해 최신 상태를 유지하세요.
+                </li>
+                <li class="flex items-start gap-2">
+                  <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
+                  CSV 업로드는 UTF-8 인코딩을 사용하고, 이메일 열이 반드시 포함되어야 합니다.
+                </li>
+                <li class="flex items-start gap-2">
+                  <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
+                  사용자 DB는 실시간으로 갱신되므로 새로고침 없이도 최신 정보를 확인할 수 있습니다.
+                </li>
+              </ul>
+            </section>
+          </div>
         </div>
-      </section>
-    </main>
-    <div class="admin-toast" data-role="admin-toast" hidden></div>
+      </main>
+      <div
+        class="pointer-events-none fixed bottom-6 right-6 hidden rounded-2xl bg-gray-900/90 px-4 py-3 text-sm font-semibold text-white shadow-xl"
+        data-role="admin-toast"
+        hidden
+      ></div>
+    </div>
     <script type="module" src="/static/admin-lite.js"></script>
   </body>
 </html>`
 }
+
 
 
 const inMemoryStore = new Map<string, string>()
@@ -1756,7 +1677,7 @@ app.use('*', async (c, next) => {
 
   const csp = [
     "default-src 'self'",
-    "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://apis.google.com https://www.gstatic.com",
+    "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://accounts.google.com https://apis.google.com https://www.gstatic.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net",
     "img-src 'self' data: blob: https://lh3.googleusercontent.com",
     "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net",
