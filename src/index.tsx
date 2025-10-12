@@ -2436,6 +2436,11 @@ app.get('/api/auth/logout', (c) => {
   return c.redirect('/', 302)
 })
 
+app.post('/api/logout', (c) => {
+  deleteCookie(c, 'user', { path: '/' })
+  return c.json({ success: true })
+})
+
 app.post('/api/admin/challenge/import', async (c) => {
   const adminEmail = await requireAdminSession(c)
   if (!adminEmail) {
