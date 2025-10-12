@@ -444,6 +444,13 @@ function renderAdminManagementPage() {
                     </button>
                   </div>
                   <p id="periodStatus" class="text-sm text-gray-600"></p>
+                  <div
+                    id="recentPeriodContainer"
+                    class="rounded-lg border border-[#f5eee9] bg-[#fef568] px-4 py-3 shadow-sm"
+                  >
+                    <p class="text-sm font-semibold text-[#4f3b0f]">최근 저장된 기간</p>
+                    <p id="recentPeriodText" class="mt-1 text-sm text-[#6f5a26]">저장된 기간이 없습니다</p>
+                  </div>
                 </div>
                 <div class="space-y-3 rounded-lg border border-[#f5eee9] bg-white/70 p-4 shadow-inner">
                   <h3 class="text-base font-medium text-gray-800">📈 참여 현황</h3>
