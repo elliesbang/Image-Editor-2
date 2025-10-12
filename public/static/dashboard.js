@@ -8,12 +8,20 @@
 
   const DEFAULT_UPLOAD_FILENAME = '선택된 파일이 없습니다.';
   const DEFAULT_PERIOD_DELETE_LABEL = '기간 초기화';
+  const DEFAULT_PERIOD_SAVE_LABEL = '저장';
 
   const MESSAGE_TONES = {
     info: 'text-[#6f5a26]',
     success: 'text-emerald-600',
     warning: 'text-amber-600',
     danger: 'text-red-500',
+  };
+
+  const PERIOD_UPDATED_TONES = {
+    info: 'text-[#8c7a4f]',
+    success: 'text-emerald-700',
+    warning: 'text-amber-600',
+    danger: 'text-rose-600',
   };
 
   const BADGE_TONES = {
@@ -24,6 +32,9 @@
   };
 
   const MESSAGE_TONE_CLASS_LIST = Object.values(MESSAGE_TONES)
+    .map((value) => value.split(' '))
+    .flat();
+  const PERIOD_UPDATED_TONE_CLASS_LIST = Object.values(PERIOD_UPDATED_TONES)
     .map((value) => value.split(' '))
     .flat();
   const BADGE_TONE_CLASS_LIST = Object.values(BADGE_TONES)
@@ -41,6 +52,7 @@
     periodStatus: document.querySelector('[data-role="period-status"]'),
     periodSummary: document.querySelector('[data-role="period-summary"]'),
     periodUpdated: document.querySelector('[data-role="period-updated"]'),
+    periodSubmit: document.querySelector('[data-role="period-form"] button[type="submit"]'),
     periodHistory: document.querySelector('[data-role="period-history"]'),
     periodHistoryEmpty: document.querySelector('[data-role="period-history-empty"]'),
     periodDelete: document.querySelector('[data-role="period-delete"]'),
@@ -73,6 +85,7 @@
     isUploading: false,
     isDeleting: false,
     isDeletingPeriod: false,
+    isSavingPeriod: false,
   };
 
   let broadcast = null;
@@ -113,6 +126,32 @@
       .filter(Boolean)
       .forEach((className) => element.classList.add(className));
     element.textContent = message;
+  }
+
+  function setPeriodUpdatedMessage(message, tone = 'info') {
+    if (!(elements.periodUpdated instanceof HTMLElement)) {
+      return;
+    }
+    elements.periodUpdated.classList.remove(...PERIOD_UPDATED_TONE_CLASS_LIST);
+    const toneClass = PERIOD_UPDATED_TONES[tone] || PERIOD_UPDATED_TONES.info;
+    toneClass
+      .split(' ')
+      .filter(Boolean)
+      .forEach((className) => elements.periodUpdated.classList.add(className));
+    elements.periodUpdated.textContent = message;
+  }
+
+  function updatePeriodSaveButton() {
+    if (!(elements.periodSubmit instanceof HTMLButtonElement)) {
+      return;
+    }
+    if (state.isSavingPeriod) {
+      elements.periodSubmit.disabled = true;
+      elements.periodSubmit.textContent = '저장 중…';
+    } else {
+      elements.periodSubmit.disabled = false;
+      elements.periodSubmit.textContent = DEFAULT_PERIOD_SAVE_LABEL;
+    }
   }
 
   function setAdminSessionFlag(active) {
@@ -347,9 +386,10 @@
     if (elements.periodSummary instanceof HTMLElement) {
       elements.periodSummary.textContent = summary;
     }
-    if (elements.periodUpdated instanceof HTMLElement) {
-      elements.periodUpdated.textContent = updated;
-    }
+    setPeriodUpdatedMessage(
+      updated,
+      period && period.startDate && period.endDate ? 'info' : 'warning',
+    );
     if (elements.periodDelete instanceof HTMLButtonElement) {
       const hasPeriod = Boolean(period && period.startDate && period.endDate);
       if (state.isDeletingPeriod) {
@@ -368,6 +408,7 @@
         setBadgeTone(elements.statusPeriod, 'warning');
       }
     }
+    updatePeriodSaveButton();
   }
 
   function renderPeriodHistory() {
@@ -844,6 +885,9 @@
 
   async function handlePeriodSubmit(event) {
     event.preventDefault();
+    if (state.isSavingPeriod) {
+      return;
+    }
     if (!(elements.periodStart instanceof HTMLInputElement) || !(elements.periodEnd instanceof HTMLInputElement)) {
       return;
     }
@@ -851,8 +895,17 @@
     const endDate = elements.periodEnd.value;
     if (!startDate || !endDate) {
       showToast('시작일과 종료일을 모두 선택해주세요.', 'warning');
+      setPeriodUpdatedMessage('시작일과 종료일을 모두 선택해주세요.', 'warning');
       return;
     }
+    if (startDate > endDate) {
+      showToast('종료일은 시작일 이후 날짜를 선택해주세요.', 'warning');
+      setPeriodUpdatedMessage('종료일은 시작일 이후 날짜를 선택해주세요.', 'warning');
+      return;
+    }
+    state.isSavingPeriod = true;
+    updatePeriodSaveButton();
+    setPeriodUpdatedMessage('챌린지 기간을 저장하고 있습니다…', 'info');
     try {
       const response = await fetch('/api/admin/period', {
         method: 'POST',
@@ -872,11 +925,23 @@
       state.periodHistory = Array.isArray(payload?.periods) ? payload.periods : [];
       renderPeriod();
       renderPeriodHistory();
-      showToast('챌린지 기간이 저장되었습니다.', 'success');
+      setPeriodUpdatedMessage(
+        '저장되었습니다. 기간 변경 내역에서 저장 이력을 확인할 수 있습니다.',
+        'success',
+      );
+      showToast('저장되었습니다.', 'success');
       await loadStatus();
+      setPeriodUpdatedMessage(
+        '저장되었습니다. 기간 변경 내역에서 저장 이력을 확인할 수 있습니다.',
+        'success',
+      );
     } catch (error) {
       console.error('[dashboard] failed to save period', error);
       showToast('챌린지 기간을 저장하지 못했습니다.', 'danger');
+      setPeriodUpdatedMessage('챌린지 기간을 저장하지 못했습니다. 다시 시도해주세요.', 'danger');
+    } finally {
+      state.isSavingPeriod = false;
+      updatePeriodSaveButton();
     }
   }
 
