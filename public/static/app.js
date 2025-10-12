@@ -2587,6 +2587,14 @@ function updateHeaderState() {
   if (elements.headerAuthButton instanceof HTMLButtonElement) {
     elements.headerAuthButton.textContent = state.user.isLoggedIn ? '로그아웃' : '로그인'
     elements.headerAuthButton.dataset.action = state.user.isLoggedIn ? 'logout' : 'show-login'
+    elements.headerAuthButton.classList.toggle('logout-btn', Boolean(state.user.isLoggedIn))
+    if (state.user.isLoggedIn) {
+      elements.headerAuthButton.onclick = handleLogout
+    } else {
+      elements.headerAuthButton.onclick = () => {
+        openLoginModal()
+      }
+    }
   }
 
   if (elements.resultsCreditCount instanceof HTMLElement) {
@@ -3198,8 +3206,77 @@ function applyCommunityRoleFromStorage() {
 }
 
 
-function handleLogout() {
-  window.location.href = '/api/auth/logout'
+function clearBrowserStorage() {
+  try {
+    window.localStorage?.clear()
+  } catch (error) {
+    /* storage access might be blocked */
+  }
+
+  try {
+    window.sessionStorage?.clear()
+  } catch (error) {
+    /* storage access might be blocked */
+  }
+}
+
+function removeAuthCookies() {
+  try {
+    const cookies = document.cookie ? document.cookie.split(';') : []
+    cookies.forEach((cookie) => {
+      const [rawName] = cookie.split('=')
+      if (!rawName) return
+      const name = rawName.trim()
+      if (!name || !/token|session/i.test(name)) return
+      const expires = 'Thu, 01 Jan 1970 00:00:00 GMT'
+      document.cookie = `${name}=; expires=${expires}; path=/`
+      document.cookie = `${name}=; expires=${expires}; path=/; domain=${window.location.hostname}`
+    })
+  } catch (error) {
+    /* cookie access might be blocked */
+  }
+}
+
+async function requestServerLogout() {
+  try {
+    await fetch('/api/logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      keepalive: true,
+    })
+  } catch (error) {
+    /* best-effort logout request */
+  }
+}
+
+async function handleLogout(event) {
+  if (event?.preventDefault instanceof Function) {
+    event.preventDefault()
+  }
+
+  const button = event?.currentTarget instanceof HTMLButtonElement ? event.currentTarget : elements.headerAuthButton
+  let originalText
+  if (button instanceof HTMLButtonElement) {
+    originalText = button.textContent
+    button.disabled = true
+    button.classList.add('logout-btn')
+    button.textContent = '로그아웃 중…'
+  }
+
+  clearBrowserStorage()
+  removeAuthCookies()
+
+  await requestServerLogout()
+
+  if (button instanceof HTMLButtonElement) {
+    button.disabled = false
+    if (typeof originalText === 'string') {
+      button.textContent = originalText
+    }
+  }
+
+  window.location.replace('/')
 }
 
 
@@ -8939,13 +9016,19 @@ function attachEventListeners() {
   }
 
   if (elements.headerAuthButton instanceof HTMLButtonElement) {
-    elements.headerAuthButton.addEventListener('click', () => {
+    elements.headerAuthButton.addEventListener('click', (event) => {
       const action = elements.headerAuthButton.dataset.action
       if (action === 'logout') {
-        handleLogout()
-      } else {
-        openLoginModal()
+        if (elements.headerAuthButton.onclick === handleLogout) {
+          return
+        }
+        handleLogout(event)
+        return
       }
+      if (typeof elements.headerAuthButton.onclick === 'function') {
+        return
+      }
+      openLoginModal()
     })
   }
 
