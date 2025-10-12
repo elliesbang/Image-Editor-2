@@ -95,22 +95,49 @@ function normalizeKeywordList(list, limit = Infinity) {
   return normalized
 }
 
-function normalizeImageKeywords(groups) {
+function normalizeImageKeywords(groups, limit = Infinity) {
   if (!Array.isArray(groups)) return []
-  return groups.map((group) => normalizeKeywordList(group))
+  return groups.map((group) => normalizeKeywordList(group, limit))
 }
 
-function validateResult(result) {
+function validateResult(result, imageCount) {
   if (!result || typeof result !== 'object') {
     throw new Error('INVALID_RESPONSE_FORMAT')
   }
   const commonKeywords = normalizeKeywordList(result.common_keywords, 10)
-  const imageKeywords = normalizeImageKeywords(result.image_keywords)
+  const imageKeywords = normalizeImageKeywords(result.image_keywords, 5)
   const combinedKeywords = normalizeKeywordList(result.combined_keywords, MAX_COMBINED_KEYWORDS)
   const title = typeof result.title === 'string' ? result.title.trim() : ''
 
-  if (commonKeywords.length === 0 || imageKeywords.length === 0 || combinedKeywords.length === 0 || !title) {
+  if (
+    commonKeywords.length === 0 ||
+    imageKeywords.length === 0 ||
+    combinedKeywords.length === 0 ||
+    !title
+  ) {
     throw new Error('MISSING_KEYWORD_FIELDS')
+  }
+
+  if (commonKeywords.length < 5 || commonKeywords.length > 10) {
+    throw new Error('INVALID_COMMON_KEYWORD_COUNT')
+  }
+
+  if (imageKeywords.length !== imageCount) {
+    throw new Error('MISMATCH_IMAGE_KEYWORD_COUNT')
+  }
+
+  for (const group of imageKeywords) {
+    if (group.length < 3 || group.length > 5) {
+      throw new Error('INVALID_IMAGE_KEYWORD_COUNT')
+    }
+  }
+
+  if (combinedKeywords.length !== MAX_COMBINED_KEYWORDS) {
+    throw new Error('INVALID_COMBINED_KEYWORD_COUNT')
+  }
+
+  if (title.length === 0 || [...title].length > 10) {
+    throw new Error('INVALID_TITLE_LENGTH')
   }
 
   return {
@@ -191,7 +218,7 @@ export const onRequestPost = async ({ request, env }) => {
       throw new Error('OPENAI_JSON_PARSE_ERROR')
     }
 
-    const normalized = validateResult(parsed)
+    const normalized = validateResult(parsed, files.length)
 
     return jsonResponse(normalized, { status: 200 })
   } catch (error) {
