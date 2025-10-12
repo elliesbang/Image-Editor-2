@@ -5223,6 +5223,83 @@ function detectNonTransparentBounds(imageData) {
   }
 }
 
+function cropTransparentArea(canvas, ctx, baseImageData = null) {
+  if (!canvas || typeof canvas.width !== 'number' || typeof canvas.height !== 'number') {
+    throw new Error('크롭할 유효한 캔버스가 필요합니다.')
+  }
+  if (!ctx || typeof ctx.getImageData !== 'function') {
+    throw new Error('캔버스 컨텍스트를 초기화할 수 없습니다.')
+  }
+
+  const width = Math.max(0, Math.floor(canvas.width))
+  const height = Math.max(0, Math.floor(canvas.height))
+
+  if (width === 0 || height === 0) {
+    const fallback = createCanvas(1, 1)
+    const fallbackCtx = fallback.getContext('2d', { willReadFrequently: true, alpha: true })
+    if (!fallbackCtx) throw new Error('크롭 캔버스를 초기화할 수 없습니다.')
+    return {
+      canvas: fallback,
+      ctx: fallbackCtx,
+      bounds: { top: 0, left: 0, right: 0, bottom: 0 },
+    }
+  }
+
+  const imageData = baseImageData || ctx.getImageData(0, 0, width, height)
+  const { data } = imageData
+
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width * 4
+    for (let x = 0; x < width; x += 1) {
+      const offset = rowOffset + x * 4
+      const alpha = data[offset + 3]
+      if (alpha > 0) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    const fallback = createCanvas(width, height)
+    const fallbackCtx = fallback.getContext('2d', { willReadFrequently: true, alpha: true })
+    if (!fallbackCtx) throw new Error('크롭 캔버스를 초기화할 수 없습니다.')
+    fallbackCtx.clearRect(0, 0, width, height)
+    fallbackCtx.drawImage(canvas, 0, 0)
+    return {
+      canvas: fallback,
+      ctx: fallbackCtx,
+      bounds: {
+        top: 0,
+        left: 0,
+        right: Math.max(0, width - 1),
+        bottom: Math.max(0, height - 1),
+      },
+    }
+  }
+
+  const cropWidth = Math.max(1, maxX - minX + 1)
+  const cropHeight = Math.max(1, maxY - minY + 1)
+  const croppedCanvas = createCanvas(cropWidth, cropHeight)
+  const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
+  if (!croppedCtx) throw new Error('크롭 캔버스를 초기화할 수 없습니다.')
+  const croppedData = ctx.getImageData(minX, minY, cropWidth, cropHeight)
+  croppedCtx.putImageData(croppedData, 0, 0)
+
+  return {
+    canvas: croppedCanvas,
+    ctx: croppedCtx,
+    bounds: { top: minY, left: minX, right: maxX, bottom: maxY },
+  }
+}
+
 function ensureScriptElement(src, dataLib) {
   let script = document.querySelector(`script[data-lib="${dataLib}"]`)
   if (!script) {
@@ -7850,21 +7927,12 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
   let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
-  let bounds = null
   const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
   if (refined && refined.mask) {
     imageData = applyMaskToImageData(imageData, refined.mask)
-    bounds = expandBounds(refined.bounds, canvas.width, canvas.height, 2)
   }
   ctx.putImageData(imageData, 0, 0)
-
-  if (!bounds) {
-    const alphaBounds = findAlphaBounds(imageData, canvas.width, canvas.height, 4)
-    const fallbackBounds = findBoundingBox(imageData, canvas.width, canvas.height, 6, 32)
-    bounds = expandBounds(alphaBounds ?? fallbackBounds, canvas.width, canvas.height, 2)
-  }
-
-  const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
+  const { canvas: cropped } = cropTransparentArea(canvas, ctx, imageData)
   const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   const operations = mergeOperations(previousOperations, '배경 제거', '피사체 크롭')
