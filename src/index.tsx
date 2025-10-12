@@ -975,7 +975,8 @@ function createGoogleClient(env: Bindings) {
   if (!clientId || !clientSecret) {
     return null
   }
-  return new Google(clientId, clientSecret, GOOGLE_OAUTH_REDIRECT_URI)
+  const redirectUri = env.GOOGLE_REDIRECT_URI?.trim() || DEFAULT_GOOGLE_REDIRECT_URI
+  return new Google(clientId, clientSecret, redirectUri)
 }
 
 function applyCorsHeaders(response: Response) {
