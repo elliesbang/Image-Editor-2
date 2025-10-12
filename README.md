@@ -186,7 +186,10 @@ curl http://localhost:3000/api/health
    npx wrangler pages deploy dist --project-name <project-name>
    ```
    - 배포 성공 후 README `URL` 섹션과 `meta_info`에 최종 프로젝트명 기록
-  - Secrets: `ADMIN_EMAIL`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+   - Secrets: `ADMIN_EMAIL`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+   - GitHub Actions → **Cloudflare Pages Sync** 워크플로우를 사용하면 main 브랜치 병합 후 자동으로 프로덕션 브랜치 설정 확인·빈 커밋 생성·배포 강제 실행이 이뤄집니다.
+     - Repository secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_PROJECT_NAME` (프로덕션 브랜치: `main`)
+     - 빌드 로그에 `No changes detected, skipping build.` 메시지가 감지되면 Cloudflare Pages API를 통해 강제 배포를 실행하고, `Deployment completed successfully` 로그가 확인되면 액션 콘솔에 `✅ 최신 빌드 반영 완료` 메시지를 출력합니다.
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
