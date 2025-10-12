@@ -478,7 +478,7 @@ function renderAdminManagementPage() {
                       <button
                         id="uploadBtn"
                         type="button"
-                        class="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-[#fbe743] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                        class="rounded-lg bg-[#fef568] px-4 py-2 text-sm font-semibold text-[#333] shadow-sm transition hover:bg-[#fcef3c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                       >
                         명단 업로드
                       </button>
@@ -2099,6 +2099,17 @@ app.post('/api/admin/participants', async (c) => {
 
   const db = getDatabase(c.env)
   try {
+    try {
+      await db.prepare('DELETE FROM participants WHERE role = ?').bind('미치나').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (/no such table: participants/i.test(message)) {
+        console.warn('[admin] participants table is not available while replacing list; creating entries from scratch')
+      } else {
+        throw error
+      }
+    }
+
     for (const entry of entries) {
       const joinedAt = entry.joinedAt || new Date().toISOString().split('T')[0]
       await db
@@ -4281,7 +4292,7 @@ app.get('/dashboard', async (c) => {
                 <div class="flex flex-wrap items-center gap-2">
                   <button
                     type="submit"
-                    class="rounded-full bg-[#333] px-4 py-2 text-sm font-semibold text-primary transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
+                    class="rounded-full bg-[#fef568] px-4 py-2 text-sm font-semibold text-[#333] transition hover:bg-[#fcef3c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
                   >
                     명단 업로드
                   </button>
