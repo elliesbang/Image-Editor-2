@@ -194,6 +194,25 @@ type ParticipantStatusSummary = {
 
 type ChallengePeriodSummary = ChallengePeriodRecord & { id: number }
 
+type ChallengeDayState = {
+  day: number
+  start: string
+  end: string
+  isActiveDay: boolean
+  isUpcoming: boolean
+  isClosed: boolean
+}
+
+type ChallengeTimeline = {
+  start: string
+  end: string
+  now: string
+  activeDay: number | null
+  expired: boolean
+  upcoming: boolean
+  days: ChallengeDayState[]
+}
+
 const ADMIN_SESSION_COOKIE = 'admin_session'
 const ADMIN_SESSION_ISSUER = 'easy-image-editor'
 const ADMIN_SESSION_AUDIENCE = 'easy-image-editor/admin'
@@ -203,6 +222,16 @@ const DEFAULT_ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
 const DEFAULT_ADMIN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 const PARTICIPANT_KEY_PREFIX = 'participant:'
 const REQUIRED_SUBMISSIONS = 15
+const CHALLENGE_DAY_MS = 24 * 60 * 60 * 1000
+const CHALLENGE_TIMEZONE_OFFSET_MINUTES = 9 * 60
+const CHALLENGE_TIMEZONE_OFFSET_MS = CHALLENGE_TIMEZONE_OFFSET_MINUTES * 60 * 1000
+const CHALLENGE_TIMEZONE_SUFFIX = (() => {
+  const sign = CHALLENGE_TIMEZONE_OFFSET_MINUTES >= 0 ? '+' : '-'
+  const absolute = Math.abs(CHALLENGE_TIMEZONE_OFFSET_MINUTES)
+  const hours = String(Math.floor(absolute / 60)).padStart(2, '0')
+  const minutes = String(absolute % 60).padStart(2, '0')
+  return `${sign}${hours}:${minutes}`
+})()
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
 const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
@@ -1103,6 +1132,104 @@ function normalizeDateColumnValue(value: unknown) {
   return ''
 }
 
+function formatChallengeDateTime(date: Date) {
+  const adjusted = new Date(date.getTime() + CHALLENGE_TIMEZONE_OFFSET_MS)
+  const year = adjusted.getUTCFullYear()
+  const month = String(adjusted.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(adjusted.getUTCDate()).padStart(2, '0')
+  const hours = String(adjusted.getUTCHours()).padStart(2, '0')
+  const minutes = String(adjusted.getUTCMinutes()).padStart(2, '0')
+  const seconds = String(adjusted.getUTCSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${CHALLENGE_TIMEZONE_SUFFIX}`
+}
+
+function parseChallengeDate(value: string, options: { endOfDay?: boolean } = {}) {
+  if (!isValidDateString(value)) {
+    return null
+  }
+  const base = new Date(`${value}T00:00:00${CHALLENGE_TIMEZONE_SUFFIX}`)
+  if (!Number.isFinite(base.valueOf())) {
+    return null
+  }
+  if (options.endOfDay) {
+    return new Date(base.getTime() + CHALLENGE_DAY_MS - 1)
+  }
+  return base
+}
+
+function buildChallengeTimeline(
+  period: ChallengePeriodRecord,
+  options: { now?: Date; requiredDays?: number } = {},
+): ChallengeTimeline {
+  const requiredDays = options.requiredDays ?? REQUIRED_SUBMISSIONS
+  const now = options.now ?? new Date()
+  const periodStart = parseChallengeDate(period.startDate)
+  const periodEnd = parseChallengeDate(period.endDate, { endOfDay: true })
+  if (!periodStart || !periodEnd) {
+    throw new Error('INVALID_CHALLENGE_PERIOD')
+  }
+
+  const startMs = periodStart.getTime()
+  const endMs = periodEnd.getTime()
+  const nowMs = now.getTime()
+  const days: ChallengeDayState[] = []
+
+  for (let index = 0; index < requiredDays; index += 1) {
+    const day = index + 1
+    const dayStart = new Date(startMs + index * CHALLENGE_DAY_MS)
+    const dayStartMs = dayStart.getTime()
+    const theoreticalEnd = new Date(dayStartMs + CHALLENGE_DAY_MS - 1)
+    const canOpen = dayStartMs <= endMs
+    const clampedEndMs = canOpen ? Math.min(theoreticalEnd.getTime(), endMs) : theoreticalEnd.getTime()
+    const effectiveEndMs = clampedEndMs < dayStartMs ? dayStartMs : clampedEndMs
+    const isActiveDay = canOpen && nowMs >= dayStartMs && nowMs <= clampedEndMs
+    const isUpcoming = canOpen && nowMs < dayStartMs
+    const isClosed = !isActiveDay && (!canOpen || nowMs > clampedEndMs)
+
+    days.push({
+      day,
+      start: formatChallengeDateTime(dayStart),
+      end: formatChallengeDateTime(new Date(effectiveEndMs)),
+      isActiveDay,
+      isUpcoming,
+      isClosed,
+    })
+  }
+
+  const activeDayState = days.find((entry) => entry.isActiveDay)
+  const upcoming = nowMs < startMs
+  const expired = nowMs > endMs
+
+  return {
+    start: formatChallengeDateTime(periodStart),
+    end: formatChallengeDateTime(periodEnd),
+    now: formatChallengeDateTime(now),
+    activeDay: activeDayState ? activeDayState.day : null,
+    expired,
+    upcoming,
+    days,
+  }
+}
+
+async function resolveChallengeTimeline(env: Bindings, options: { now?: Date } = {}) {
+  const now = options.now ?? new Date()
+  const dbBinding = env.DB
+  if (!dbBinding || typeof dbBinding.prepare !== 'function') {
+    return null
+  }
+
+  try {
+    const period = await getChallengePeriodFromDb(dbBinding)
+    if (!period) {
+      return null
+    }
+    return buildChallengeTimeline(period, { now, requiredDays: REQUIRED_SUBMISSIONS })
+  } catch (error) {
+    console.error('[challenge] Failed to resolve challenge timeline', error)
+    return null
+  }
+}
+
 function getCurrentDateString() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -1482,6 +1609,41 @@ async function getParticipant(env: Bindings, email: string) {
   } catch (error) {
     console.error('[challenge] Failed to parse participant data', error)
     return null
+  }
+}
+
+function buildChallengeParticipantPayload(
+  participant: ChallengeParticipant,
+  options: { timeline?: ChallengeTimeline } = {},
+) {
+  const totalSubmissions = Object.keys(participant.submissions ?? {}).length
+  const missingDays = Math.max(0, REQUIRED_SUBMISSIONS - totalSubmissions)
+  const timeline = options.timeline
+
+  return {
+    email: participant.email,
+    name: participant.name,
+    plan: participant.plan,
+    startDate: participant.startDate,
+    endDate: participant.endDate,
+    submissions: participant.submissions,
+    completed: participant.completed,
+    completedAt: participant.completedAt ?? null,
+    totalSubmissions,
+    missingDays,
+    required: REQUIRED_SUBMISSIONS,
+    expired: timeline ? timeline.expired : true,
+    upcoming: timeline ? timeline.upcoming : false,
+    challengePeriod: timeline
+      ? {
+          start: timeline.start,
+          end: timeline.end,
+          activeDay: timeline.activeDay,
+          expired: timeline.expired,
+          upcoming: timeline.upcoming,
+        }
+      : null,
+    days: timeline ? timeline.days : [],
   }
 }
 
@@ -2464,27 +2626,17 @@ app.get('/api/challenge/profile', async (c) => {
   if (!isValidEmail(email)) {
     return c.json({ error: 'INVALID_EMAIL' }, 400)
   }
-  const participant = await getParticipant(c.env, email)
+  const now = new Date()
+  const [participant, timeline] = await Promise.all([
+    getParticipant(c.env, email),
+    resolveChallengeTimeline(c.env, { now }),
+  ])
   if (!participant) {
     return c.json({ exists: false })
   }
-  const totalSubmissions = Object.keys(participant.submissions ?? {}).length
-  const missingDays = Math.max(0, REQUIRED_SUBMISSIONS - totalSubmissions)
   return c.json({
     exists: true,
-    participant: {
-      email: participant.email,
-      name: participant.name,
-      plan: participant.plan,
-      startDate: participant.startDate,
-      endDate: participant.endDate,
-      submissions: participant.submissions,
-      completed: participant.completed,
-      completedAt: participant.completedAt ?? null,
-      totalSubmissions,
-      missingDays,
-      required: REQUIRED_SUBMISSIONS,
-    },
+    participant: buildChallengeParticipantPayload(participant, { timeline: timeline ?? undefined }),
   })
 })
 
@@ -2515,6 +2667,13 @@ app.post('/api/challenge/submit', async (c) => {
     return c.json({ error: 'PARTICIPANT_NOT_FOUND' }, 404)
   }
 
+  const now = new Date()
+  const timeline = await resolveChallengeTimeline(c.env, { now })
+  const dayState = timeline?.days.find((entry) => entry.day === day)
+  if (!timeline || timeline.expired || !dayState || !dayState.isActiveDay) {
+    return c.json({ error: 'DAY_CLOSED', message: '이 일차는 마감되었습니다' }, 400)
+  }
+
   const submission: ChallengeSubmission = {
     day,
     type: submissionType,
@@ -2533,24 +2692,9 @@ app.post('/api/challenge/submit', async (c) => {
     await saveParticipant(c.env, updated)
   }
 
-  const totalSubmissions = Object.keys(updated.submissions ?? {}).length
-  const missingDays = Math.max(0, REQUIRED_SUBMISSIONS - totalSubmissions)
-
   return c.json({
     ok: true,
-    participant: {
-      email: updated.email,
-      name: updated.name,
-      plan: updated.plan,
-      startDate: updated.startDate,
-      endDate: updated.endDate,
-      submissions: updated.submissions,
-      completed: updated.completed,
-      completedAt: updated.completedAt ?? null,
-      totalSubmissions,
-      missingDays,
-      required: REQUIRED_SUBMISSIONS,
-    },
+    participant: buildChallengeParticipantPayload(updated, { timeline }),
   })
 })
 
