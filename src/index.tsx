@@ -146,7 +146,36 @@ type ParticipantRow = {
   email: string
   joined_at: string | null
   role: string | null
+  start_date?: string | null
+  end_date?: string | null
 }
+
+type ParticipantStatus = 'active' | 'expired' | 'upcoming' | 'unknown'
+
+type ParticipantRecord = {
+  id: number
+  name: string
+  email: string
+  joinedAt: string
+  role: string
+  startDate?: string
+  endDate?: string
+  status: ParticipantStatus
+}
+
+type ParticipantListOptions = {
+  role?: string
+  referenceDate?: string
+}
+
+type ParticipantStatusSummary = {
+  total: number
+  active: number
+  expired: number
+  upcoming: number
+}
+
+type ChallengePeriodSummary = ChallengePeriodRecord & { id: number }
 
 const ADMIN_SESSION_COOKIE = 'admin_session'
 const ADMIN_SESSION_ISSUER = 'easy-image-editor'
@@ -1115,6 +1144,84 @@ function isValidDateString(value: unknown) {
   return Number.isFinite(timestamp)
 }
 
+function normalizeDateColumnValue(value: unknown) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed
+  }
+  if (/^\d{4}-\d{2}-\d{2}[ T]/.test(trimmed)) {
+    return trimmed.slice(0, 10)
+  }
+  const parsed = Date.parse(trimmed)
+  if (Number.isFinite(parsed)) {
+    return new Date(parsed).toISOString().slice(0, 10)
+  }
+  return ''
+}
+
+function getCurrentDateString() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function normalizeReferenceDate(value?: string) {
+  if (value && isValidDateString(value)) {
+    return value
+  }
+  return getCurrentDateString()
+}
+
+function determineParticipantStatus(startDate: string, endDate: string, referenceDate: string): ParticipantStatus {
+  const ref = referenceDate
+  const hasStart = Boolean(startDate)
+  const hasEnd = Boolean(endDate)
+
+  if (hasStart && startDate > ref) {
+    return 'upcoming'
+  }
+  if (hasEnd && endDate < ref) {
+    return 'expired'
+  }
+  if (hasStart || hasEnd) {
+    return 'active'
+  }
+  return 'active'
+}
+
+function summarizeParticipantStatuses(participants: ParticipantRecord[]): ParticipantStatusSummary {
+  const summary: ParticipantStatusSummary = { total: participants.length, active: 0, expired: 0, upcoming: 0 }
+  for (const participant of participants) {
+    if (participant.status === 'expired') {
+      summary.expired += 1
+    } else if (participant.status === 'upcoming') {
+      summary.upcoming += 1
+    } else {
+      summary.active += 1
+    }
+  }
+  return summary
+}
+
+function isParticipantWithinPeriod(participant: ParticipantRecord, period: ChallengePeriodSummary) {
+  const periodStart = normalizeDateColumnValue(period.startDate)
+  const periodEnd = normalizeDateColumnValue(period.endDate)
+  if (!periodStart && !periodEnd) {
+    return true
+  }
+  const participantStart = normalizeDateColumnValue(participant.startDate)
+  const participantEnd = normalizeDateColumnValue(participant.endDate)
+
+  const startsBeforePeriodEnd = periodEnd ? (!participantStart || participantStart <= periodEnd) : true
+  const endsAfterPeriodStart = periodStart ? (!participantEnd || participantEnd >= periodStart) : true
+
+  return startsBeforePeriodEnd && endsAfterPeriodStart
+}
+
 async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriodRecord | null> {
   try {
     const row = await db
@@ -1150,18 +1257,90 @@ async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDat
   return getChallengePeriodFromDb(db)
 }
 
-async function listParticipantsFromDb(db: D1Database) {
-  const result = await db
-    .prepare('SELECT id, name, email, joined_at, role FROM participants ORDER BY joined_at DESC, id DESC')
-    .all<ParticipantRow>()
-  const rows = Array.isArray(result.results) ? result.results : []
-  return rows.map((row) => ({
-    id: row.id,
-    name: (row.name ?? '').trim(),
-    email: row.email,
-    joinedAt: (row.joined_at ?? '').trim(),
-    role: (row.role ?? '').trim() || 'free',
-  }))
+async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeriodSummary[]> {
+  try {
+    const result = await db
+      .prepare('SELECT id, start_date, end_date, updated_at FROM challenge_period ORDER BY start_date DESC, id DESC')
+      .all<ChallengePeriodRow>()
+    const rows = Array.isArray(result.results) ? result.results : []
+    return rows
+      .map((row) => {
+        const startDate = normalizeDateColumnValue(row.start_date)
+        const endDate = normalizeDateColumnValue(row.end_date)
+        if (!startDate || !endDate) {
+          return null
+        }
+        return {
+          id: row.id,
+          startDate,
+          endDate,
+          updatedAt: row.updated_at ? `${row.updated_at.replace(' ', 'T')}Z` : '',
+        }
+      })
+      .filter((value): value is ChallengePeriodSummary => Boolean(value))
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such table: challenge_period/i.test(message)) {
+      console.warn('[d1] challenge_period table is not available')
+      return []
+    }
+    console.error('[d1] Failed to list challenge periods', error)
+    throw error
+  }
+}
+
+async function listParticipantsFromDb(db: D1Database, options: ParticipantListOptions = {}) {
+  const { role, referenceDate } = options
+  const whereClauses: string[] = []
+  const params: unknown[] = []
+
+  if (role) {
+    whereClauses.push('role = ?')
+    params.push(role)
+  }
+
+  const where = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''
+  const query = `SELECT id, name, email, joined_at, role, start_date, end_date FROM participants ${where} ORDER BY joined_at DESC, id DESC`
+  const fallbackQuery = `SELECT id, name, email, joined_at, role FROM participants ${where} ORDER BY joined_at DESC, id DESC`
+
+  let rows: ParticipantRow[] = []
+
+  try {
+    const result = await db.prepare(query).bind(...params).all<ParticipantRow>()
+    rows = Array.isArray(result.results) ? result.results : []
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such column: start_date/i.test(message) || /no such column: end_date/i.test(message)) {
+      console.warn('[d1] Participant start/end date columns are not available; falling back to basic fields')
+      const fallbackResult = await db.prepare(fallbackQuery).bind(...params).all<ParticipantRow>()
+      rows = Array.isArray(fallbackResult.results) ? fallbackResult.results : []
+    } else {
+      console.error('[d1] Failed to query participants', error)
+      throw error
+    }
+  }
+
+  const normalizedReferenceDate = normalizeReferenceDate(referenceDate)
+
+  return rows.map((row) => {
+    const startDate = normalizeDateColumnValue(row.start_date)
+    const endDate = normalizeDateColumnValue(row.end_date)
+    const participant: ParticipantRecord = {
+      id: row.id,
+      name: (row.name ?? '').trim(),
+      email: row.email,
+      joinedAt: (row.joined_at ?? '').trim(),
+      role: (row.role ?? '').trim() || 'free',
+      status: determineParticipantStatus(startDate, endDate, normalizedReferenceDate),
+    }
+    if (startDate) {
+      participant.startDate = startDate
+    }
+    if (endDate) {
+      participant.endDate = endDate
+    }
+    return participant
+  })
 }
 
 function getDatabase(env: Bindings) {
@@ -1630,8 +1809,15 @@ app.get('/api/admin/period', async (c) => {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
   try {
-    const period = await getChallengePeriodFromDb(getDatabase(c.env))
-    return c.json({ period })
+    const db = getDatabase(c.env)
+    const [period, periods] = await Promise.all([
+      getChallengePeriodFromDb(db),
+      listChallengePeriodsFromDb(db).catch((error) => {
+        console.error('[admin] Failed to load period list', error)
+        return [] as ChallengePeriodSummary[]
+      }),
+    ])
+    return c.json({ period, periods })
   } catch (error) {
     console.error('[admin] Failed to load challenge period', error)
     return c.json({ error: 'DATABASE_ERROR' }, 500)
@@ -1676,8 +1862,65 @@ app.get('/api/admin/participants', async (c) => {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
   try {
-    const participants = await listParticipantsFromDb(getDatabase(c.env))
-    return c.json({ participants })
+    const db = getDatabase(c.env)
+    const roleQuery = c.req.query('role')
+    const statusQuery = c.req.query('status')
+    const periodQuery = c.req.query('periodId')
+    const referenceDateQuery = c.req.query('date') ?? c.req.query('referenceDate')
+
+    const roleFilter = typeof roleQuery === 'string' && roleQuery.trim().length > 0 ? roleQuery.trim() : undefined
+    const referenceDateRaw =
+      typeof referenceDateQuery === 'string' && referenceDateQuery.trim().length > 0
+        ? referenceDateQuery.trim()
+        : undefined
+    const normalizedReferenceDate = normalizeReferenceDate(referenceDateRaw)
+
+    let periods: ChallengePeriodSummary[] = []
+    try {
+      periods = await listChallengePeriodsFromDb(db)
+    } catch (error) {
+      console.error('[admin] Failed to fetch challenge periods', error)
+    }
+
+    const parsedPeriodId =
+      typeof periodQuery === 'string' && periodQuery.trim().length > 0
+        ? Number.parseInt(periodQuery.trim(), 10)
+        : Number.NaN
+    const selectedPeriod = Number.isFinite(parsedPeriodId)
+      ? periods.find((period) => period.id === parsedPeriodId)
+      : undefined
+
+    let participants = await listParticipantsFromDb(db, {
+      role: roleFilter,
+      referenceDate: normalizedReferenceDate,
+    })
+
+    if (selectedPeriod) {
+      participants = participants.filter((participant) => isParticipantWithinPeriod(participant, selectedPeriod))
+    }
+
+    const summary = summarizeParticipantStatuses(participants)
+
+    const statusFilter =
+      statusQuery === 'active' || statusQuery === 'expired' || statusQuery === 'upcoming'
+        ? statusQuery
+        : undefined
+
+    const filteredParticipants = statusFilter
+      ? participants.filter((participant) => participant.status === statusFilter)
+      : participants
+
+    return c.json({
+      participants: filteredParticipants,
+      summary,
+      filters: {
+        role: roleFilter ?? null,
+        status: statusFilter ?? null,
+        periodId: selectedPeriod ? selectedPeriod.id : null,
+        referenceDate: normalizedReferenceDate,
+      },
+      periods,
+    })
   } catch (error) {
     console.error('[admin] Failed to load participants', error)
     return c.json({ error: 'DATABASE_ERROR' }, 500)
@@ -1725,7 +1968,8 @@ app.post('/api/admin/participants', async (c) => {
         .run()
     }
     const participants = await listParticipantsFromDb(db)
-    return c.json({ success: true, count: entries.length, participants })
+    const summary = summarizeParticipantStatuses(participants)
+    return c.json({ success: true, count: entries.length, participants, summary })
   } catch (error) {
     console.error('[admin] Failed to save participants', error)
     return c.json({ error: 'DATABASE_ERROR' }, 500)
