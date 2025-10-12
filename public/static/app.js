@@ -3230,6 +3230,7 @@ function applyCommunityRoleFromStorage() {
 function handleLogout() {
   revokeAdminAccessStorage()
   revokeAdminSessionState()
+  setAdminSessionFlag(false)
   state.admin.participants = []
   state.user.isLoggedIn = false
   state.user.name = ''
@@ -3276,6 +3277,27 @@ function setAdminMessage(message = '', tone = 'info') {
   elements.adminLoginMessage.textContent = message
   elements.adminLoginMessage.hidden = !message
   elements.adminLoginMessage.dataset.tone = tone
+}
+
+function setAdminSessionFlag(active) {
+  try {
+    if (active) {
+      window.localStorage?.setItem('admin_session', 'active')
+    } else {
+      window.localStorage?.removeItem('admin_session')
+    }
+  } catch (error) {
+    console.warn('관리자 세션 상태를 업데이트하지 못했습니다.', error)
+  }
+}
+
+function isAdminSessionActive() {
+  try {
+    return window.localStorage?.getItem('admin_session') === 'active'
+  } catch (error) {
+    console.warn('관리자 세션 상태를 확인하지 못했습니다.', error)
+    return false
+  }
 }
 
 function updateAdminLoginState(state, message, tone = 'info') {
@@ -3392,10 +3414,12 @@ function applyAdminPrivileges(email) {
   applyLoginProfile({ name: '관리자', email: normalizedEmail, plan: 'admin', credits: Number.MAX_SAFE_INTEGER })
   refreshAccessStates()
   updateAdminUI()
+  setAdminSessionFlag(true)
 }
 
 function revokeAdminSessionState() {
   const wasAdmin = state.admin.isLoggedIn
+  setAdminSessionFlag(false)
   state.admin.isLoggedIn = false
   state.admin.email = ''
   state.admin.participants = []
@@ -8948,20 +8972,31 @@ function attachEventListeners() {
     })
   })
 
-  if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
-    elements.adminModalDashboardButton.addEventListener('click', () => {
+  const openDashboardButton = document.getElementById('openDashboardBtn')
+  if (openDashboardButton instanceof HTMLButtonElement) {
+    openDashboardButton.addEventListener('click', () => {
+      if (!isAdminSessionActive()) {
+        window.alert('관리자 세션이 만료되었습니다. 다시 로그인해주세요.')
+        return
+      }
       closeAdminModal()
-      setView('admin')
-      if (elements.adminDashboard instanceof HTMLElement) {
-        elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      try {
+        window.open('/dashboard', '_blank', 'noopener')
+      } catch (error) {
+        console.error('관리자 대시보드를 새 탭으로 여는 데 실패했습니다.', error)
+        window.location.href = '/dashboard'
       }
     })
   }
 
-  if (elements.adminModalLogoutButton instanceof HTMLButtonElement) {
-    elements.adminModalLogoutButton.addEventListener('click', () => {
+  const adminLogoutButton = document.getElementById('adminLogoutBtn')
+  if (adminLogoutButton instanceof HTMLButtonElement) {
+    adminLogoutButton.addEventListener('click', () => {
       closeAdminModal()
+      setAdminSessionFlag(false)
+      window.alert('관리자 모드가 종료되었습니다.')
       handleLogout()
+      window.location.reload()
     })
   }
 

@@ -163,6 +163,22 @@ type ParticipantRecord = {
   status: ParticipantStatus
 }
 
+type UserRow = {
+  id: number
+  name: string | null
+  email: string
+  role: string | null
+  last_login: string | null
+}
+
+type UserRecord = {
+  id: number
+  name: string
+  email: string
+  role: string
+  lastLogin: string | null
+}
+
 type ParticipantListOptions = {
   role?: string
   referenceDate?: string
@@ -1976,6 +1992,87 @@ app.post('/api/admin/participants', async (c) => {
   }
 })
 
+app.get('/api/admin/michina-status', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const db = getDatabase(c.env)
+  let period: ChallengePeriodRecord | null = null
+  try {
+    period = await getChallengePeriodFromDb(db)
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such table: challenge_period/i.test(message)) {
+      console.warn('[admin] challenge_period table is not available')
+    } else {
+      console.error('[admin] Failed to load challenge period for status', error)
+      return c.json({ error: 'DATABASE_ERROR' }, 500)
+    }
+  }
+
+  let totalCount = 0
+  try {
+    const row = await db
+      .prepare('SELECT COUNT(*) AS cnt FROM participants WHERE role = ?')
+      .bind('미치나')
+      .first<{ cnt: number | null }>()
+    totalCount = Number(row?.cnt ?? 0)
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such table: participants/i.test(message)) {
+      console.warn('[admin] participants table is not available; returning zero counts')
+    } else {
+      console.error('[admin] Failed to count michina participants', error)
+      return c.json({ error: 'DATABASE_ERROR' }, 500)
+    }
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const active = period && period.endDate && today <= period.endDate ? totalCount : 0
+  const expired = Math.max(0, totalCount - active)
+
+  return c.json({ total: totalCount, active, expired, period })
+})
+
+app.get('/api/admin/users', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const db = getDatabase(c.env)
+  let rows: UserRow[] = []
+  try {
+    const result = await db
+      .prepare('SELECT id, name, email, role, last_login FROM users ORDER BY datetime(last_login) DESC, id DESC')
+      .all<UserRow>()
+    rows = Array.isArray(result.results) ? result.results : []
+  } catch (error) {
+    const message = String(error || '')
+    if (/no such table: users/i.test(message)) {
+      console.warn('[admin] users table is not available')
+      return c.json({ users: [] })
+    }
+    console.error('[admin] Failed to load users', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+
+  const users: UserRecord[] = rows.map((row) => {
+    const name = (row.name ?? '').trim()
+    const role = (row.role ?? '').trim()
+    const lastLoginRaw = typeof row.last_login === 'string' ? row.last_login.trim() : ''
+    return {
+      id: row.id,
+      name: name,
+      email: row.email,
+      role: role || 'guest',
+      lastLogin: lastLoginRaw || null,
+    }
+  })
+
+  return c.json({ users })
+})
+
 app.post('/api/auth/admin/logout', async (c) => {
   clearAdminSession(c)
   return c.json({ ok: true })
@@ -3569,10 +3666,20 @@ app.get('/', async (c) => {
               관리자 모드가 이미 활성화되어 있습니다. 아래 바로가기를 사용해 대시보드를 열거나 로그아웃할 수 있습니다.
             </p>
             <div class="admin-modal__buttons">
-              <button class="btn btn--outline admin-modal__action" type="button" data-role="admin-modal-dashboard">
+              <button
+                id="openDashboardBtn"
+                class="btn btn--outline admin-modal__action"
+                type="button"
+                data-role="admin-modal-dashboard"
+              >
                 대시보드 열기
               </button>
-              <button class="btn btn--ghost admin-modal__action" type="button" data-role="admin-modal-logout">
+              <button
+                id="adminLogoutBtn"
+                class="btn btn--ghost admin-modal__action"
+                type="button"
+                data-role="admin-modal-logout"
+              >
                 로그아웃
               </button>
             </div>
@@ -4080,459 +4187,269 @@ app.get('/dashboard', async (c) => {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ellie Image Editor Dashboard</title>
+    <title>관리자 대시보드 | 미치나 챌린지 관리</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              elliePrimary: '#fef568',
+              ellieBackground: '#f5eee9',
+              ellieText: '#333333',
+            },
+            fontFamily: {
+              pretendard: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+            },
+          },
+        },
+      };
+    </script>
     <style>
       :root {
         color-scheme: light;
-        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }
-
       body {
-        margin: 0;
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        background: linear-gradient(180deg, #eef2ff 0%, #ffffff 45%, #f5f3ff 100%);
-        color: #111827;
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background-color: #f5eee9;
+        color: #333333;
       }
-
-      header,
-      footer {
-        padding: 2rem 3rem;
-        background: rgba(255, 255, 255, 0.85);
-        backdrop-filter: blur(12px);
+      .card-surface {
+        box-shadow: 0 24px 50px -36px rgba(50, 32, 0, 0.4);
       }
-
-      header {
-        border-bottom: 1px solid rgba(79, 70, 229, 0.12);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1.5rem;
-      }
-
-      .dashboard-header__titles {
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-      }
-
-      .dashboard-actions {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-      }
-
-      .dashboard-session {
-        font-size: 0.9rem;
-        color: #4b5563;
-        background: rgba(99, 102, 241, 0.1);
-        border-radius: 999px;
-        padding: 0.4rem 0.9rem;
-      }
-
-      .dashboard-logout {
-        border: none;
-        border-radius: 999px;
-        padding: 0.75rem 1.25rem;
-        font-size: 0.95rem;
-        font-weight: 600;
-        color: #fff;
-        background: linear-gradient(135deg, #ef4444 0%, #f97316 100%);
-        cursor: pointer;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-      }
-
-      .dashboard-logout:hover,
-      .dashboard-logout:focus-visible {
-        transform: translateY(-1px);
-        box-shadow: 0 18px 36px -20px rgba(239, 68, 68, 0.5);
-      }
-
-      footer {
-        border-top: 1px solid rgba(79, 70, 229, 0.12);
-        text-align: center;
-        font-size: 0.85rem;
-        color: #6b7280;
-      }
-
-      main {
-        flex: 1;
-        padding: 3rem clamp(1.5rem, 4vw, 4rem);
-        display: grid;
-        gap: 2.5rem;
-      }
-
-      .dashboard-title {
-        margin: 0;
-        font-size: clamp(1.8rem, 2.3vw, 2.4rem);
-        color: #312e81;
-        letter-spacing: -0.01em;
-      }
-
-      .dashboard-subtitle {
-        margin: 0;
-        font-size: clamp(1rem, 1.3vw, 1.1rem);
-        color: #4b5563;
-      }
-
-      .card-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 1.5rem;
-      }
-
-      .dashboard-card {
-        border-radius: 1.25rem;
-        background: rgba(255, 255, 255, 0.92);
-        border: 1px solid rgba(79, 70, 229, 0.14);
-        box-shadow: 0 24px 40px -30px rgba(79, 70, 229, 0.45);
-        padding: 1.75rem 1.6rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.85rem;
-      }
-
-      .dashboard-card__title {
-        margin: 0;
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: #4338ca;
-      }
-
-      .dashboard-card__body {
-        margin: 0;
-        color: #4b5563;
-        line-height: 1.6;
-        font-size: 0.95rem;
-      }
-
-      .dashboard-card__cta {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.35rem;
-        padding: 0.65rem 1.1rem;
-        border-radius: 999px;
-        font-size: 0.92rem;
-        font-weight: 600;
-        color: #fff;
-        background: linear-gradient(135deg, #7c3aed 0%, #6366f1 100%);
-        text-decoration: none;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-      }
-
-      .dashboard-card__cta:hover,
-      .dashboard-card__cta:focus-visible {
-        transform: translateY(-1px);
-        box-shadow: 0 16px 28px -18px rgba(79, 70, 229, 0.55);
-      }
-
-      @media (max-width: 720px) {
-        header,
-        footer {
-          padding: 1.75rem 1.5rem;
-        }
-
-        header {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 1rem;
-        }
-
-        .dashboard-actions {
-          width: 100%;
-          justify-content: space-between;
-        }
-
-        main {
-          padding: 2.25rem 1.5rem 3rem;
-        }
+      .pill-muted {
+        background: rgba(254, 245, 104, 0.55);
       }
     </style>
   </head>
-  <body>
-    <header>
-      <div class="dashboard-header__titles">
-        <h1 class="dashboard-title">Ellie Image Editor Dashboard</h1>
-        <p class="dashboard-subtitle" data-role="welcome">관리자 전용 대시보드 영역입니다.</p>
-      </div>
-      <div class="dashboard-actions">
-        <span class="dashboard-session" data-role="session-info" aria-live="polite"></span>
-        <button class="dashboard-logout" type="button" data-role="logout">로그아웃</button>
-      </div>
-    </header>
-    <div class="pointer-events-none fixed inset-x-0 top-5 flex justify-center px-4">
+  <body data-admin-email="${ADMIN_LOGIN_EMAIL}" class="bg-ellieBackground text-ellieText">
+    <div class="pointer-events-none fixed inset-x-0 top-6 z-50 flex justify-center px-4">
       <div
         data-role="dashboard-toast"
-        class="hidden w-full max-w-sm -translate-y-2 transform rounded-2xl bg-slate-900/90 px-5 py-4 text-sm font-medium text-white opacity-0 shadow-2xl ring-1 ring-black/10 backdrop-blur-lg transition"
+        class="hidden w-full max-w-sm rounded-2xl bg-[#333]/90 px-5 py-4 text-sm font-medium text-white shadow-2xl backdrop-blur"
         role="status"
         aria-live="assertive"
       ></div>
     </div>
-    <main>
-      <section class="card-grid" aria-label="관리자 기능">
-        <article class="dashboard-card">
-          <h2 class="dashboard-card__title">미치나 명단 업로드</h2>
-          <p class="dashboard-card__body">최신 참가자 CSV 파일을 업로드해 챌린지 데이터를 업데이트하세요.</p>
-        </article>
-        <article class="dashboard-card">
-          <h2 class="dashboard-card__title">미션 완료 현황</h2>
-          <p class="dashboard-card__body">참여자별 미션 완료 상태를 확인하고 리포트를 다운로드할 수 있습니다.</p>
-        </article>
-        <article class="dashboard-card">
-          <h2 class="dashboard-card__title">기간 설정</h2>
-          <p class="dashboard-card__body">챌린지 시작일과 종료일을 선택해 진행 상황을 추적하세요.</p>
-        </article>
-        <article class="dashboard-card">
-          <h2 class="dashboard-card__title">커뮤니티 바로가기</h2>
-          <p class="dashboard-card__body">미치나 커뮤니티를 열어 참여자와 소통하세요.</p>
-          <a class="dashboard-card__cta" href="/?view=community" target="_blank" rel="noopener">커뮤니티 열기</a>
-        </article>
-      </section>
-    </main>
-    <footer>
-      <small>&copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.</small>
-    </footer>
-    <script type="module">
-      (() => {
-        const STORAGE_KEY = 'adminSessionState';
-        const SESSION_ID_KEY = 'adminSessionId';
-        const CHANNEL_NAME = 'admin-auth-channel';
-        const ADMIN_EMAIL = ${JSON.stringify(ADMIN_LOGIN_EMAIL)};
-        const LOGIN_URL = new URL('/login.html', window.location.origin).toString();
-
-        const elements = {
-          logout: document.querySelector('[data-role="logout"]'),
-          toast: document.querySelector('[data-role="dashboard-toast"]'),
-          welcome: document.querySelector('[data-role="welcome"]'),
-          sessionInfo: document.querySelector('[data-role="session-info"]'),
-        };
-
-        let broadcast = null;
-        let toastTimer = null;
-
-        const TOAST_TONES = {
-          info: 'bg-indigo-600 text-white',
-          success: 'bg-emerald-600 text-white',
-          warning: 'bg-amber-400 text-slate-900',
-          danger: 'bg-rose-600 text-white',
-        };
-
-        function hideToast() {
-          if (!(elements.toast instanceof HTMLElement)) {
-            return;
-          }
-          window.clearTimeout(toastTimer);
-          elements.toast.classList.remove('opacity-100', 'translate-y-0');
-          elements.toast.classList.add('opacity-0', '-translate-y-2');
-          toastTimer = window.setTimeout(() => {
-            if (elements.toast) {
-              elements.toast.classList.add('hidden');
-            }
-          }, 220);
-        }
-
-        function showToast(message, tone = 'info', duration = 4200) {
-          if (!(elements.toast instanceof HTMLElement)) {
-            return;
-          }
-          window.clearTimeout(toastTimer);
-          const toneClass = TOAST_TONES[tone] || TOAST_TONES.info;
-          const baseClasses = [
-            'pointer-events-auto',
-            'w-full',
-            'max-w-sm',
-            'rounded-2xl',
-            'px-5',
-            'py-4',
-            'text-sm',
-            'font-semibold',
-            'shadow-2xl',
-            'ring-1',
-            'ring-black/10',
-            'backdrop-blur-lg',
-            'transition',
-            'transform',
-            'opacity-0',
-            '-translate-y-2',
-          ].join(' ');
-          elements.toast.className = baseClasses + ' ' + toneClass;
-          elements.toast.textContent = message;
-          elements.toast.classList.remove('hidden');
-          window.requestAnimationFrame(() => {
-            elements.toast.classList.remove('opacity-0', '-translate-y-2');
-            elements.toast.classList.add('opacity-100', 'translate-y-0');
-          });
-          toastTimer = window.setTimeout(() => {
-            hideToast();
-          }, duration);
-        }
-
-        function readStoredSession() {
-          try {
-            const storage = window.localStorage;
-            if (!storage) return null;
-            const raw = storage.getItem(STORAGE_KEY);
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            if (!parsed || typeof parsed !== 'object') return null;
-            if (!parsed.loggedIn) return null;
-            const email = typeof parsed.email === 'string' ? parsed.email : '';
-            if (!email) return null;
-            const loginTime = Number(parsed.loginTime);
-            const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : '';
-            return {
-              loggedIn: true,
-              email,
-              loginTime: Number.isFinite(loginTime) ? loginTime : Date.now(),
-              sessionId,
-            };
-          } catch (error) {
-            console.warn('[admin-dashboard] failed to parse stored session', error);
-            return null;
-          }
-        }
-
-        function getTabSessionId() {
-          try {
-            return window.sessionStorage?.getItem(SESSION_ID_KEY) || '';
-          } catch (error) {
-            console.warn('[admin-dashboard] failed to read tab session id', error);
-            return '';
-          }
-        }
-
-        function ensureBroadcastChannel() {
-          if (broadcast || typeof BroadcastChannel === 'undefined') {
-            return;
-          }
-          try {
-            broadcast = new BroadcastChannel(CHANNEL_NAME);
-            broadcast.addEventListener('message', handleBroadcastMessage);
-          } catch (error) {
-            console.warn('[admin-dashboard] failed to initialize channel', error);
-            broadcast = null;
-          }
-        }
-
-        function updateSessionDetails(session) {
-          if (elements.welcome instanceof HTMLElement) {
-            elements.welcome.textContent = session.email + '님, Ellie Image Editor Dashboard에 오신 것을 환영합니다.';
-          }
-          if (elements.sessionInfo instanceof HTMLElement) {
-            const formatted = new Intl.DateTimeFormat('ko', {
-              year: 'numeric',
-              month: '2-digit',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-            }).format(session.loginTime);
-            elements.sessionInfo.textContent = '로그인 시각: ' + formatted;
-          }
-        }
-
-        function redirectToLogin(message, tone = 'warning', delay = 1400) {
-          showToast(message, tone, Math.max(delay, 900));
-          if (elements.logout instanceof HTMLButtonElement) {
-            elements.logout.disabled = true;
-          }
-          window.setTimeout(() => {
-            window.location.replace(LOGIN_URL);
-          }, Math.max(delay, 900));
-        }
-
-        function handleBroadcastMessage(event) {
-          const data = event?.data;
-          if (!data || typeof data !== 'object') return;
-          if (data.type === 'login') {
-            redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning');
-          } else if (data.type === 'logout') {
-            redirectToLogin('다른 위치에서 로그아웃되었습니다.', 'info');
-          }
-        }
-
-        function handleStorageEvent(event) {
-          if (!event || event.storageArea !== window.localStorage) return;
-          if (event.key === null) {
-            redirectToLogin('로그인 세션이 종료되었습니다.', 'info');
-            return;
-          }
-          if (event.key !== STORAGE_KEY) {
-            return;
-          }
-          if (!event.newValue) {
-            redirectToLogin('로그인 세션이 종료되었습니다.', 'info');
-            return;
-          }
-          try {
-            const session = JSON.parse(event.newValue);
-            if (!session || session.sessionId !== getTabSessionId()) {
-              redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning');
-            }
-          } catch (error) {
-            console.warn('[admin-dashboard] failed to parse sync payload', error);
-          }
-        }
-
-        const activeSession = readStoredSession();
-        if (!activeSession || activeSession.email !== ADMIN_EMAIL) {
-          redirectToLogin('관리자 세션을 확인할 수 없습니다. 다시 로그인해주세요.', 'warning', 1200);
-          return;
-        }
-
-        if (!activeSession.sessionId || activeSession.sessionId !== getTabSessionId()) {
-          redirectToLogin('다른 위치에서 로그인되었습니다.', 'warning', 1200);
-          return;
-        }
-
-        updateSessionDetails(activeSession);
-        ensureBroadcastChannel();
-        window.addEventListener('storage', handleStorageEvent);
-
-        if (elements.logout instanceof HTMLButtonElement) {
-          elements.logout.addEventListener('click', async () => {
-            if (elements.logout instanceof HTMLButtonElement) {
-              elements.logout.disabled = true;
-              elements.logout.textContent = '로그아웃 중…';
-            }
-            showToast('로그아웃을 진행하고 있습니다…', 'info');
-            try {
-              await fetch('/api/auth/admin/logout', { method: 'POST', credentials: 'include' });
-            } catch (error) {
-              console.warn('[admin-dashboard] logout request failed', error);
-            }
-            try {
-              window.localStorage?.clear();
-            } catch (error) {
-              console.warn('[admin-dashboard] failed to clear storage', error);
-            }
-            try {
-              window.sessionStorage?.removeItem(SESSION_ID_KEY);
-            } catch (error) {
-              console.warn('[admin-dashboard] failed to clear session id', error);
-            }
-            ensureBroadcastChannel();
-            try {
-              broadcast?.postMessage({ type: 'logout' });
-            } catch (error) {
-              console.warn('[admin-dashboard] failed to broadcast logout', error);
-            }
-            showToast('로그아웃되었습니다. 로그인 페이지로 이동합니다.', 'success', 1100);
-            window.setTimeout(() => {
-              window.location.replace(LOGIN_URL);
-            }, 1100);
-          });
-        }
-      })();
-    </script>
+    <div class="flex min-h-screen flex-col">
+      <header class="bg-elliePrimary/90 shadow-sm backdrop-blur">
+        <div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-6 py-8 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.28em] text-[#8a6c00]">Ellie's Bang</p>
+            <h1 class="mt-2 text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
+            <p data-role="welcome" class="mt-3 max-w-2xl text-sm text-[#7a5a00]">
+              관리자 전용 대시보드 영역입니다.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <span
+              data-role="session-info"
+              class="pill-muted rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-widest text-[#7c5a00]"
+            >
+              세션 정보 확인 중
+            </span>
+            <button
+              type="button"
+              data-role="logout"
+              class="rounded-full bg-[#333] px-6 py-2.5 text-sm font-semibold text-[#fef568] shadow-md transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
+            >
+              로그아웃
+            </button>
+          </div>
+        </div>
+      </header>
+      <main class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-7 px-6 py-10">
+        <section class="grid grid-cols-1 gap-7 lg:grid-cols-2">
+          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-period">
+            <div class="flex items-start justify-between gap-4">
+              <h2 id="dashboard-period" class="text-xl font-semibold text-[#2f2f2f]">챌린지 기간 설정</h2>
+              <span
+                data-role="period-status"
+                class="rounded-full bg-[#fef568]/60 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]"
+              >
+                기간 미설정
+              </span>
+            </div>
+            <p data-role="period-summary" class="mt-3 text-sm leading-relaxed text-[#555]">
+              시작일과 종료일을 선택한 뒤 저장하면 챌린지 기준 기간이 업데이트됩니다.
+            </p>
+            <form class="mt-6 grid gap-4 md:grid-cols-2" data-role="period-form">
+              <label class="flex flex-col gap-2 text-sm font-medium text-[#3f3f3f]">
+                시작일
+                <input
+                  type="date"
+                  required
+                  data-role="period-start"
+                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#333] shadow-inner focus:border-[#f1cc2b] focus:outline-none focus:ring-2 focus:ring-[#fef568]"
+                />
+              </label>
+              <label class="flex flex-col gap-2 text-sm font-medium text-[#3f3f3f]">
+                종료일
+                <input
+                  type="date"
+                  required
+                  data-role="period-end"
+                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#333] shadow-inner focus:border-[#f1cc2b] focus:outline-none focus:ring-2 focus:ring-[#fef568]"
+                />
+              </label>
+              <div class="md:col-span-2 flex flex-wrap items-center justify-between gap-3">
+                <p data-role="period-updated" class="text-xs text-[#777]">최근 업데이트 정보가 여기에 표시됩니다.</p>
+                <button
+                  type="submit"
+                  class="rounded-full bg-[#fef568] px-5 py-2 text-sm font-semibold text-[#333] transition hover:bg-[#fbe642] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
+                  data-role="period-submit"
+                >
+                  저장
+                </button>
+              </div>
+            </form>
+          </article>
+          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-upload">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="dashboard-upload" class="text-xl font-semibold text-[#2f2f2f]">참가자 명단 업로드</h2>
+                <p class="mt-2 text-sm text-[#555]">CSV 파일을 업로드하면 참가자 테이블이 자동으로 갱신됩니다.</p>
+              </div>
+            </div>
+            <form class="mt-5 space-y-4" data-role="participants-form">
+              <div>
+                <label class="flex flex-col gap-2 text-sm font-medium text-[#3f3f3f]">
+                  CSV 파일 선택
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    data-role="participants-file"
+                    class="block w-full cursor-pointer rounded-2xl border border-dashed border-[#f0dba5] bg-[#fefdf4] px-3 py-3 text-sm text-[#333] transition hover:border-[#f1cc2b] focus:border-[#f1cc2b] focus:outline-none"
+                  />
+                </label>
+              </div>
+              <button
+                type="submit"
+                class="w-full rounded-full bg-[#333] px-4 py-2.5 text-sm font-semibold text-[#fef568] transition hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#fef568]"
+              >
+                업로드
+              </button>
+            </form>
+            <div class="mt-6">
+              <div class="flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-[#444]">업로드 결과</h3>
+                <span data-role="participants-count" class="text-xs text-[#777]">0명</span>
+              </div>
+              <p data-role="participants-message" class="mt-1 text-xs text-[#777]">
+                최근 업로드 내역이 여기에 표시됩니다.
+              </p>
+              <div class="mt-3 max-h-64 overflow-y-auto rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70">
+                <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#333]">
+                  <thead class="bg-[#fef568]/60 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]">
+                    <tr>
+                      <th scope="col" class="px-4 py-3">이름</th>
+                      <th scope="col" class="px-4 py-3">이메일</th>
+                      <th scope="col" class="px-4 py-3">역할</th>
+                      <th scope="col" class="px-4 py-3">등록일</th>
+                    </tr>
+                  </thead>
+                  <tbody data-role="participants-table" class="divide-y divide-[#f0dba5]/80 bg-white">
+                    <tr>
+                      <td colspan="4" class="px-4 py-6 text-center text-sm text-[#777]">
+                        등록된 참가자 정보가 없습니다.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </article>
+          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-status">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="dashboard-status" class="text-xl font-semibold text-[#2f2f2f]">미치나 챌린저 참여 현황</h2>
+                <p class="mt-2 text-sm text-[#555]">현재 챌린지 기간과 비교한 참여자 상태를 확인하세요.</p>
+              </div>
+              <span
+                data-role="status-period"
+                class="rounded-full bg-[#fef568]/60 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]"
+              >
+                데이터 준비 중
+              </span>
+            </div>
+            <div class="mt-6 grid grid-cols-3 gap-3 text-center text-sm font-semibold text-[#333]">
+              <div class="rounded-3xl bg-[#fef568]/60 px-4 py-5">
+                <p class="text-xs uppercase tracking-wide text-[#6b4b00]">전체</p>
+                <p data-role="status-total" class="mt-2 text-3xl font-bold text-[#2f2f2f]">0</p>
+              </div>
+              <div class="rounded-3xl bg-[#d6f8a1]/70 px-4 py-5">
+                <p class="text-xs uppercase tracking-wide text-[#3f6212]">진행</p>
+                <p data-role="status-active" class="mt-2 text-3xl font-bold text-[#245501]">0</p>
+              </div>
+              <div class="rounded-3xl bg-[#fcd1c5]/70 px-4 py-5">
+                <p class="text-xs uppercase tracking-wide text-[#9a3412]">종료</p>
+                <p data-role="status-expired" class="mt-2 text-3xl font-bold text-[#7c2d12]">0</p>
+              </div>
+            </div>
+            <div class="mt-8 flex flex-col items-center gap-5 lg:flex-row">
+              <div
+                data-role="status-chart"
+                class="relative h-36 w-36 rounded-full border-[12px] border-[#f5eee9] bg-[conic-gradient(#d6f8a1_0%,#fcd1c5_0%)]"
+                aria-hidden="true"
+              >
+                <div class="absolute inset-6 rounded-full bg-white/90"></div>
+                <span
+                  data-role="status-chart-label"
+                  class="absolute inset-0 flex items-center justify-center text-lg font-semibold text-[#333]"
+                >
+                  0%
+                </span>
+              </div>
+              <ul class="flex-1 space-y-2 text-sm text-[#555]" data-role="status-description">
+                <li>참여자 데이터가 수집되면 현황이 자동으로 업데이트됩니다.</li>
+              </ul>
+            </div>
+          </article>
+          <article class="card-surface rounded-3xl bg-white/90 p-6 shadow-lg backdrop-blur" aria-labelledby="dashboard-users">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="dashboard-users" class="text-xl font-semibold text-[#2f2f2f]">전체 사용자 DB 조회</h2>
+                <p class="mt-2 text-sm text-[#555]">로그인한 모든 사용자를 최신 순으로 확인할 수 있습니다.</p>
+              </div>
+              <span
+                data-role="users-count"
+                class="rounded-full bg-[#fef568]/60 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]"
+              >
+                0명
+              </span>
+            </div>
+            <div class="mt-4 max-h-72 overflow-y-auto rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70">
+              <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#333]">
+                <thead class="bg-[#fef568]/60 text-xs font-semibold uppercase tracking-widest text-[#6b4b00]">
+                  <tr>
+                    <th scope="col" class="px-4 py-3">이름</th>
+                    <th scope="col" class="px-4 py-3">이메일</th>
+                    <th scope="col" class="px-4 py-3">역할</th>
+                    <th scope="col" class="px-4 py-3">최근 로그인</th>
+                  </tr>
+                </thead>
+                <tbody data-role="users-table" class="divide-y divide-[#f0dba5]/80 bg-white">
+                  <tr>
+                    <td colspan="4" class="px-4 py-6 text-center text-sm text-[#777]">불러온 사용자 정보가 없습니다.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </main>
+      <footer class="bg-transparent py-8">
+        <div class="mx-auto w-full max-w-6xl px-6">
+          <p class="text-center text-xs text-[#777]">
+            &copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.
+          </p>
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="/static/dashboard.js"></script>
   </body>
 </html>`
 
