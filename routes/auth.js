@@ -56,17 +56,17 @@ async function findLoginCode(db, email) {
 async function ensureUserExists(db, email) {
   await db
     .prepare(
-      `INSERT INTO users (id, email)
-       VALUES (?, ?)
+      `INSERT INTO users (email)
+       VALUES (?)
        ON CONFLICT(email) DO NOTHING`
     )
-    .bind(randomUUID(), email)
+    .bind(email)
     .run()
 }
 
 export function registerAuthRoutes(app) {
   app.post('/auth/request-code', async (c) => {
-    const { DB: db, SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_FROM } = c.env
+    const { DB_MAIN: db, SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_FROM } = c.env
 
     if (!db) {
       return jsonResponse(
@@ -116,7 +116,7 @@ export function registerAuthRoutes(app) {
   })
 
   app.post('/auth/verify-code', async (c) => {
-    const { DB: db, JWT_SECRET } = c.env
+    const { DB_MAIN: db, JWT_SECRET } = c.env
 
     if (!db || !JWT_SECRET) {
       return jsonResponse(
