@@ -121,6 +121,13 @@ type MichinaChallengerRecord = {
   updatedBy?: string
 }
 
+type MichinaPeriodHistoryItem = {
+  start: string
+  end: string
+  updatedAt: string
+  updatedBy?: string
+}
+
 type MichinaUserRecord = {
   name: string
   email: string
@@ -133,6 +140,7 @@ type ChallengePeriodRecord = {
   startDate: string
   endDate: string
   updatedAt: string
+  updatedBy?: string
 }
 
 type ChallengePeriodRow = {
@@ -140,6 +148,15 @@ type ChallengePeriodRow = {
   start_date: string
   end_date: string
   updated_at: string
+  updated_by?: string | null
+}
+
+type ChallengePeriodHistoryRow = {
+  id: number
+  start_date: string
+  end_date: string
+  saved_at: string
+  saved_by: string | null
 }
 
 type ParticipantRow = {
@@ -251,8 +268,10 @@ const CHALLENGE_DURATION_BUSINESS_DAYS = 15
 const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
 const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
 const MICHINA_PERIOD_KEY = 'michina:period'
+const MICHINA_PERIOD_HISTORY_KEY = 'michina:period:history'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
 const MICHINA_USERS_KEY = 'michina:users'
+const MAX_PERIOD_HISTORY_ITEMS = 30
 
 function renderCommunityDashboardPage() {
   return `<!DOCTYPE html>
@@ -461,10 +480,24 @@ function renderAdminManagementPage() {
                   <p id="periodStatus" class="text-sm text-gray-600"></p>
                   <div
                     id="recentPeriodContainer"
-                    class="rounded-lg border border-[#f5eee9] bg-[#fef568] px-4 py-3 shadow-sm"
+                    class="space-y-3 rounded-lg border border-[#f5eee9] bg-[#fef568] px-4 py-3 shadow-sm"
                   >
-                    <p class="text-sm font-semibold text-[#4f3b0f]">최근 저장된 기간</p>
-                    <p id="recentPeriodText" class="mt-1 text-sm text-[#6f5a26]">저장된 기간이 없습니다</p>
+                    <div>
+                      <p class="text-sm font-semibold text-[#4f3b0f]">최근 저장된 기간</p>
+                      <p id="recentPeriodText" class="mt-1 text-sm text-[#6f5a26]">저장된 기간이 없습니다</p>
+                      <p id="recentPeriodMeta" class="mt-1 text-xs text-[#8c6d10]">저장 내역이 등록되면 여기에 표시됩니다.</p>
+                    </div>
+                    <div class="rounded-lg border border-[#f5eee9] bg-white/80 p-3 shadow-inner">
+                      <div class="flex items-center justify-between gap-2">
+                        <p class="text-xs font-semibold uppercase tracking-[0.18em] text-[#7c5a00]">저장 이력</p>
+                        <span id="periodHistoryCount" class="text-[11px] font-medium text-[#a87400]"></span>
+                      </div>
+                      <ol id="periodHistoryList" class="mt-2 space-y-2 text-sm text-[#5c4600]">
+                        <li class="rounded-md bg-[#fff7bf] px-3 py-2 text-xs text-[#a17f20]">
+                          저장된 이력이 아직 없습니다.
+                        </li>
+                      </ol>
+                    </div>
                   </div>
                 </div>
                 <div class="space-y-3 rounded-lg border border-[#f5eee9] bg-white/70 p-4 shadow-inner">
@@ -1336,22 +1369,49 @@ function buildChallengeTimeline(
 
 async function resolveChallengeTimeline(env: Bindings, options: { now?: Date } = {}) {
   const now = options.now ?? new Date()
+  let period: ChallengePeriodRecord | null = null
+  let deadlines: ChallengeDayDeadline[] = []
+
   const dbBinding = env.DB
-  if (!dbBinding || typeof dbBinding.prepare !== 'function') {
+  if (dbBinding && typeof dbBinding.prepare === 'function') {
+    try {
+      const [dbPeriod, dbDeadlines] = await Promise.all([
+        getChallengePeriodFromDb(dbBinding),
+        listChallengeDayDeadlinesFromDb(dbBinding).catch((error) => {
+          console.warn('[challenge] Failed to load challenge day deadlines; continuing without overrides', error)
+          return [] as ChallengeDayDeadline[]
+        }),
+      ])
+      if (dbPeriod) {
+        period = dbPeriod
+      }
+      if (Array.isArray(dbDeadlines) && dbDeadlines.length > 0) {
+        deadlines = dbDeadlines
+      }
+    } catch (error) {
+      console.error('[challenge] Failed to resolve challenge timeline via D1', error)
+    }
+  } else {
+    console.warn('[challenge] D1 binding `DB` is not available; falling back to KV period record')
+  }
+
+  if (!period) {
+    const fallback = await getMichinaPeriodRecord(env)
+    if (fallback) {
+      period = {
+        startDate: fallback.start,
+        endDate: fallback.end,
+        updatedAt: fallback.updatedAt,
+        updatedBy: fallback.updatedBy,
+      }
+    }
+  }
+
+  if (!period) {
     return null
   }
 
   try {
-    const [period, deadlines] = await Promise.all([
-      getChallengePeriodFromDb(dbBinding),
-      listChallengeDayDeadlinesFromDb(dbBinding).catch((error) => {
-        console.warn('[challenge] Failed to load challenge day deadlines; continuing without overrides', error)
-        return [] as ChallengeDayDeadline[]
-      }),
-    ])
-    if (!period) {
-      return null
-    }
     return buildChallengeTimeline(period, {
       now,
       requiredDays: REQUIRED_SUBMISSIONS,
@@ -1457,8 +1517,9 @@ function isParticipantWithinPeriod(participant: ParticipantRecord, period: Chall
 
 async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriodRecord | null> {
   try {
+    await ensureChallengePeriodTable(db)
     const row = await db
-      .prepare('SELECT id, start_date, end_date, updated_at FROM challenge_period WHERE id = 1')
+      .prepare('SELECT id, start_date, end_date, updated_at, updated_by FROM challenge_period WHERE id = 1')
       .first<ChallengePeriodRow>()
     if (!row) {
       return null
@@ -1469,11 +1530,16 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
     const updatedAt = typeof row.updated_at === 'string' && row.updated_at
       ? `${row.updated_at.replace(' ', 'T')}Z`
       : ''
-    return {
+    const updatedBy = typeof row.updated_by === 'string' && row.updated_by.trim() ? row.updated_by.trim() : undefined
+    const period: ChallengePeriodRecord = {
       startDate: row.start_date,
       endDate: row.end_date,
       updatedAt,
     }
+    if (updatedBy) {
+      period.updatedBy = updatedBy
+    }
+    return period
   } catch (error) {
     const message = String(error || '')
     if (/no such table: challenge_period/i.test(message)) {
@@ -1489,31 +1555,62 @@ async function ensureChallengePeriodTable(db: D1Database) {
   try {
     await db
       .prepare(
-        "CREATE TABLE IF NOT EXISTS challenge_period (id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS challenge_period (id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT)",
       )
       .run()
+    try {
+      await db.prepare('ALTER TABLE challenge_period ADD COLUMN updated_by TEXT').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: updated_by/i.test(message)) {
+        throw error
+      }
+    }
   } catch (error) {
     console.error('[d1] Failed to ensure challenge_period table', error)
     throw error
   }
 }
 
-async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDate: string) {
+async function ensureChallengePeriodHistoryTable(db: D1Database) {
+  try {
+    await db
+      .prepare(
+        "CREATE TABLE IF NOT EXISTS challenge_period_history (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, saved_by TEXT)",
+      )
+      .run()
+  } catch (error) {
+    console.error('[d1] Failed to ensure challenge_period_history table', error)
+    throw error
+  }
+}
+
+async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDate: string, options: { updatedBy?: string } = {}) {
   await ensureChallengePeriodTable(db)
+  await ensureChallengePeriodHistoryTable(db)
   await db
     .prepare(
-      "INSERT OR REPLACE INTO challenge_period (id, start_date, end_date, updated_at) VALUES (1, ?, ?, datetime('now'))",
+      "INSERT OR REPLACE INTO challenge_period (id, start_date, end_date, updated_at, updated_by) VALUES (1, ?, ?, datetime('now'), ?)",
     )
-    .bind(startDate, endDate)
+    .bind(startDate, endDate, options.updatedBy ?? null)
+    .run()
+  await db
+    .prepare(
+      "INSERT INTO challenge_period_history (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)",
+    )
+    .bind(startDate, endDate, options.updatedBy ?? null)
     .run()
   return getChallengePeriodFromDb(db)
 }
 
 async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeriodSummary[]> {
   try {
+    await ensureChallengePeriodHistoryTable(db)
     const result = await db
-      .prepare('SELECT id, start_date, end_date, updated_at FROM challenge_period ORDER BY start_date DESC, id DESC')
-      .all<ChallengePeriodRow>()
+      .prepare(
+        'SELECT id, start_date, end_date, saved_at, saved_by FROM challenge_period_history ORDER BY saved_at DESC, id DESC',
+      )
+      .all<ChallengePeriodHistoryRow>()
     const rows = Array.isArray(result.results) ? result.results : []
     return rows
       .map((row) => {
@@ -1522,18 +1619,24 @@ async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeri
         if (!startDate || !endDate) {
           return null
         }
-        return {
+        const updatedAt = row.saved_at ? `${row.saved_at.replace(' ', 'T')}Z` : ''
+        const updatedBy = typeof row.saved_by === 'string' && row.saved_by.trim() ? row.saved_by.trim() : undefined
+        const summary: ChallengePeriodSummary = {
           id: row.id,
           startDate,
           endDate,
-          updatedAt: row.updated_at ? `${row.updated_at.replace(' ', 'T')}Z` : '',
+          updatedAt,
         }
+        if (updatedBy) {
+          summary.updatedBy = updatedBy
+        }
+        return summary
       })
       .filter((value): value is ChallengePeriodSummary => Boolean(value))
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: challenge_period/i.test(message)) {
-      console.warn('[d1] challenge_period table is not available')
+    if (/no such table: challenge_period_history/i.test(message)) {
+      console.warn('[d1] challenge_period_history table is not available')
       return []
     }
     console.error('[d1] Failed to list challenge periods', error)
@@ -1627,20 +1730,91 @@ async function getMichinaPeriodRecord(env: Bindings): Promise<MichinaPeriod | nu
   }
 }
 
+async function listMichinaPeriodHistory(env: Bindings): Promise<MichinaPeriodHistoryItem[]> {
+  const raw = await kvGet(env, MICHINA_PERIOD_HISTORY_KEY)
+  if (!raw) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    return parsed
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return null
+        }
+        const start = typeof (entry as MichinaPeriodHistoryItem).start === 'string' ? (entry as MichinaPeriodHistoryItem).start : ''
+        const end = typeof (entry as MichinaPeriodHistoryItem).end === 'string' ? (entry as MichinaPeriodHistoryItem).end : ''
+        const updatedAt =
+          typeof (entry as MichinaPeriodHistoryItem).updatedAt === 'string'
+            ? (entry as MichinaPeriodHistoryItem).updatedAt
+            : ''
+        const updatedBy =
+          typeof (entry as MichinaPeriodHistoryItem).updatedBy === 'string'
+            ? (entry as MichinaPeriodHistoryItem).updatedBy
+            : undefined
+        if (!start || !end || !updatedAt) {
+          return null
+        }
+        const record: MichinaPeriodHistoryItem = { start, end, updatedAt }
+        if (updatedBy) {
+          record.updatedBy = updatedBy
+        }
+        return record
+      })
+      .filter((value): value is MichinaPeriodHistoryItem => Boolean(value))
+  } catch (error) {
+    console.error('[michina] Failed to parse period history', error)
+    return []
+  }
+}
+
+async function appendMichinaPeriodHistory(env: Bindings, record: MichinaPeriodHistoryItem) {
+  if (!record.start || !record.end || !record.updatedAt) {
+    return
+  }
+  const history = await listMichinaPeriodHistory(env)
+  const sanitized = history.filter(
+    (item) => item.updatedAt !== record.updatedAt || item.start !== record.start || item.end !== record.end,
+  )
+  sanitized.unshift(record)
+  const trimmed = sanitized.slice(0, MAX_PERIOD_HISTORY_ITEMS)
+  await kvPut(env, MICHINA_PERIOD_HISTORY_KEY, JSON.stringify(trimmed))
+}
+
+function mapPeriodHistoryToSummaries(history: MichinaPeriodHistoryItem[]): ChallengePeriodSummary[] {
+  return history.map((item, index) => {
+    const summary: ChallengePeriodSummary = {
+      id: index + 1,
+      startDate: item.start,
+      endDate: item.end,
+      updatedAt: item.updatedAt,
+    }
+    if (item.updatedBy) {
+      summary.updatedBy = item.updatedBy
+    }
+    return summary
+  })
+}
+
 async function saveMichinaPeriodRecord(
   env: Bindings,
-  data: { start: string; end: string; updatedBy?: string },
+  data: { start: string; end: string; updatedBy?: string; updatedAt?: string },
 ): Promise<MichinaPeriod> {
+  const timestamp = typeof data.updatedAt === 'string' && data.updatedAt ? data.updatedAt : new Date().toISOString()
   const record: MichinaPeriod = {
     start: data.start,
     end: data.end,
-    updatedAt: new Date().toISOString(),
+    updatedAt: timestamp,
     updatedBy: data.updatedBy,
   }
   if (!record.updatedBy) {
     delete record.updatedBy
   }
   await kvPut(env, MICHINA_PERIOD_KEY, JSON.stringify(record))
+  await appendMichinaPeriodHistory(env, { start: record.start, end: record.end, updatedAt: record.updatedAt, updatedBy: record.updatedBy })
   return record
 }
 
@@ -2097,20 +2271,47 @@ app.get('/api/admin/period', async (c) => {
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED' }, 401)
   }
+  let period: ChallengePeriodRecord | null = null
+  let periods: ChallengePeriodSummary[] = []
+  let db: D1Database | null = null
+
   try {
-    const db = getDatabase(c.env)
-    const [period, periods] = await Promise.all([
-      getChallengePeriodFromDb(db),
-      listChallengePeriodsFromDb(db).catch((error) => {
-        console.error('[admin] Failed to load period list', error)
-        return [] as ChallengePeriodSummary[]
-      }),
-    ])
-    return c.json({ period, periods })
+    db = getDatabase(c.env)
   } catch (error) {
-    console.error('[admin] Failed to load challenge period', error)
-    return c.json({ error: 'DATABASE_ERROR' }, 500)
+    console.warn('[admin] D1 database is not available for period fetch; using fallback storage', error)
   }
+
+  if (db) {
+    try {
+      const [current, history] = await Promise.all([
+        getChallengePeriodFromDb(db),
+        listChallengePeriodsFromDb(db),
+      ])
+      period = current
+      periods = history
+    } catch (error) {
+      console.error('[admin] Failed to load challenge period from D1', error)
+    }
+  }
+
+  if (!period) {
+    const fallback = await getMichinaPeriodRecord(c.env)
+    if (fallback) {
+      period = {
+        startDate: fallback.start,
+        endDate: fallback.end,
+        updatedAt: fallback.updatedAt,
+        updatedBy: fallback.updatedBy,
+      }
+    }
+  }
+
+  if (periods.length === 0) {
+    const history = await listMichinaPeriodHistory(c.env)
+    periods = mapPeriodHistoryToSummaries(history)
+  }
+
+  return c.json({ period, periods })
 })
 
 app.post('/api/admin/period', async (c) => {
@@ -2136,13 +2337,51 @@ app.post('/api/admin/period', async (c) => {
   if (startDate > endDate) {
     return c.json({ error: 'INVALID_RANGE' }, 400)
   }
+  let period: ChallengePeriodRecord | null = null
+  let periods: ChallengePeriodSummary[] = []
+  let db: D1Database | null = null
+
   try {
-    const period = await saveChallengePeriodToDb(getDatabase(c.env), startDate, endDate)
-    return c.json({ success: true, period })
+    db = getDatabase(c.env)
   } catch (error) {
-    console.error('[admin] Failed to save challenge period', error)
-    return c.json({ error: 'DATABASE_ERROR' }, 500)
+    console.warn('[admin] D1 database is not available for period save; using fallback storage', error)
   }
+
+  if (db) {
+    try {
+      period = await saveChallengePeriodToDb(db, startDate, endDate, { updatedBy: adminEmail })
+      periods = await listChallengePeriodsFromDb(db)
+    } catch (error) {
+      console.error('[admin] Failed to persist challenge period to D1', error)
+      period = null
+      periods = []
+    }
+  }
+
+  if (period) {
+    await saveMichinaPeriodRecord(c.env, {
+      start: period.startDate,
+      end: period.endDate,
+      updatedBy: adminEmail,
+      updatedAt: period.updatedAt,
+    })
+  } else {
+    const record = await saveMichinaPeriodRecord(c.env, {
+      start: startDate,
+      end: endDate,
+      updatedBy: adminEmail,
+    })
+    period = {
+      startDate: record.start,
+      endDate: record.end,
+      updatedAt: record.updatedAt,
+      updatedBy: record.updatedBy,
+    }
+    const history = await listMichinaPeriodHistory(c.env)
+    periods = mapPeriodHistoryToSummaries(history)
+  }
+
+  return c.json({ success: true, period, periods })
 })
 
 app.get('/api/admin/participants', async (c) => {

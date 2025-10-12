@@ -4165,9 +4165,7 @@ function formatDayOptionDate(value) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${month}.${day}`
+  return new Intl.DateTimeFormat('ko', { month: 'long', day: 'numeric' }).format(date)
 }
 
 function parseDeadlineString(value) {
@@ -4383,7 +4381,7 @@ function updateChallengeDayOptions(profile) {
     let label = `${day}일차`
     const dayDate = resolveDayDate(day)
     if (dayDate) {
-      label += ` (${formatDayOptionDate(dayDate)})`
+      label += `, ${formatDayOptionDate(dayDate)}`
     }
     option.textContent = label
     elements.challengeDaySelect.appendChild(option)

@@ -13,6 +13,7 @@ let toastTimer = 0;
 
 const state = {
   period: null,
+  periodHistory: [],
   summary: { total: 0, active: 0, expired: 0 },
   users: [],
   isSavingPeriod: false,
@@ -28,6 +29,9 @@ const elements = {
   statusPeriod: document.getElementById('statusPeriod'),
   recentPeriodContainer: document.getElementById('recentPeriodContainer'),
   recentPeriodText: document.getElementById('recentPeriodText'),
+  recentPeriodMeta: document.getElementById('recentPeriodMeta'),
+  periodHistoryList: document.getElementById('periodHistoryList'),
+  periodHistoryCount: document.getElementById('periodHistoryCount'),
   statusMessage: document.getElementById('statusMessage'),
   uploadInput: document.getElementById('csvUpload'),
   uploadFilename: document.getElementById('uploadFilename'),
@@ -177,10 +181,90 @@ function renderPeriod() {
       const startLabel = formatIsoDate(period.startDate);
       const endLabel = formatIsoDate(period.endDate);
       elements.recentPeriodText.textContent = `최근 저장된 기간: ${startLabel} ~ ${endLabel}`;
+      if (elements.recentPeriodMeta instanceof HTMLElement) {
+        const updatedLabel = period.updatedAt ? formatDateTime(period.updatedAt) : '';
+        const updatedBy = typeof period.updatedBy === 'string' && period.updatedBy.trim() ? period.updatedBy.trim() : '';
+        const metaParts = [];
+        if (updatedLabel) {
+          metaParts.push(`저장: ${updatedLabel}`);
+        }
+        if (updatedBy) {
+          metaParts.push(`관리자: ${updatedBy}`);
+        }
+        elements.recentPeriodMeta.textContent = metaParts.length > 0 ? metaParts.join(' · ') : '저장 시간이 기록되지 않았습니다.';
+      }
     } else {
-      elements.recentPeriodText.textContent = '저장된 기간이 없습니다';
+      const history = Array.isArray(state.periodHistory) ? state.periodHistory : [];
+      const latest = history.length > 0 ? history[0] : null;
+      if (latest && latest.startDate && latest.endDate) {
+        const startLabel = formatIsoDate(latest.startDate);
+        const endLabel = formatIsoDate(latest.endDate);
+        elements.recentPeriodText.textContent = `최근 저장된 기간: ${startLabel} ~ ${endLabel}`;
+        if (elements.recentPeriodMeta instanceof HTMLElement) {
+          const updatedLabel = formatDateTime(latest.updatedAt);
+          const updatedBy = typeof latest.updatedBy === 'string' && latest.updatedBy.trim() ? latest.updatedBy.trim() : '';
+          const metaParts = [];
+          if (updatedLabel) {
+            metaParts.push(`저장: ${updatedLabel}`);
+          }
+          if (updatedBy) {
+            metaParts.push(`관리자: ${updatedBy}`);
+          }
+          elements.recentPeriodMeta.textContent = metaParts.length > 0 ? metaParts.join(' · ') : '저장 시간이 기록되지 않았습니다.';
+        }
+      } else {
+        elements.recentPeriodText.textContent = '저장된 기간이 없습니다';
+        if (elements.recentPeriodMeta instanceof HTMLElement) {
+          elements.recentPeriodMeta.textContent = '저장 내역이 등록되면 여기에 표시됩니다.';
+        }
+      }
     }
   }
+}
+
+function renderPeriodHistory() {
+  if (!(elements.periodHistoryList instanceof HTMLElement)) {
+    return;
+  }
+  const history = Array.isArray(state.periodHistory) ? state.periodHistory : [];
+  if (elements.periodHistoryCount instanceof HTMLElement) {
+    elements.periodHistoryCount.textContent = history.length > 0 ? `총 ${history.length}건` : '';
+  }
+  if (history.length === 0) {
+    elements.periodHistoryList.innerHTML =
+      '<li class="rounded-md bg-[#fff7bf] px-3 py-2 text-xs text-[#a17f20]">저장된 이력이 아직 없습니다.</li>';
+    return;
+  }
+
+  const items = history
+    .map((item, index) => {
+      const startLabel = formatIsoDate(item.startDate);
+      const endLabel = formatIsoDate(item.endDate);
+      const updatedLabel = formatDateTime(item.updatedAt);
+      const updatedBy = typeof item.updatedBy === 'string' && item.updatedBy.trim() ? item.updatedBy.trim() : '';
+      const badge =
+        index === 0
+          ? '<span class="ml-3 rounded-full bg-[#fef08a] px-2 py-1 text-[11px] font-semibold text-[#3f2f00]">최신</span>'
+          : '';
+      const metaParts = [];
+      if (updatedLabel) {
+        metaParts.push(`저장: ${updatedLabel}`);
+      }
+      if (updatedBy) {
+        metaParts.push(`관리자: ${updatedBy}`);
+      }
+      const metaText = metaParts.length > 0 ? metaParts.join(' · ') : '저장 정보를 불러오지 못했습니다.';
+      return `<li class="flex items-start justify-between gap-3 rounded-md bg-white/70 px-3 py-2 shadow-sm">
+          <div>
+            <p class="text-sm font-semibold text-[#4f3b0f]">${startLabel} ~ ${endLabel}</p>
+            <p class="mt-0.5 text-xs text-[#8c6d10]">${metaText}</p>
+          </div>
+          ${badge}
+        </li>`;
+    })
+    .join('');
+
+  elements.periodHistoryList.innerHTML = items;
 }
 
 function renderMichinaStatus() {
@@ -304,7 +388,9 @@ async function loadPeriod() {
     const response = await fetch('/api/admin/period', { credentials: 'include' });
     if (response.status === 401) {
       state.period = null;
+      state.periodHistory = [];
       renderPeriod();
+      renderPeriodHistory();
       setMessage(elements.periodStatus, '관리자 인증이 필요합니다.', 'danger');
       if (elements.statusPeriod instanceof HTMLElement) {
         elements.statusPeriod.textContent = '관리자 인증 후 기간 정보를 확인할 수 있습니다.';
@@ -316,10 +402,14 @@ async function loadPeriod() {
     }
     const payload = await response.json();
     state.period = payload?.period ?? null;
+    state.periodHistory = Array.isArray(payload?.periods) ? payload.periods : [];
     renderPeriod();
+    renderPeriodHistory();
   } catch (error) {
     state.period = null;
+    state.periodHistory = [];
     renderPeriod();
+    renderPeriodHistory();
     setMessage(elements.periodStatus, '기간 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger');
     if (elements.statusPeriod instanceof HTMLElement) {
       elements.statusPeriod.textContent = '기간 정보를 불러오지 못했습니다.';
@@ -352,7 +442,9 @@ async function savePeriod(startDate, endDate) {
     }
     const payload = await response.json();
     state.period = payload?.period ?? null;
+    state.periodHistory = Array.isArray(payload?.periods) ? payload.periods : state.periodHistory;
     renderPeriod();
+    renderPeriodHistory();
     const summaryText = buildPeriodSummary(state.period);
     const message = summaryText ? `✔️ 기간이 저장되었습니다. ${summaryText}` : '✔️ 기간이 저장되었습니다.';
     setMessage(elements.periodStatus, message, 'success');
@@ -699,6 +791,7 @@ function initialize() {
   }
   setMessage(elements.uploadStatus, '', 'info');
   renderPeriod();
+  renderPeriodHistory();
   renderMichinaStatus();
   renderUsers();
   setMessage(elements.usersStatus, '사용자 정보를 불러오는 중입니다...', 'info');
