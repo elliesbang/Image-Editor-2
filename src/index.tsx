@@ -1586,6 +1586,36 @@ async function ensureChallengePeriodHistoryTable(db: D1Database) {
   }
 }
 
+async function ensureParticipantsTable(db: D1Database) {
+  try {
+    await db
+      .prepare(
+        "CREATE TABLE IF NOT EXISTS participants (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT NOT NULL, joined_at TEXT, role TEXT, start_date TEXT, end_date TEXT)",
+      )
+      .run()
+    try {
+      await db.prepare('ALTER TABLE participants ADD COLUMN start_date TEXT').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: start_date/i.test(message)) {
+        throw error
+      }
+    }
+    try {
+      await db.prepare('ALTER TABLE participants ADD COLUMN end_date TEXT').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (!/duplicate column name: end_date/i.test(message)) {
+        throw error
+      }
+    }
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_participants_email ON participants(email)').run()
+  } catch (error) {
+    console.error('[d1] Failed to ensure participants table', error)
+    throw error
+  }
+}
+
 async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDate: string, options: { updatedBy?: string } = {}) {
   await ensureChallengePeriodTable(db)
   await ensureChallengePeriodHistoryTable(db)
@@ -1647,6 +1677,7 @@ async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeri
 
 async function listParticipantsFromDb(db: D1Database, options: ParticipantListOptions = {}) {
   const { role, referenceDate } = options
+  await ensureParticipantsTable(db)
   const whereClauses: string[] = []
   const params: unknown[] = []
 
@@ -2385,6 +2416,53 @@ app.post('/api/admin/period', async (c) => {
   return c.json({ success: true, period, periods })
 })
 
+app.delete('/api/admin/period', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+
+  let db: D1Database | null = null
+  try {
+    db = getDatabase(c.env)
+  } catch (error) {
+    console.warn('[admin] D1 database is not available for period delete; using fallback storage', error)
+  }
+
+  if (db) {
+    try {
+      await db.prepare('DELETE FROM challenge_period WHERE id = 1').run()
+    } catch (error) {
+      const message = String(error || '')
+      if (/no such table: challenge_period/i.test(message)) {
+        console.warn('[admin] challenge_period table missing during delete; skipping')
+      } else {
+        console.error('[admin] Failed to delete challenge period from D1', error)
+        return c.json({ error: 'DATABASE_ERROR' }, 500)
+      }
+    }
+  }
+
+  await kvDelete(c.env, MICHINA_PERIOD_KEY)
+
+  let periods: ChallengePeriodSummary[] = []
+
+  if (db) {
+    try {
+      periods = await listChallengePeriodsFromDb(db)
+    } catch (error) {
+      console.error('[admin] Failed to fetch challenge period history after delete', error)
+    }
+  }
+
+  if (periods.length === 0) {
+    const history = await listMichinaPeriodHistory(c.env)
+    periods = mapPeriodHistoryToSummaries(history)
+  }
+
+  return c.json({ success: true, period: null, periods })
+})
+
 app.get('/api/admin/participants', async (c) => {
   const adminEmail = await requireAdminSession(c)
   if (!adminEmail) {
@@ -2487,6 +2565,7 @@ app.post('/api/admin/participants', async (c) => {
 
   const db = getDatabase(c.env)
   try {
+    await ensureParticipantsTable(db)
     try {
       await db.prepare('DELETE FROM participants WHERE role = ?').bind('미치나').run()
     } catch (error) {
@@ -2523,6 +2602,7 @@ app.delete('/api/admin/participants/delete', async (c) => {
   }
   const db = getDatabase(c.env)
   try {
+    await ensureParticipantsTable(db)
     await db.prepare('DELETE FROM participants WHERE role = ?').bind('미치나').run()
   } catch (error) {
     const message = String(error || '')
@@ -4620,6 +4700,20 @@ app.get('/dashboard', async (c) => {
                 </button>
               </div>
             </form>
+            <div class="mt-6 rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold text-[#4f3b0f]">기간 변경 내역</h3>
+                <button
+                  type="button"
+                  data-role="period-delete"
+                  class="rounded-full bg-rose-100 px-4 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  기간 초기화
+                </button>
+              </div>
+              <p data-role="period-history-empty" class="mt-1 text-xs text-[#7a5a00]">저장된 기간 변경 내역이 없습니다.</p>
+              <ul data-role="period-history" class="mt-3 space-y-2" hidden></ul>
+            </div>
           </section>
           <section id="michina-upload" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
             <div class="flex flex-wrap items-start justify-between gap-4">

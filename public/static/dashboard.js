@@ -7,6 +7,7 @@
   const LOGIN_URL = new URL('/login.html', window.location.origin).toString();
 
   const DEFAULT_UPLOAD_FILENAME = '선택된 파일이 없습니다.';
+  const DEFAULT_PERIOD_DELETE_LABEL = '기간 초기화';
 
   const MESSAGE_TONES = {
     info: 'text-[#6f5a26]',
@@ -40,6 +41,9 @@
     periodStatus: document.querySelector('[data-role="period-status"]'),
     periodSummary: document.querySelector('[data-role="period-summary"]'),
     periodUpdated: document.querySelector('[data-role="period-updated"]'),
+    periodHistory: document.querySelector('[data-role="period-history"]'),
+    periodHistoryEmpty: document.querySelector('[data-role="period-history-empty"]'),
+    periodDelete: document.querySelector('[data-role="period-delete"]'),
     participantsForm: document.querySelector('[data-role="participants-form"]'),
     participantsFile: document.querySelector('[data-role="participants-file"]'),
     participantsFilename: document.querySelector('[data-role="participants-filename"]'),
@@ -62,11 +66,13 @@
 
   const state = {
     period: null,
+    periodHistory: [],
     participants: [],
     status: null,
     users: [],
     isUploading: false,
     isDeleting: false,
+    isDeletingPeriod: false,
   };
 
   let broadcast = null;
@@ -277,11 +283,15 @@
       }
       const payload = await response.json();
       state.period = payload?.period || null;
+      state.periodHistory = Array.isArray(payload?.periods) ? payload.periods : [];
       renderPeriod();
+      renderPeriodHistory();
     } catch (error) {
       console.error('[dashboard] failed to load period', error);
       state.period = null;
+      state.periodHistory = [];
       renderPeriod();
+      renderPeriodHistory();
       showToast('챌린지 기간 정보를 불러오지 못했습니다.', 'danger');
     }
   }
@@ -340,6 +350,15 @@
     if (elements.periodUpdated instanceof HTMLElement) {
       elements.periodUpdated.textContent = updated;
     }
+    if (elements.periodDelete instanceof HTMLButtonElement) {
+      const hasPeriod = Boolean(period && period.startDate && period.endDate);
+      if (state.isDeletingPeriod) {
+        elements.periodDelete.disabled = true;
+      } else {
+        elements.periodDelete.disabled = !hasPeriod;
+        elements.periodDelete.textContent = DEFAULT_PERIOD_DELETE_LABEL;
+      }
+    }
     if (elements.statusPeriod instanceof HTMLElement) {
       if (startLabel && endLabel) {
         elements.statusPeriod.textContent = `${startLabel} ~ ${endLabel}`;
@@ -347,6 +366,49 @@
       } else {
         elements.statusPeriod.textContent = '기간이 설정되지 않았습니다';
         setBadgeTone(elements.statusPeriod, 'warning');
+      }
+    }
+  }
+
+  function renderPeriodHistory() {
+    const history = Array.isArray(state.periodHistory) ? state.periodHistory : [];
+    if (elements.periodHistory instanceof HTMLElement) {
+      if (history.length === 0) {
+        elements.periodHistory.innerHTML = '';
+        elements.periodHistory.setAttribute('hidden', 'true');
+      } else {
+        const rows = history.map((item) => {
+          const start = formatDate(item.startDate);
+          const end = formatDate(item.endDate);
+          const range = `${start} ~ ${end}`;
+          const details = [];
+          const updatedLabel = formatDateTime(item.updatedAt);
+          if (updatedLabel && updatedLabel !== '-') {
+            details.push(`저장 ${escapeHtml(updatedLabel)}`);
+          }
+          if (item.updatedBy) {
+            details.push(`담당 ${escapeHtml(item.updatedBy)}`);
+          }
+          return (
+            '<li class="rounded-2xl border border-[#f0dba5] bg-white/90 p-3 shadow-inner">' +
+            '<p class="text-sm font-semibold text-[#3f2f00]">' +
+            escapeHtml(range) +
+            '</p>' +
+            (details.length
+              ? '<p class="mt-1 text-xs text-[#7a5a00]">' + details.join(' · ') + '</p>'
+              : '') +
+            '</li>'
+          );
+        });
+        elements.periodHistory.innerHTML = rows.join('');
+        elements.periodHistory.removeAttribute('hidden');
+      }
+    }
+    if (elements.periodHistoryEmpty instanceof HTMLElement) {
+      if (history.length === 0) {
+        elements.periodHistoryEmpty.removeAttribute('hidden');
+      } else {
+        elements.periodHistoryEmpty.setAttribute('hidden', 'true');
       }
     }
   }
@@ -807,12 +869,63 @@
       }
       const payload = await response.json();
       state.period = payload?.period || { startDate, endDate };
+      state.periodHistory = Array.isArray(payload?.periods) ? payload.periods : [];
       renderPeriod();
+      renderPeriodHistory();
       showToast('챌린지 기간이 저장되었습니다.', 'success');
       await loadStatus();
     } catch (error) {
       console.error('[dashboard] failed to save period', error);
       showToast('챌린지 기간을 저장하지 못했습니다.', 'danger');
+    }
+  }
+
+  async function handlePeriodDelete() {
+    if (!(elements.periodDelete instanceof HTMLButtonElement)) {
+      return;
+    }
+    if (state.isDeletingPeriod) {
+      return;
+    }
+    if (!state.period || !state.period.startDate || !state.period.endDate) {
+      showToast('삭제할 기간이 없습니다.', 'warning');
+      return;
+    }
+    const confirmed = window.confirm('설정된 챌린지 기간을 삭제하시겠어요? 저장된 변경 내역은 계속 보관됩니다.');
+    if (!confirmed) {
+      return;
+    }
+    state.isDeletingPeriod = true;
+    elements.periodDelete.disabled = true;
+    elements.periodDelete.textContent = '삭제 중…';
+    showToast('챌린지 기간을 삭제하고 있습니다…', 'info');
+    try {
+      const response = await fetch('/api/admin/period', { method: 'DELETE', credentials: 'include' });
+      if (response.status === 401) {
+        redirectToLogin('관리자 세션이 만료되었습니다.', 'danger');
+        return;
+      }
+      if (!response.ok) {
+        throw new Error('failed_to_delete_period');
+      }
+      const payload = await response.json();
+      state.period = payload?.period || null;
+      state.periodHistory = Array.isArray(payload?.periods) ? payload.periods : [];
+      renderPeriod();
+      renderPeriodHistory();
+      showToast('챌린지 기간이 삭제되었습니다.', 'success');
+      await loadStatus();
+    } catch (error) {
+      console.error('[dashboard] failed to delete period', error);
+      showToast('챌린지 기간을 삭제하지 못했습니다.', 'danger');
+    } finally {
+      state.isDeletingPeriod = false;
+      if (elements.periodDelete instanceof HTMLButtonElement) {
+        elements.periodDelete.textContent = DEFAULT_PERIOD_DELETE_LABEL;
+        elements.periodDelete.disabled = !(
+          state.period && state.period.startDate && state.period.endDate
+        );
+      }
     }
   }
 
@@ -886,6 +999,9 @@
   }
   if (elements.periodForm instanceof HTMLFormElement) {
     elements.periodForm.addEventListener('submit', handlePeriodSubmit);
+  }
+  if (elements.periodDelete instanceof HTMLButtonElement) {
+    elements.periodDelete.addEventListener('click', handlePeriodDelete);
   }
   if (elements.participantsForm instanceof HTMLFormElement) {
     elements.participantsForm.addEventListener('submit', handleParticipantsUpload);
