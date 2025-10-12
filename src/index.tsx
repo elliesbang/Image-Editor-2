@@ -3,6 +3,7 @@ import type { Context } from 'hono'
 import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
+import { Google } from 'arctic'
 import { renderer } from './renderer'
 import { registerAuthRoutes } from '../routes/auth.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
@@ -266,8 +267,11 @@ const CHALLENGE_TIMEZONE_SUFFIX = (() => {
   return `${sign}${hours}:${minutes}`
 })()
 const CHALLENGE_DURATION_BUSINESS_DAYS = 15
-const DEFAULT_GOOGLE_REDIRECT_URI = 'https://project-9cf3a0d0.pages.dev/api/auth/callback/google'
+const GOOGLE_OAUTH_REDIRECT_URI = 'https://image-editor-3.pages.dev/api/auth/callback/google'
+const DEFAULT_GOOGLE_REDIRECT_URI = GOOGLE_OAUTH_REDIRECT_URI
 const ADMIN_OAUTH_STATE_COOKIE = 'admin_oauth_state'
+const GOOGLE_OAUTH_STATE_COOKIE = 'google_oauth_state'
+const SESSION_COOKIE_NAME = '__session'
 const MICHINA_PERIOD_KEY = 'michina:period'
 const MICHINA_PERIOD_HISTORY_KEY = 'michina:period:history'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
@@ -961,13 +965,21 @@ function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
   if (configured) {
     return configured
   }
-  try {
-    const url = new URL(c.req.url)
-    return `${url.origin}/api/auth/callback/google`
-  } catch (error) {
-    console.warn('[auth/google] Failed to derive redirect URI from request URL', error)
-    return DEFAULT_GOOGLE_REDIRECT_URI
+  return DEFAULT_GOOGLE_REDIRECT_URI
+}
+
+function createGoogleClient(env: Bindings) {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim()
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim()
+  if (!clientId || !clientSecret) {
+    return null
   }
+  return new Google(clientId, clientSecret, GOOGLE_OAUTH_REDIRECT_URI)
+}
+
+function applyCorsHeaders(response: Response) {
+  response.headers.set('Access-Control-Allow-Origin', '*')
+  return response
 }
 
 type GoogleIdTokenPayload = {
@@ -2790,67 +2802,55 @@ app.get('/api/users', async (c) => {
   return c.json({ users })
 })
 
-app.get('/auth/google', (c) => {
-  const clientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim()
-  const redirectUri = c.env.GOOGLE_REDIRECT_URI?.trim()
-
-  if (!clientId || !redirectUri) {
-    return c.text('Google OAuth가 구성되지 않았습니다.', 500)
+app.get('/api/auth/login/google', (c) => {
+  const googleClient = createGoogleClient(c.env)
+  if (!googleClient) {
+    return applyCorsHeaders(c.text('Google OAuth credentials are not configured.', 500))
   }
 
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'openid email profile',
-    access_type: 'offline',
-    prompt: 'consent',
+  const state = generateRandomState()
+  setCookie(c, GOOGLE_OAUTH_STATE_COOKIE, state, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 10 * 60,
   })
 
-  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, 302)
+  const authorizationUrl = googleClient.createAuthorizationURL(state, {
+    scopes: ['openid', 'email', 'profile'],
+    prompt: 'consent',
+    accessType: 'offline',
+    includeGrantedScopes: 'true',
+  })
+
+  const response = c.redirect(authorizationUrl.toString(), 302)
+  return applyCorsHeaders(response)
 })
 
 app.get('/api/auth/callback/google', async (c) => {
+  const googleClient = createGoogleClient(c.env)
+  if (!googleClient) {
+    return applyCorsHeaders(c.text('Google OAuth credentials are not configured.', 500))
+  }
+
   const code = (c.req.query('code') || '').trim()
-
   if (!code) {
-    return c.text('Authorization code is required.', 400)
+    return applyCorsHeaders(c.text('Authorization code is required.', 400))
   }
 
-  const clientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim()
-  const clientSecret = c.env.GOOGLE_CLIENT_SECRET?.trim()
-  const redirectUri = c.env.GOOGLE_REDIRECT_URI?.trim()
-
-  if (!clientId || !clientSecret || !redirectUri) {
-    return c.text('Google OAuth credentials are not configured.', 500)
+  const stateParam = (c.req.query('state') || '').trim()
+  const storedState = getCookie(c, GOOGLE_OAUTH_STATE_COOKIE) || ''
+  if (!stateParam || !storedState || stateParam !== storedState) {
+    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/' })
+    return applyCorsHeaders(c.text('Invalid login state.', 400))
   }
+
+  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/' })
 
   try {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      }),
-    })
-
-    if (!tokenResponse.ok) {
-      console.error('Failed to exchange Google authorization code', await tokenResponse.text().catch(() => ''))
-      return c.text('Failed to verify Google login.', 502)
-    }
-
-    const tokenJson = (await tokenResponse.json()) as { access_token?: string }
-    const accessToken = typeof tokenJson.access_token === 'string' ? tokenJson.access_token : ''
-
-    if (!accessToken) {
-      return c.text('Failed to verify Google login.', 502)
-    }
+    const tokenSet = await googleClient.validateAuthorizationCode(code)
+    const accessToken = tokenSet.accessToken
 
     const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: {
@@ -2860,42 +2860,61 @@ app.get('/api/auth/callback/google', async (c) => {
 
     if (!profileResponse.ok) {
       console.error('Failed to fetch Google user info', await profileResponse.text().catch(() => ''))
-      return c.text('Failed to verify Google account.', 502)
+      return applyCorsHeaders(c.text('Failed to verify Google account.', 502))
     }
 
-    const profile = (await profileResponse.json()) as { email?: string; name?: string; picture?: string }
+    const profile = (await profileResponse.json()) as {
+      email?: string
+      name?: string
+      picture?: string
+      verified_email?: boolean
+      email_verified?: boolean
+    }
     const email = typeof profile.email === 'string' ? profile.email.trim() : ''
     const name = typeof profile.name === 'string' ? profile.name.trim() : ''
-    const picture = typeof profile.picture === 'string' ? profile.picture : undefined
+    const picture = typeof profile.picture === 'string' ? profile.picture.trim() : undefined
+    const emailVerified =
+      typeof profile.verified_email === 'boolean'
+        ? profile.verified_email
+        : typeof profile.email_verified === 'boolean'
+          ? profile.email_verified
+          : true
 
-    if (!email) {
-      return c.text('Failed to verify Google account.', 502)
+    if (!email || !emailVerified) {
+      return applyCorsHeaders(c.text('Failed to verify Google account.', 502))
     }
 
-    const session = JSON.stringify({ email, name, picture, time: Date.now() })
+    const session = JSON.stringify({
+      email,
+      name,
+      picture,
+      provider: 'google',
+      issuedAt: Date.now(),
+    })
 
-    setCookie(c, 'user', session, {
+    setCookie(c, SESSION_COOKIE_NAME, session, {
       httpOnly: true,
       secure: true,
-      sameSite: 'none',
+      sameSite: 'lax',
       path: '/',
       maxAge: 60 * 60 * 24 * 7,
     })
 
-    return c.redirect('/', 302)
+    const response = c.redirect('/dashboard', 302)
+    return applyCorsHeaders(response)
   } catch (error) {
     console.error('Google OAuth callback handling failed', error)
-    return c.text('Failed to verify Google login.', 502)
+    return applyCorsHeaders(c.text('Failed to verify Google login.', 502))
   }
 })
 
 app.get('/api/auth/logout', (c) => {
-  deleteCookie(c, 'user', { path: '/' })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' })
   return c.redirect('/', 302)
 })
 
 app.post('/api/logout', (c) => {
-  deleteCookie(c, 'user', { path: '/' })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' })
   return c.json({ success: true })
 })
 
@@ -3693,7 +3712,7 @@ app.get('/', async (c) => {
   const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
 
   let userSession: { email: string; name?: string; picture?: string } | null = null
-  const rawUserCookie = getCookie(c, 'user')
+  const rawUserCookie = getCookie(c, SESSION_COOKIE_NAME)
   if (rawUserCookie) {
     try {
       const parsed = JSON.parse(rawUserCookie) as { email?: unknown; name?: unknown; picture?: unknown }

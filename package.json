@@ -2,7 +2,8 @@
   "name": "easy-image-editer",
   "type": "module",
   "imports": {
-    "openai": "./utils/openai-lite.js"
+    "openai": "./utils/openai-lite.js",
+    "arctic": "./utils/arctic-google.js"
   },
   "scripts": {
     "dev": "vite",
