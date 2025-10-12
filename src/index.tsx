@@ -2105,7 +2105,7 @@ app.delete('/api/admin/participants/delete', async (c) => {
   }
   const db = getDatabase(c.env)
   try {
-    await db.prepare('DELETE FROM participants').run()
+    await db.prepare('DELETE FROM participants WHERE role = ?').bind('미치나').run()
   } catch (error) {
     const message = String(error || '')
     if (/no such table: participants/i.test(message)) {

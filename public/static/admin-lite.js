@@ -567,7 +567,7 @@ async function handleDeleteList() {
     }
     state.summary = { total: 0, active: 0, expired: 0 };
     renderMichinaStatus();
-    setMessage(elements.uploadStatus, '명단이 모두 삭제되었습니다.', 'success');
+    setMessage(elements.uploadStatus, '미치나 명단이 모두 삭제되었습니다.', 'success');
     showToast('명단을 모두 삭제했습니다.');
     if (typeof window !== 'undefined') {
       window.alert('기존 명단이 초기화되었습니다.');
