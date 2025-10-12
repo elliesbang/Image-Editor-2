@@ -182,6 +182,24 @@ const state = {
   processing: false,
   analysis: new Map(),
   analysisMode: 'original',
+  analysisProgress: {
+    status: 'idle',
+    message: '',
+    percent: 0,
+    phase: 'precheck',
+    totalImages: 0,
+    completedImages: 0,
+    visionStep: 0,
+    controller: null,
+    timeoutId: 0,
+    fauxTimer: 0,
+    successTimer: 0,
+    resetTimer: 0,
+    runId: 0,
+    abortReason: '',
+    lastMode: 'original',
+    lastTarget: null,
+  },
   user: {
     isLoggedIn: false,
     name: '',
@@ -817,6 +835,14 @@ const elements = {
   analysisHint: document.querySelector('[data-role="analysis-hint"]'),
   analysisMeta: document.querySelector('[data-role="analysis-meta"]'),
   analysisHeadline: document.querySelector('[data-role="analysis-title"]'),
+  analysisProgress: document.querySelector('[data-role="analysis-progress"]'),
+  analysisProgressMessage: document.querySelector('[data-role="analysis-progress-message"]'),
+  analysisProgressBar: document.querySelector('[data-role="analysis-progress-bar"]'),
+  analysisProgressFill: document.querySelector('[data-role="analysis-progress-fill"]'),
+  analysisProgressSuccess: document.querySelector('[data-role="analysis-progress-success"]'),
+  analysisProgressError: document.querySelector('[data-role="analysis-progress-error"]'),
+  analysisProgressErrorMessage: document.querySelector('[data-role="analysis-progress-error-message"]'),
+  analysisProgressRetry: document.querySelector('[data-action="analysis-retry"]'),
   analysisKeywordResult: document.querySelector('#keyword-result'),
   analysisKeywordTextarea: document.querySelector('#keyword-list'),
   analysisSeoTitle: document.querySelector('#seo-title'),
@@ -6811,6 +6837,262 @@ function removeAnalysisFor(type, id) {
   state.analysis.delete(`${type}:${id}`)
 }
 
+const ANALYSIS_PHASE_WEIGHTS = Object.freeze({
+  precheck: 5,
+  upload: 15,
+  vision: 50,
+  aggregate: 20,
+  title: 10,
+})
+
+const ANALYSIS_FAUX_MAX_PERCENT = 85
+const ANALYSIS_TIMEOUT_MS = 60000
+const ANALYSIS_SUCCESS_MESSAGE_DELAY = 600
+const ANALYSIS_RESET_DELAY = 2200
+
+const ANALYSIS_ERROR_MESSAGES = {
+  timeout: '분석이 지연되어 중단되었습니다. 다시 시도해 주세요.',
+  aborted: '분석이 취소되었습니다. 다시 시도해 주세요.',
+  error: '분석에 실패했습니다. 잠시 후 다시 시도해 주세요.',
+}
+
+function clampProgressPercent(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 0
+  }
+  if (value < 0) return 0
+  if (value > 100) return 100
+  return value
+}
+
+function clearAnalysisProgressTimeout() {
+  if (state.analysisProgress.timeoutId) {
+    clearTimeout(state.analysisProgress.timeoutId)
+    state.analysisProgress.timeoutId = 0
+  }
+}
+
+function clearAnalysisSuccessTimers() {
+  if (state.analysisProgress.successTimer) {
+    clearTimeout(state.analysisProgress.successTimer)
+    state.analysisProgress.successTimer = 0
+  }
+  if (state.analysisProgress.resetTimer) {
+    clearTimeout(state.analysisProgress.resetTimer)
+    state.analysisProgress.resetTimer = 0
+  }
+}
+
+function stopAnalysisFauxProgress() {
+  if (state.analysisProgress.fauxTimer) {
+    clearInterval(state.analysisProgress.fauxTimer)
+    state.analysisProgress.fauxTimer = 0
+  }
+}
+
+function updateAnalysisProgressDom() {
+  const container = elements.analysisProgress instanceof HTMLElement ? elements.analysisProgress : null
+  if (!container) return
+
+  const { status, phase } = state.analysisProgress
+  const normalizedStatus = status || 'idle'
+  const normalizedPhase = phase || 'precheck'
+
+  container.dataset.status = normalizedStatus
+  container.dataset.phase = normalizedPhase
+
+  if (normalizedStatus === 'idle') {
+    container.classList.add('is-idle')
+    container.setAttribute('aria-hidden', 'true')
+  } else {
+    container.classList.remove('is-idle')
+    container.setAttribute('aria-hidden', 'false')
+  }
+
+  if (elements.analysisProgressMessage instanceof HTMLElement) {
+    if (normalizedStatus === 'running' && state.analysisProgress.message) {
+      elements.analysisProgressMessage.textContent = state.analysisProgress.message
+      elements.analysisProgressMessage.hidden = false
+    } else {
+      elements.analysisProgressMessage.textContent = ''
+      elements.analysisProgressMessage.hidden = true
+    }
+  }
+
+  if (elements.analysisProgressBar instanceof HTMLElement) {
+    const percent = clampProgressPercent(state.analysisProgress.percent)
+    elements.analysisProgressBar.hidden = normalizedStatus !== 'running'
+    elements.analysisProgressBar.setAttribute('aria-valuenow', String(Math.round(percent)))
+    elements.analysisProgressBar.setAttribute('aria-valuetext', `${Math.round(percent)}%`)
+  }
+
+  if (elements.analysisProgressFill instanceof HTMLElement) {
+    elements.analysisProgressFill.style.width = `${clampProgressPercent(state.analysisProgress.percent)}%`
+  }
+
+  if (elements.analysisProgressSuccess instanceof HTMLElement) {
+    if (normalizedStatus === 'success') {
+      elements.analysisProgressSuccess.hidden = false
+      elements.analysisProgressSuccess.textContent = state.analysisProgress.message || '분석 완료'
+    } else {
+      elements.analysisProgressSuccess.hidden = true
+    }
+  }
+
+  if (elements.analysisProgressError instanceof HTMLElement) {
+    if (normalizedStatus === 'error') {
+      elements.analysisProgressError.hidden = false
+      if (elements.analysisProgressErrorMessage instanceof HTMLElement) {
+        elements.analysisProgressErrorMessage.textContent =
+          state.analysisProgress.message || ANALYSIS_ERROR_MESSAGES.error
+      }
+    } else {
+      elements.analysisProgressError.hidden = true
+    }
+  }
+
+  if (elements.analysisProgressRetry instanceof HTMLButtonElement) {
+    elements.analysisProgressRetry.disabled = normalizedStatus === 'running'
+  }
+}
+
+function setAnalysisProgress(update) {
+  Object.assign(state.analysisProgress, update)
+  state.analysisProgress.percent = clampProgressPercent(state.analysisProgress.percent)
+  if (!state.analysisProgress.phase) {
+    state.analysisProgress.phase = 'precheck'
+  }
+  updateAnalysisProgressDom()
+}
+
+function resetAnalysisProgress() {
+  if (state.analysisProgress.controller && typeof state.analysisProgress.controller.abort === 'function') {
+    try {
+      state.analysisProgress.controller.abort()
+    } catch (error) {
+      console.warn('분석 요청을 초기화하는 중 abort 처리에 실패했습니다.', error)
+    }
+  }
+
+  clearAnalysisProgressTimeout()
+  stopAnalysisFauxProgress()
+  clearAnalysisSuccessTimers()
+
+  Object.assign(state.analysisProgress, {
+    status: 'idle',
+    message: '',
+    percent: 0,
+    phase: 'precheck',
+    totalImages: 0,
+    completedImages: 0,
+    visionStep: 0,
+    controller: null,
+    timeoutId: 0,
+    fauxTimer: 0,
+    successTimer: 0,
+    resetTimer: 0,
+    runId: 0,
+    abortReason: '',
+    lastMode: 'original',
+    lastTarget: null,
+  })
+
+  updateAnalysisProgressDom()
+}
+
+function startAnalysisFauxProgress(runId, maxPercent = ANALYSIS_FAUX_MAX_PERCENT) {
+  stopAnalysisFauxProgress()
+  state.analysisProgress.fauxTimer = window.setInterval(() => {
+    if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+      stopAnalysisFauxProgress()
+      return
+    }
+
+    const currentPercent = clampProgressPercent(state.analysisProgress.percent)
+    if (currentPercent >= maxPercent - 0.1) {
+      setAnalysisProgress({ percent: maxPercent })
+      stopAnalysisFauxProgress()
+      return
+    }
+
+    const remaining = Math.max(0, maxPercent - currentPercent)
+    const increment = remaining > 20 ? 2.8 : remaining > 5 ? 1.1 : 0.35
+    setAnalysisProgress({ percent: currentPercent + increment })
+  }, 600)
+}
+
+function completeAnalysisSuccess(message, runId) {
+  if (state.analysisProgress.runId !== runId) {
+    return
+  }
+
+  clearAnalysisProgressTimeout()
+  stopAnalysisFauxProgress()
+  clearAnalysisSuccessTimers()
+  state.analysisProgress.controller = null
+  state.analysisProgress.abortReason = ''
+
+  const finalMessage = message || '분석이 완료되었습니다.'
+
+  setAnalysisProgress({
+    status: 'running',
+    message: '결과를 정리하고 있어요…',
+    percent: 100,
+    phase: 'finalize',
+  })
+
+  state.analysisProgress.successTimer = window.setTimeout(() => {
+    if (state.analysisProgress.runId !== runId) {
+      return
+    }
+
+    setAnalysisProgress({
+      status: 'success',
+      message: finalMessage,
+      percent: 100,
+      phase: 'finalize',
+    })
+
+    state.analysisProgress.successTimer = 0
+    state.analysisProgress.resetTimer = window.setTimeout(() => {
+      if (state.analysisProgress.runId !== runId) {
+        return
+      }
+      resetAnalysisProgress()
+    }, ANALYSIS_RESET_DELAY)
+  }, ANALYSIS_SUCCESS_MESSAGE_DELAY)
+}
+
+function completeAnalysisError(reason, error, runId) {
+  if (state.analysisProgress.runId !== runId) {
+    return
+  }
+
+  if (error && reason !== 'aborted') {
+    console.error('키워드 분석 실패:', error)
+  }
+  if (reason === 'timeout') {
+    console.warn('키워드 분석 요청이 제한 시간(60초)을 초과하여 중단되었습니다.')
+  }
+
+  clearAnalysisProgressTimeout()
+  stopAnalysisFauxProgress()
+  clearAnalysisSuccessTimers()
+  state.analysisProgress.controller = null
+
+  const fallbackPercent =
+    ANALYSIS_PHASE_WEIGHTS.precheck + ANALYSIS_PHASE_WEIGHTS.upload
+
+  setAnalysisProgress({
+    status: 'error',
+    message: ANALYSIS_ERROR_MESSAGES[reason] || ANALYSIS_ERROR_MESSAGES.error,
+    percent: Math.min(ANALYSIS_FAUX_MAX_PERCENT, Math.max(state.analysisProgress.percent, fallbackPercent)),
+    phase: 'finalize',
+  })
+
+  state.analysisProgress.abortReason = ''
+}
+
 function displayAnalysisFor(target) {
   if (
     !elements.analysisPanel ||
@@ -6873,6 +7155,9 @@ function displayAnalysisFor(target) {
         ? '처리된 결과 이미지를 생성한 뒤 “키워드 분석”을 눌러보세요.'
         : '원본 이미지를 업로드하면 “키워드 분석”을 사용할 수 있습니다.'
     resetView(hint)
+    if (state.analysisProgress.status !== 'running') {
+      resetAnalysisProgress()
+    }
     return
   }
 
@@ -7480,7 +7765,14 @@ async function analyzeCurrentImage() {
         ? '처리된 이미지를 선택하거나 생성한 뒤 다시 시도해주세요.'
         : '먼저 원본 이미지를 업로드해주세요.'
     setStatus(message, 'danger')
+    if (state.analysisProgress.status !== 'running') {
+      resetAnalysisProgress()
+    }
     displayAnalysisFor()
+    return
+  }
+
+  if (state.analysisProgress.status === 'running') {
     return
   }
 
@@ -7488,6 +7780,9 @@ async function analyzeCurrentImage() {
 
   if (!item) {
     setStatus('선택한 이미지를 찾을 수 없습니다.', 'danger')
+    if (state.analysisProgress.status !== 'running') {
+      resetAnalysisProgress()
+    }
     displayAnalysisFor()
     return
   }
@@ -7499,15 +7794,84 @@ async function analyzeCurrentImage() {
   displayAnalysisFor(target)
   toggleProcessing(true)
   setStage('export')
-  setStatus('이미지를 분석하는 중입니다…', 'info', 0)
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  const runId = Date.now()
+  const totalImages = 1
+  const visionStep = ANALYSIS_PHASE_WEIGHTS.vision / Math.max(1, totalImages)
+
+  clearAnalysisSuccessTimers()
+  stopAnalysisFauxProgress()
+  clearAnalysisProgressTimeout()
+
+  setAnalysisProgress({
+    status: 'running',
+    message: '이미지를 준비하고 있어요…',
+    percent: 0,
+    phase: 'precheck',
+    totalImages,
+    completedImages: 0,
+    visionStep,
+    controller,
+    runId,
+    abortReason: '',
+    lastMode: mode,
+    lastTarget: target,
+  })
+
+  if (controller) {
+    state.analysisProgress.controller = controller
+    state.analysisProgress.timeoutId = window.setTimeout(() => {
+      if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+        return
+      }
+      state.analysisProgress.abortReason = 'timeout'
+      try {
+        controller.abort()
+      } catch (error) {
+        console.warn('분석 요청 타임아웃 처리 중 abort에 실패했습니다.', error)
+      }
+    }, ANALYSIS_TIMEOUT_MS)
+  } else {
+    state.analysisProgress.timeoutId = window.setTimeout(() => {
+      if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+        return
+      }
+      completeAnalysisError('timeout', new Error('timeout'), runId)
+    }, ANALYSIS_TIMEOUT_MS)
+  }
+
+  const precheckPercent = ANALYSIS_PHASE_WEIGHTS.precheck
+  const uploadPercent = precheckPercent + ANALYSIS_PHASE_WEIGHTS.upload
 
   try {
+    setAnalysisProgress({
+      message: '이미지 정보를 확인하는 중입니다…',
+      percent: precheckPercent,
+      phase: 'precheck',
+    })
+
     const source = target.type === 'upload' ? item.dataUrl : item.objectUrl
     const dataUrl = await ensureDataUrl(source)
+
+    if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+      return
+    }
+
+    setAnalysisProgress({
+      message: '분석을 위한 이미지를 최적화하고 있어요…',
+      percent: uploadPercent,
+      phase: 'upload',
+    })
+
     const { canvas, ctx } = await canvasFromDataUrl(dataUrl)
     const surface = prepareAnalysisSurface(canvas, ctx)
     if (!surface.ctx) throw new Error('분석용 캔버스를 준비하지 못했습니다.')
     const scaledDataUrl = surface.canvas.toDataURL('image/png', 0.92)
+
+    if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+      return
+    }
 
     let analysis
     let usedFallback = false
@@ -7518,6 +7882,14 @@ async function analyzeCurrentImage() {
     } catch (error) {
       // ignore assignment issues
     }
+
+    setAnalysisProgress({
+      message: 'AI가 이미지를 분석하고 있어요…',
+      phase: 'vision',
+      percent: Math.max(uploadPercent, state.analysisProgress.percent),
+    })
+
+    startAnalysisFauxProgress(runId)
 
     try {
       const response = await fetch('/api/keyword-analyze', {
@@ -7531,10 +7903,11 @@ async function analyzeCurrentImage() {
           targetType: target.type,
           mode,
         }),
+        signal: controller?.signal,
       })
 
       const payload = await response.json().catch(() => ({}))
-      if (!response.ok) {
+      if (!response.ok || payload?.ok === false) {
         const reasonMessage =
           typeof payload?.message === 'string' && payload.message
             ? payload.message
@@ -7568,7 +7941,32 @@ async function analyzeCurrentImage() {
         provider = 'openai'
       }
 
+      stopAnalysisFauxProgress()
+      if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+        return
+      }
+
+      const visionComplete =
+        ANALYSIS_PHASE_WEIGHTS.precheck +
+        ANALYSIS_PHASE_WEIGHTS.upload +
+        state.analysisProgress.visionStep * state.analysisProgress.totalImages
+
+      setAnalysisProgress({
+        phase: 'vision',
+        percent: Math.max(state.analysisProgress.percent, visionComplete),
+        message: 'AI 응답을 정리하고 있어요…',
+        completedImages: state.analysisProgress.totalImages,
+      })
+
+      const aggregatePercent = visionComplete + ANALYSIS_PHASE_WEIGHTS.aggregate
+
       const normalizedTitle = title || keywords.slice(0, 3).join(' ')
+
+      setAnalysisProgress({
+        phase: 'aggregate',
+        message: '키워드와 요약을 정리하고 있어요…',
+        percent: Math.max(state.analysisProgress.percent, aggregatePercent),
+      })
 
       analysis = {
         title: normalizedTitle,
@@ -7580,8 +7978,31 @@ async function analyzeCurrentImage() {
         mode,
       }
     } catch (apiError) {
+      if (controller?.signal?.aborted && state.analysisProgress.abortReason === 'timeout') {
+        throw apiError
+      }
+
       fallbackReason = apiError instanceof Error ? apiError.message : String(apiError)
       console.warn('AI 분석 실패, 로컬 분석으로 대체합니다.', fallbackReason)
+
+      stopAnalysisFauxProgress()
+      if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+        return
+      }
+
+      const visionComplete =
+        ANALYSIS_PHASE_WEIGHTS.precheck +
+        ANALYSIS_PHASE_WEIGHTS.upload +
+        state.analysisProgress.visionStep * state.analysisProgress.totalImages
+
+      const aggregatePercent = visionComplete + ANALYSIS_PHASE_WEIGHTS.aggregate
+
+      setAnalysisProgress({
+        phase: 'aggregate',
+        message: '로컬 분석으로 전환했어요. 결과를 정리하는 중입니다…',
+        percent: Math.max(state.analysisProgress.percent, aggregatePercent),
+      })
+
       const fallbackAnalysis = analyzeCanvasForKeywords(surface.canvas, surface.ctx)
       analysis = {
         ...fallbackAnalysis,
@@ -7593,6 +8014,19 @@ async function analyzeCurrentImage() {
       usedFallback = true
     }
 
+    if (state.analysisProgress.runId !== runId || state.analysisProgress.status !== 'running') {
+      return
+    }
+
+    setAnalysisProgress({
+      phase: 'title',
+      message: usedFallback
+        ? '로컬 분석 결과를 마무리하고 있어요…'
+        : 'SEO 제목을 마무리하고 있어요…',
+      percent: 100,
+      completedImages: state.analysisProgress.totalImages,
+    })
+
     const key = getAnalysisKey(target)
     if (key) {
       state.analysis.set(key, analysis)
@@ -7600,30 +8034,23 @@ async function analyzeCurrentImage() {
     displayAnalysisFor(target)
     consumeCredits('analysis', 1)
 
-    const statusHeadline = analysis.title || analysis.keywords.slice(0, 3).join(', ')
-    if (usedFallback) {
-      if (fallbackReason) {
-        console.warn('AI 분석 실패 사유:', fallbackReason)
-      }
-      setStatus('AI 분석에 실패하여 로컬 분석 결과를 대신 제공했습니다.', 'warning')
-    } else {
-      let providerLabel = 'AI 키워드 분석'
-      if (analysis.provider === 'gemini+openai') {
-        providerLabel = 'Gemini + OpenAI 키워드 분석'
-      } else if (analysis.provider === 'gemini') {
-        providerLabel = 'Gemini 키워드 분석'
-      } else if (analysis.provider === 'openai') {
-        providerLabel = 'OpenAI 키워드 분석'
-      }
-      const successMessage = statusHeadline
-        ? `${providerLabel} 완료: ${statusHeadline}`
-        : `${providerLabel}이 완료되었습니다.`
-      setStatus(successMessage, 'success')
+    const successMessage = usedFallback
+      ? 'AI 분석에 실패하여 로컬 분석 결과를 제공했습니다.'
+      : '분석이 완료되었습니다.'
+
+    if (usedFallback && fallbackReason) {
+      console.warn('AI 분석 실패 사유:', fallbackReason)
     }
+
+    completeAnalysisSuccess(successMessage, runId)
   } catch (error) {
-    console.error(error)
-    setStatus('키워드 분석 기능이 일시적으로 중단되었습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    const timeoutTriggered = state.analysisProgress.abortReason === 'timeout'
+    const abortError = error instanceof DOMException && error.name === 'AbortError'
+    const reason = timeoutTriggered ? 'timeout' : abortError ? 'aborted' : 'error'
+    completeAnalysisError(reason, error, runId)
   } finally {
+    clearAnalysisProgressTimeout()
+    stopAnalysisFauxProgress()
     toggleProcessing(false)
     displayAnalysisFor(target)
   }
@@ -9277,6 +9704,15 @@ function attachEventListeners() {
     elements.analysisButton.addEventListener('click', analyzeCurrentImage)
   }
 
+  if (elements.analysisProgressRetry instanceof HTMLButtonElement) {
+    elements.analysisProgressRetry.addEventListener('click', () => {
+      if (state.analysisProgress.status === 'running') {
+        return
+      }
+      analyzeCurrentImage()
+    })
+  }
+
   if (elements.analysisCopyButton instanceof HTMLButtonElement) {
     elements.analysisCopyButton.addEventListener('click', copyAnalysisToClipboard)
   }
@@ -9507,6 +9943,7 @@ function init() {
   }
   renderUploads()
   renderResults()
+  resetAnalysisProgress()
   displayAnalysisFor(null)
   refreshAccessStates()
 
