@@ -4028,6 +4028,29 @@ function renderChallengeProgress(profile) {
   `
 }
 
+function resolveChallengeDayState(profile, day) {
+  if (!profile || !Array.isArray(profile.days)) {
+    return null
+  }
+  const numericDay = Number(day)
+  if (!Number.isFinite(numericDay)) {
+    return null
+  }
+  return profile.days.find((entry) => Number(entry?.day) === numericDay) || null
+}
+
+function formatChallengeDayBoundary(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('ko', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
 function renderChallengeDays(profile) {
   if (!(elements.challengeDays instanceof HTMLElement)) return
   if (!profile) {
@@ -4037,10 +4060,13 @@ function renderChallengeDays(profile) {
   const required = Number(profile.required ?? 15)
   const submissions = profile.submissions ?? {}
   const totalSubmitted = Object.keys(submissions).length
-  const nextDay = Math.min(required, totalSubmitted + 1)
+  const nextDayFallback = Math.min(required, totalSubmitted + 1)
+  const dayStates = Array.isArray(profile.days) ? profile.days : []
+  const dayStateMap = new Map(dayStates.map((entry) => [Number(entry.day), entry]))
   const items = []
   for (let day = 1; day <= required; day += 1) {
     const submission = submissions[String(day)]
+    const state = dayStateMap.get(day) || null
     let statusText = '예정'
     let className = 'is-upcoming'
     if (submission) {
@@ -4050,10 +4076,22 @@ function renderChallengeDays(profile) {
     } else if (profile.completed) {
       statusText = '완주 완료'
       className = 'is-complete'
-    } else if (day === nextDay) {
+    } else if (state?.isActiveDay) {
+      const deadline = formatChallengeDayBoundary(state.end)
+      statusText = deadline ? `제출 가능 · 마감 ${deadline}` : '제출 가능'
+      className = 'is-current'
+    } else if (state?.isClosed) {
+      const closedLabel = formatChallengeDayBoundary(state.end)
+      statusText = closedLabel ? `마감 · ${closedLabel}` : '마감'
+      className = 'is-pending'
+    } else if (state?.isUpcoming) {
+      const openLabel = formatChallengeDayBoundary(state.start)
+      statusText = openLabel ? `오픈 예정 · ${openLabel}` : '오픈 예정'
+      className = 'is-upcoming'
+    } else if (day === nextDayFallback) {
       statusText = '제출 대기'
       className = 'is-current'
-    } else if (day < nextDay) {
+    } else if (day < nextDayFallback) {
       statusText = '기록 없음'
       className = 'is-pending'
     }
@@ -4086,21 +4124,65 @@ function updateChallengeSubmitState(profile) {
   }
   elements.challengeSubmitForm.hidden = false
   const isCompleted = Boolean(profile.completed)
-  elements.challengeSubmitForm.dataset.state = isSubmitting ? 'loading' : isCompleted ? 'completed' : 'active'
+  const isExpired = Boolean(profile.expired)
+  const isUpcoming = Boolean(profile.upcoming)
+  const hasDayStates = Array.isArray(profile.days) && profile.days.length > 0
+  let selectedDay = elements.challengeDaySelect instanceof HTMLSelectElement ? parseInt(elements.challengeDaySelect.value, 10) : NaN
+  if (!Number.isFinite(selectedDay) && Number.isFinite(Number(profile.challengePeriod?.activeDay))) {
+    selectedDay = Number(profile.challengePeriod?.activeDay)
+  }
+  if (!Number.isFinite(selectedDay)) {
+    if (hasDayStates && profile.days.length > 0) {
+      selectedDay = Number(profile.days[0]?.day ?? 1)
+    } else {
+      selectedDay = 1
+    }
+  }
+  const selectedDayState = resolveChallengeDayState(profile, selectedDay)
+  const isDayActive = hasDayStates ? Boolean(selectedDayState?.isActiveDay) : !isExpired
+  const shouldDisableInputs = isSubmitting || isCompleted || isExpired || !isDayActive
+  const shouldDisableSelect = isSubmitting || isCompleted
+
+  const formState = isSubmitting ? 'loading' : isCompleted ? 'completed' : shouldDisableInputs ? 'locked' : 'active'
+  elements.challengeSubmitForm.dataset.state = formState
+
   controls.forEach((control) => {
     if (!(control instanceof HTMLElement)) return
-    if (isSubmitting || isCompleted) {
+    if (control === elements.challengeDaySelect) {
+      if (shouldDisableSelect) {
+        control.setAttribute('disabled', 'true')
+      } else {
+        control.removeAttribute('disabled')
+      }
+    } else if (shouldDisableInputs) {
       control.setAttribute('disabled', 'true')
     } else {
       control.removeAttribute('disabled')
     }
   })
+
   if (submitButton instanceof HTMLButtonElement) {
-    submitButton.disabled = isSubmitting || isCompleted
+    submitButton.disabled = shouldDisableInputs
+    const showClosedTooltip = !isSubmitting && !isCompleted && (isExpired || !isDayActive)
+    if (showClosedTooltip) {
+      submitButton.title = '마감된 일차입니다'
+    } else {
+      submitButton.removeAttribute('title')
+    }
   }
+
   if (elements.challengeSubmitHint instanceof HTMLElement) {
     if (isCompleted) {
       elements.challengeSubmitHint.textContent = '축하합니다! 이미 완주하셨습니다. 수정이 필요하면 관리자에게 문의하세요.'
+    } else if (isExpired) {
+      const hasPeriod = Boolean(profile.challengePeriod)
+      elements.challengeSubmitHint.textContent = hasPeriod
+        ? '챌린지 기간이 종료되었습니다. 관리자에게 문의해주세요.'
+        : '챌린지 기간이 설정되지 않았습니다. 관리자에게 문의해주세요.'
+    } else if (isUpcoming) {
+      elements.challengeSubmitHint.textContent = '챌린지가 아직 시작되지 않았습니다. 시작일에 맞춰 제출해주세요.'
+    } else if (!isDayActive) {
+      elements.challengeSubmitHint.textContent = '선택한 일차는 마감되었습니다. 진행 중인 일차를 선택해주세요.'
     } else {
       elements.challengeSubmitHint.textContent = 'URL 또는 이미지를 첨부해 제출하세요. 파일을 선택하면 URL보다 우선합니다.'
     }
@@ -4234,6 +4316,15 @@ function renderChallengeDashboard() {
 
   renderChallengeProgress(profile)
   renderChallengeDays(profile)
+  if (elements.challengeDaySelect instanceof HTMLSelectElement && profile) {
+    const activeDay = Number(profile.challengePeriod?.activeDay)
+    if (Number.isFinite(activeDay) && activeDay > 0) {
+      const currentSelection = parseInt(elements.challengeDaySelect.value, 10)
+      if (!Number.isFinite(currentSelection) || currentSelection !== activeDay) {
+        elements.challengeDaySelect.value = String(activeDay)
+      }
+    }
+  }
   updateChallengeSubmitState(profile)
   renderCertificateSection(profile)
   updatePlanExperience()
@@ -4356,7 +4447,17 @@ async function handleChallengeSubmit(event) {
       }),
     })
     if (!response.ok) {
-      throw new Error(`challenge_submit_failed_${response.status}`)
+      const errorDetail = await response.json().catch(() => null)
+      const serverMessage =
+        errorDetail && typeof errorDetail.message === 'string' && errorDetail.message.trim()
+          ? errorDetail.message.trim()
+          : ''
+      const fallbackMessage =
+        response.status === 400
+          ? '제출할 수 없는 일차입니다. 진행 가능한 일차를 선택해주세요.'
+          : `제출을 저장하는 중 오류가 발생했습니다. (코드 ${response.status})`
+      setStatus(serverMessage || fallbackMessage, 'danger')
+      return
     }
     const payload = await response.json().catch(() => ({}))
     if (payload && payload.ok && payload.participant) {
@@ -4430,6 +4531,7 @@ function handleChallengeDayClick(event) {
   if (elements.challengeDaySelect instanceof HTMLSelectElement) {
     elements.challengeDaySelect.value = String(day)
   }
+  updateChallengeSubmitState(state.challenge.profile)
 }
 
 function setLoginModalMode(mode = 'choice') {
@@ -8766,6 +8868,20 @@ async function downloadResults(ids, mode = 'selected') {
 }
 
 function attachEventListeners() {
+  if (elements.challengeSubmitForm instanceof HTMLFormElement) {
+    elements.challengeSubmitForm.addEventListener('submit', handleChallengeSubmit)
+  }
+
+  if (elements.challengeDays instanceof HTMLElement) {
+    elements.challengeDays.addEventListener('click', handleChallengeDayClick)
+  }
+
+  if (elements.challengeDaySelect instanceof HTMLSelectElement) {
+    elements.challengeDaySelect.addEventListener('change', () => {
+      updateChallengeSubmitState(state.challenge.profile)
+    })
+  }
+
   if (elements.fileInput) {
     elements.fileInput.addEventListener('change', (event) => {
       const target = event.currentTarget
