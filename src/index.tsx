@@ -4,6 +4,7 @@ import { serveStatic } from 'hono/cloudflare-pages'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
 import { renderer } from './renderer'
+import { registerAuthRoutes } from '../routes/auth.js'
 
 type D1Result<T = unknown> = {
   success: boolean
@@ -1747,6 +1748,8 @@ function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
+
+registerAuthRoutes(app)
 
 app.use('*', async (c, next) => {
   await next()
