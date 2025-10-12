@@ -816,47 +816,9 @@ async function ensureGoogleClient() {
     throw new Error('GOOGLE_CLIENT_ID_MISSING')
   }
 
-  if (runtime.google.idInitialized && runtime.google.idClient) {
-    return runtime.google.idClient
-  }
-
-  if (runtime.google.prefetchPromise) {
-    return runtime.google.prefetchPromise
-  }
-
-  const initializePromise = (async () => {
-    await loadGoogleSdk()
-    const accounts = await waitForGoogleSdk()
-    const idLibrary = accounts?.id
-
-    if (!idLibrary || typeof idLibrary.initialize !== 'function') {
-      throw new Error('GOOGLE_SDK_UNAVAILABLE')
-    }
-
-    idLibrary.initialize({
-      client_id: clientId,
-      callback: handleCredentialResponse,
-      auto_select: false,
-      cancel_on_tap_outside: false,
-      context: 'signin',
-    })
-
-    runtime.google.idInitialized = true
-    runtime.google.idClient = idLibrary
-    return idLibrary
-  })()
-
-  runtime.google.prefetchPromise = initializePromise
-    .catch((error) => {
-      runtime.google.idInitialized = false
-      runtime.google.idClient = null
-      throw error
-    })
-    .finally(() => {
-      runtime.google.prefetchPromise = null
-    })
-
-  return runtime.google.prefetchPromise
+  runtime.google.idInitialized = true
+  runtime.google.idClient = null
+  return true
 }
 
 const elements = {
@@ -2243,14 +2205,18 @@ function updateGoogleProviderAvailability() {
     setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
   }
-  if (runtime.google.idInitialized && runtime.google.idClient) {
-    setGoogleButtonState('idle')
-    return
-  }
   if (runtime.google.prefetchPromise) {
     setGoogleButtonState('initializing')
     return
   }
+  runtime.google.idInitialized = true
+  if (elements.googleLoginButton instanceof HTMLButtonElement) {
+    elements.googleLoginButton.hidden = false
+    elements.googleLoginButton.setAttribute('aria-hidden', 'false')
+    elements.googleLoginButton.removeAttribute('aria-disabled')
+    elements.googleLoginButton.disabled = false
+  }
+  setGoogleLoginHelper('', 'muted')
   setGoogleButtonState('idle')
 }
 
@@ -5359,33 +5325,23 @@ async function handleGoogleLogin(event) {
     event.preventDefault()
   }
 
-  try {
-    setGoogleButtonState('loading', 'Google 계정을 확인하는 중…')
-    const idLibrary = await ensureGoogleClient()
-    runtime.google.promptActive = true
-    idLibrary.prompt((notification) => {
-      const notDisplayed =
-        typeof notification?.isNotDisplayed === 'function' && notification.isNotDisplayed()
-      const skipped = typeof notification?.isSkippedMoment === 'function' && notification.isSkippedMoment()
-      const dismissed =
-        typeof notification?.isDismissedMoment === 'function' && notification.isDismissedMoment()
+  const config = getAppConfig()
+  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
 
-      if (notDisplayed) {
-        runtime.google.promptActive = false
-        setGoogleButtonState('error', 'Google 로그인 다시 시도')
-        setGoogleLoginHelper(
-          'Google 로그인 창을 표시할 수 없습니다. 팝업 차단을 해제한 뒤 다시 시도해주세요.',
-          'danger',
-        )
-      } else if (skipped || dismissed) {
-        runtime.google.promptActive = false
-        setGoogleButtonState('idle')
-        setGoogleLoginHelper('Google 로그인이 취소되었습니다.', 'warning')
-      }
-    })
+  if (!ENABLE_GOOGLE_LOGIN || !clientId) {
+    setGoogleButtonState('disabled')
+    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    return
+  }
+
+  try {
+    setGoogleButtonState('loading', 'Google 로그인 페이지로 이동합니다…')
+    setGoogleLoginHelper('Google 로그인 페이지로 이동합니다…', 'info')
+    await ensureGoogleClient()
+    window.location.href = '/api/auth/login/google'
   } catch (error) {
     console.error('Google 로그인 초기화 중 오류', error)
-    setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    setGoogleLoginHelper('Google 로그인 준비 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
     setStatus('Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
     setGoogleButtonState('error', 'Google 로그인 다시 시도')
   }
