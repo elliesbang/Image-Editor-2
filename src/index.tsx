@@ -375,8 +375,7 @@ function renderAdminManagementPage() {
     <div class="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-6 md:px-10 md:py-12">
       <header class="mb-10 flex flex-col gap-5 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p class="text-sm font-medium uppercase tracking-[0.25em] text-yellow-600">Ellie's Bang Admin</p>
-          <h1 class="mt-2 text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
+          <h1 class="text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
           <p class="mt-2 text-sm text-[#6f5a26]">
             엘리의방 감성으로 미치나 챌린지를 관리하고, 전체 사용자 데이터를 한눈에 확인하세요.
           </p>
@@ -390,11 +389,39 @@ function renderAdminManagementPage() {
         </button>
       </header>
       <main class="flex-1">
-        <div class="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-          <div class="space-y-6">
-            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+        <div class="flex flex-col gap-6 lg:flex-row">
+          <aside class="lg:w-64">
+            <nav class="sticky top-10 space-y-6 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur">
+              <div>
+                <h2 class="text-sm font-semibold uppercase tracking-[0.25em] text-[#6f5a26]">카테고리</h2>
+                <ul class="mt-4 space-y-2 text-sm font-medium text-[#5b4100]">
+                  <li>
+                    <a href="#michina-section" class="flex items-center justify-between rounded-xl bg-primary/80 px-4 py-2 text-[#3f2f00] transition hover:bg-[#fbe743]">
+                      <span>미치나</span>
+                      <span class="text-xs">전용</span>
+                    </a>
+                  </li>
+                  <li>
+                    <a href="#database-section" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/40">
+                      <span>전체 디비</span>
+                      <span class="text-xs">데이터</span>
+                    </a>
+                  </li>
+                </ul>
+              </div>
+              <div class="rounded-2xl bg-ivory/70 p-4 text-xs text-[#6f5a26] shadow-inner">
+                <p class="font-semibold text-[#4f3b0f]">Tip</p>
+                <p class="mt-2 leading-relaxed">미치나 카테고리에는 챌린지 기간 · 참여 현황 · 명단 관리가 정리되어 있습니다.</p>
+              </div>
+            </nav>
+          </aside>
+          <div class="flex-1 space-y-6">
+            <section id="michina-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
               <div class="space-y-8">
-                <h2 class="text-lg font-semibold text-gray-900">📊 미치나 챌린저 관리</h2>
+                <div>
+                  <h2 class="text-lg font-semibold text-gray-900">📊 미치나 챌린저 관리</h2>
+                  <p class="mt-1 text-sm text-[#6f5a26]">챌린지 기간과 참여 현황, 명단을 한 곳에서 관리하세요.</p>
+                </div>
                 <div class="space-y-3 rounded-lg border border-[#f5eee9] bg-white/70 p-4 shadow-inner">
                   <h3 class="text-base font-medium text-gray-800">📅 챌린지 기간 설정</h3>
                   <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -468,55 +495,54 @@ function renderAdminManagementPage() {
                 </div>
               </div>
             </section>
-            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
-              <div class="mb-4 flex items-center justify-between gap-4">
-                <h2 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
-                  <span class="text-xl">👥</span>
-                  전체 사용자 DB 조회
-                </h2>
-                <span class="rounded-full bg-primary/60 px-3 py-1 text-xs font-semibold text-[#5b4100]">
-                  실시간 조회
-                </span>
-              </div>
-              <div class="overflow-hidden rounded-2xl border border-yellow-100 bg-white">
-                <div class="grid gap-3 border-b border-yellow-100 bg-ivory/70 p-4 text-sm text-gray-700" data-role="users-breakdown"></div>
-                <div class="overflow-x-auto">
-                  <table class="w-full text-left text-sm text-gray-700">
-                    <thead class="bg-ivory/80 text-gray-700">
-                      <tr>
-                        <th class="px-4 py-3 font-semibold">이름</th>
-                        <th class="px-4 py-3 font-semibold">이메일</th>
-                        <th class="px-4 py-3 font-semibold">등급</th>
-                        <th class="px-4 py-3 font-semibold">최근 로그인</th>
-                      </tr>
-                    </thead>
-                    <tbody id="userTableBody"></tbody>
-                  </table>
+            <section id="database-section" class="space-y-6">
+              <div class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+                <div class="mb-4 flex items-center justify-between gap-4">
+                  <h2 class="flex items-center gap-2 text-lg font-semibold text-gray-900">
+                    <span class="text-xl">👥</span>
+                    전체 사용자 DB 조회
+                  </h2>
+                  <span class="rounded-full bg-primary/60 px-3 py-1 text-xs font-semibold text-[#5b4100]">
+                    실시간 조회
+                  </span>
+                </div>
+                <div class="overflow-hidden rounded-2xl border border-yellow-100 bg-white">
+                  <div class="grid gap-3 border-b border-yellow-100 bg-ivory/70 p-4 text-sm text-gray-700" data-role="users-breakdown"></div>
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-gray-700">
+                      <thead class="bg-ivory/80 text-gray-700">
+                        <tr>
+                          <th class="px-4 py-3 font-semibold">이름</th>
+                          <th class="px-4 py-3 font-semibold">이메일</th>
+                          <th class="px-4 py-3 font-semibold">등급</th>
+                          <th class="px-4 py-3 font-semibold">최근 로그인</th>
+                        </tr>
+                      </thead>
+                      <tbody id="userTableBody"></tbody>
+                    </table>
                 </div>
               </div>
-              <p class="mt-3 rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium text-gray-700 shadow-inner" data-role="users-status" hidden></p>
-            </section>
-          </div>
-          <div class="space-y-6">
-            <section class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
-              <h2 class="mb-3 flex items-center gap-2 text-lg font-semibold text-gray-900">
-                <span class="text-xl">🗂️</span>
-                데이터 관리 가이드
-              </h2>
-              <ul class="space-y-2 text-sm text-[#6f5a26]">
-                <li class="flex items-start gap-2">
-                  <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
-                  기간 변경 후에는 명단을 다시 확인해 최신 상태를 유지하세요.
-                </li>
-                <li class="flex items-start gap-2">
-                  <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
-                  CSV 업로드는 UTF-8 인코딩을 사용하고, 이메일 열이 반드시 포함되어야 합니다.
-                </li>
-                <li class="flex items-start gap-2">
-                  <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
-                  사용자 DB는 실시간으로 갱신되므로 새로고침 없이도 최신 정보를 확인할 수 있습니다.
-                </li>
-              </ul>
+              <p class="rounded-xl bg-ivory/70 px-3 py-2 text-sm font-medium text-gray-700 shadow-inner" data-role="users-status" hidden></p>
+              <div class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
+                <h2 class="mb-3 flex items-center gap-2 text-lg font-semibold text-gray-900">
+                  <span class="text-xl">🗂️</span>
+                  데이터 관리 가이드
+                </h2>
+                <ul class="space-y-2 text-sm text-[#6f5a26]">
+                  <li class="flex items-start gap-2">
+                    <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
+                    기간 변경 후에는 명단을 다시 확인해 최신 상태를 유지하세요.
+                  </li>
+                  <li class="flex items-start gap-2">
+                    <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
+                    CSV 업로드는 UTF-8 인코딩을 사용하고, 이메일 열이 반드시 포함되어야 합니다.
+                  </li>
+                  <li class="flex items-start gap-2">
+                    <span class="mt-1 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-primary"></span>
+                    사용자 DB는 실시간으로 갱신되므로 새로고침 없이도 최신 정보를 확인할 수 있습니다.
+                  </li>
+                </ul>
+              </div>
             </section>
           </div>
         </div>
