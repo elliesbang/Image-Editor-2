@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm install --prefer-online --no-audit --force && vite build",
     "preview": "vite preview",
     "start": "node server.js"
   },
