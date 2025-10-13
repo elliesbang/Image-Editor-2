@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "preinstall": "npm cache clean --force || true",
+    "preinstall": "npm cache clean --force || true && npm config set registry https://registry.npmmirror.com",
+    "build": "npm cache clean --force && npm config set registry https://registry.npmmirror.com && npm install --prefer-online --no-audit --legacy-peer-deps --force && vite build",
     "dev": "vite",
-    "build": "npm cache clean --force && npm install --prefer-online --no-audit --legacy-peer-deps --force && vite build",
     "preview": "vite preview",
     "start": "node server.js"
   },
