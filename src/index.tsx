@@ -26,6 +26,7 @@ type D1Database = {
 }
 
 type Bindings = {
+  D1_MAIN?: D1Database
   DB_MAIN: D1Database
   DB_MICHINA: D1Database
   OPENAI_API_KEY?: string
@@ -74,15 +75,22 @@ type ChallengePeriodRow = {
   id: number
   start_date: string
   end_date: string
-  saved_at: string
+  saved_at?: string | null
+  saved_by?: string | null
+  updated_at?: string | null
+  updated_by?: string | null
 }
 
 type ChallengePeriodRecord = {
-  id: number
   startDate: string
   endDate: string
-  savedAt: string
+  updatedAt: string
+  updatedBy?: string
+  savedAt?: string
+  savedBy?: string
 }
+
+type ChallengePeriodSummary = ChallengePeriodRecord & { id: number }
 
 type MichinaListRow = {
   id: number
@@ -165,21 +173,6 @@ type MichinaUserRecord = {
   joinedAt: string
   role: string
   updatedAt: string
-}
-
-type ChallengePeriodRecord = {
-  startDate: string
-  endDate: string
-  updatedAt: string
-  updatedBy?: string
-}
-
-type ChallengePeriodRow = {
-  id: number
-  start_date: string
-  end_date: string
-  updated_at: string
-  updated_by?: string | null
 }
 
 type ChallengePeriodHistoryRow = {
@@ -1563,7 +1556,7 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
   try {
     await ensureChallengePeriodTable(db)
     const row = await db
-      .prepare('SELECT id, start_date, end_date, updated_at, updated_by FROM michina_period WHERE id = 1')
+      .prepare('SELECT id, start_date, end_date, saved_at, saved_by FROM challenge_periods ORDER BY saved_at DESC, id DESC LIMIT 1')
       .first<ChallengePeriodRow>()
     if (!row) {
       return null
@@ -1571,10 +1564,10 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
     if (!row.start_date || !row.end_date) {
       return null
     }
-    const updatedAt = typeof row.updated_at === 'string' && row.updated_at
-      ? `${row.updated_at.replace(' ', 'T')}Z`
+    const updatedAt = typeof row.saved_at === 'string' && row.saved_at
+      ? `${row.saved_at.replace(' ', 'T')}Z`
       : ''
-    const updatedBy = typeof row.updated_by === 'string' && row.updated_by.trim() ? row.updated_by.trim() : undefined
+    const updatedBy = typeof row.saved_by === 'string' && row.saved_by.trim() ? row.saved_by.trim() : undefined
     const period: ChallengePeriodRecord = {
       startDate: row.start_date,
       endDate: row.end_date,
@@ -1586,8 +1579,8 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
     return period
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: michina_period/i.test(message)) {
-      console.warn('[d1] michina_period table is not available; returning empty state')
+    if (/no such table: challenge_periods/i.test(message)) {
+      console.warn('[d1] challenge_periods table is not available; returning empty state')
       return null
     }
     console.error('[d1] Failed to load challenge period', error)
@@ -1596,45 +1589,11 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
 }
 
 async function ensureDashboardChallengePeriodTable(db: D1Database) {
-  try {
-    await db
-      .prepare(
-        "CREATE TABLE IF NOT EXISTS michina_period (id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT)",
-      )
-      .run()
-    try {
-      await db.prepare('ALTER TABLE michina_period ADD COLUMN updated_by TEXT').run()
-    } catch (error) {
-      const message = String(error || '')
-      if (!/duplicate column name: updated_by/i.test(message)) {
-        throw error
-      }
-    }
-    try {
-      await db.prepare('ALTER TABLE michina_period ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP').run()
-    } catch (error) {
-      const message = String(error || '')
-      if (!/duplicate column name: created_at/i.test(message)) {
-        throw error
-      }
-    }
-  } catch (error) {
-    console.error('[d1] Failed to ensure michina_period table', error)
-    throw error
-  }
+  await ensureChallengePeriodTable(db)
 }
 
 async function ensureChallengePeriodHistoryTable(db: D1Database) {
-  try {
-    await db
-      .prepare(
-        "CREATE TABLE IF NOT EXISTS michina_period_history (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, saved_by TEXT)",
-      )
-      .run()
-  } catch (error) {
-    console.error('[d1] Failed to ensure michina_period_history table', error)
-    throw error
-  }
+  await ensureChallengePeriodTable(db)
 }
 
 async function ensureMichinaDeadlineTable(db: D1Database) {
@@ -1729,18 +1688,16 @@ async function ensureParticipantsTable(db: D1Database) {
   }
 }
 
-async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDate: string, options: { updatedBy?: string } = {}) {
+async function saveChallengePeriodToDb(
+  db: D1Database,
+  startDate: string,
+  endDate: string,
+  options: { updatedBy?: string } = {},
+) {
   await ensureChallengePeriodTable(db)
-  await ensureChallengePeriodHistoryTable(db)
   await db
     .prepare(
-      "INSERT OR REPLACE INTO michina_period (id, start_date, end_date, updated_at, updated_by) VALUES (1, ?, ?, datetime('now'), ?)",
-    )
-    .bind(startDate, endDate, options.updatedBy ?? null)
-    .run()
-  await db
-    .prepare(
-      "INSERT INTO michina_period_history (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)",
+      "INSERT INTO challenge_periods (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)",
     )
     .bind(startDate, endDate, options.updatedBy ?? null)
     .run()
@@ -1749,12 +1706,10 @@ async function saveChallengePeriodToDb(db: D1Database, startDate: string, endDat
 
 async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeriodSummary[]> {
   try {
-    await ensureChallengePeriodHistoryTable(db)
+    await ensureChallengePeriodTable(db)
     const result = await db
-      .prepare(
-        'SELECT id, start_date, end_date, saved_at, saved_by FROM michina_period_history ORDER BY saved_at DESC, id DESC',
-      )
-      .all<ChallengePeriodHistoryRow>()
+      .prepare('SELECT id, start_date, end_date, saved_at, saved_by FROM challenge_periods ORDER BY saved_at DESC, id DESC')
+      .all<ChallengePeriodRow>()
     const rows = Array.isArray(result.results) ? result.results : []
     return rows
       .map((row) => {
@@ -1763,7 +1718,8 @@ async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeri
         if (!startDate || !endDate) {
           return null
         }
-        const updatedAt = row.saved_at ? `${row.saved_at.replace(' ', 'T')}Z` : ''
+        const savedAt = row.saved_at ?? ''
+        const updatedAt = savedAt ? `${savedAt.replace(' ', 'T')}Z` : ''
         const updatedBy = typeof row.saved_by === 'string' && row.saved_by.trim() ? row.saved_by.trim() : undefined
         const summary: ChallengePeriodSummary = {
           id: row.id,
@@ -1771,16 +1727,20 @@ async function listChallengePeriodsFromDb(db: D1Database): Promise<ChallengePeri
           endDate,
           updatedAt,
         }
+        if (savedAt) {
+          summary.savedAt = savedAt
+        }
         if (updatedBy) {
           summary.updatedBy = updatedBy
+          summary.savedBy = updatedBy
         }
         return summary
       })
       .filter((value): value is ChallengePeriodSummary => Boolean(value))
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: michina_period_history/i.test(message)) {
-      console.warn('[d1] michina_period_history table is not available')
+    if (/no such table: challenge_periods/i.test(message)) {
+      console.warn('[d1] challenge_periods table is not available')
       return []
     }
     console.error('[d1] Failed to list challenge periods', error)
@@ -1844,21 +1804,41 @@ async function listParticipantsFromDb(db: D1Database, options: ParticipantListOp
 }
 
 function getMainDatabase(env: Bindings) {
-  const db = env.DB_MAIN
+  const db = env.D1_MAIN ?? env.DB_MAIN
   if (!db || typeof db.prepare !== 'function') {
-    throw new Error('D1 database binding `DB_MAIN` is not configured')
+    throw new Error('D1 database binding `D1_MAIN` is not configured')
   }
   return db
 }
 
 async function ensureChallengePeriodTable(db: D1Database) {
-  await db.prepare(
-    'CREATE TABLE IF NOT EXISTS challenge_period (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)',
-  ).run()
-  await db.prepare('CREATE INDEX IF NOT EXISTS idx_challenge_period_saved_at ON challenge_period(saved_at DESC, id DESC)').run()
+  await db
+    .prepare(
+      'CREATE TABLE IF NOT EXISTS challenge_periods (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL)',
+    )
+    .run()
+  try {
+    await db.prepare("ALTER TABLE challenge_periods ADD COLUMN saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP").run()
+  } catch (error) {
+    const message = String(error || '')
+    if (!/duplicate column name/i.test(message)) {
+      throw error
+    }
+  }
+  try {
+    await db.prepare('ALTER TABLE challenge_periods ADD COLUMN saved_by TEXT').run()
+  } catch (error) {
+    const message = String(error || '')
+    if (!/duplicate column name/i.test(message)) {
+      throw error
+    }
+  }
+  await db
+    .prepare('CREATE INDEX IF NOT EXISTS idx_challenge_periods_saved_at ON challenge_periods(saved_at DESC, id DESC)')
+    .run()
 }
 
-async function listDashboardChallengePeriods(db: D1Database): Promise<ChallengePeriodRecord[]> {
+async function listDashboardChallengePeriods(db: D1Database): Promise<ChallengePeriodSummary[]> {
   try {
     await ensureDashboardChallengePeriodTable(db)
   } catch (error) {
@@ -1867,47 +1847,59 @@ async function listDashboardChallengePeriods(db: D1Database): Promise<ChallengeP
   }
   try {
     const { results } = await db
-      .prepare('SELECT id, start_date, end_date, saved_at FROM challenge_period ORDER BY saved_at DESC, id DESC')
+      .prepare('SELECT id, start_date, end_date, saved_at, saved_by FROM challenge_periods ORDER BY saved_at DESC, id DESC')
       .all<ChallengePeriodRow>()
     if (!results) {
       return []
     }
     return results
-      .map((row) => ({
-        id: Number(row.id),
-        startDate: row.start_date,
-        endDate: row.end_date,
-        savedAt: row.saved_at,
-      }))
-      .filter((record) => Boolean(record.startDate && record.endDate && record.savedAt))
+      .map((row) => {
+        const savedAt = typeof row.saved_at === 'string' && row.saved_at ? row.saved_at : ''
+        const savedBy = typeof row.saved_by === 'string' && row.saved_by.trim() ? row.saved_by.trim() : undefined
+        const record: ChallengePeriodSummary = {
+          id: Number(row.id),
+          startDate: row.start_date,
+          endDate: row.end_date,
+          updatedAt: savedAt ? `${savedAt.replace(' ', 'T')}Z` : '',
+        }
+        if (savedAt) {
+          record.savedAt = savedAt
+        }
+        if (savedBy) {
+          record.savedBy = savedBy
+          record.updatedBy = savedBy
+        }
+        return record
+      })
+      .filter((record) => Boolean(record.startDate && record.endDate))
   } catch (error) {
     console.error('[d1] failed to query challenge_period table', error)
     return []
   }
 }
 
-async function insertDashboardChallengePeriod(db: D1Database, startDate: string, endDate: string) {
+async function insertDashboardChallengePeriod(db: D1Database, startDate: string, endDate: string, savedBy?: string) {
   await ensureDashboardChallengePeriodTable(db)
   await db
-    .prepare("INSERT INTO challenge_period (start_date, end_date, saved_at) VALUES (?, ?, datetime('now'))")
-    .bind(startDate, endDate)
+    .prepare("INSERT INTO challenge_periods (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)")
+    .bind(startDate, endDate, savedBy ?? null)
     .run()
 }
 
 async function deleteDashboardChallengePeriod(db: D1Database, id: number) {
   await ensureDashboardChallengePeriodTable(db)
-  await db.prepare('DELETE FROM challenge_period WHERE id = ?').bind(id).run()
+  await db.prepare('DELETE FROM challenge_periods WHERE id = ?').bind(id).run()
 }
 
 async function clearDashboardChallengePeriods(db: D1Database) {
   await ensureDashboardChallengePeriodTable(db)
-  await db.prepare('DELETE FROM challenge_period').run()
+  await db.prepare('DELETE FROM challenge_periods').run()
 }
 
 async function hasAnyDashboardChallengePeriod(db: D1Database) {
   try {
     await ensureDashboardChallengePeriodTable(db)
-    const row = await db.prepare('SELECT 1 FROM challenge_period LIMIT 1').first<ChallengePeriodRow | null>()
+    const row = await db.prepare('SELECT 1 FROM challenge_periods LIMIT 1').first<ChallengePeriodRow | null>()
     return Boolean(row)
   } catch (error) {
     console.error('[d1] failed to check challenge_period records', error)
@@ -2586,7 +2578,7 @@ app.post('/api/admin/challenge-periods', async (c) => {
   }
   try {
     const db = getMainDatabase(c.env)
-    await insertDashboardChallengePeriod(db, startDate, endDate)
+    await insertDashboardChallengePeriod(db, startDate, endDate, adminEmail)
     const periods = await listDashboardChallengePeriods(db)
     return c.json({ success: true, periods })
   } catch (error) {
@@ -2628,6 +2620,77 @@ app.delete('/api/admin/challenge-periods', async (c) => {
   } catch (error) {
     console.error('[admin] Failed to clear challenge periods', error)
     return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.post('/api/admin/save-period', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, message: '관리자 권한이 필요합니다.' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ success: false, message: '잘못된 요청입니다.' }, 400)
+  }
+  const startDate = isValidDateString((payload as { start_date?: string; startDate?: string }).start_date ?? (payload as { startDate?: string }).startDate)
+    ? ((payload as { start_date?: string; startDate?: string }).start_date ?? (payload as { startDate: string }).startDate)
+    : ''
+  const endDate = isValidDateString((payload as { end_date?: string; endDate?: string }).end_date ?? (payload as { endDate?: string }).endDate)
+    ? ((payload as { end_date?: string; endDate?: string }).end_date ?? (payload as { endDate: string }).endDate)
+    : ''
+  if (!startDate || !endDate) {
+    return c.json({ success: false, message: '시작일과 종료일이 필요합니다.' }, 400)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    await ensureChallengePeriodTable(db)
+    await db
+      .prepare("INSERT INTO challenge_periods (start_date, end_date, saved_at, saved_by) VALUES (?, ?, datetime('now'), ?)")
+      .bind(startDate, endDate, adminEmail)
+      .run()
+    const periods = await listDashboardChallengePeriods(db)
+    return c.json({ success: true, message: '기간이 성공적으로 저장되었습니다.', data: periods })
+  } catch (error) {
+    console.error('❌ 기간 저장 오류:', error)
+    return c.json({ success: false, message: '기간을 저장하지 못했습니다.' }, 500)
+  }
+})
+
+app.get('/api/admin/periods', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, message: '관리자 권한이 필요합니다.' }, 401)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    const periods = await listDashboardChallengePeriods(db)
+    return c.json({ success: true, data: periods })
+  } catch (error) {
+    console.error('❌ 기간 조회 오류:', error)
+    return c.json({ success: false, message: '데이터를 불러오지 못했습니다.' }, 500)
+  }
+})
+
+app.delete('/api/admin/delete-period/:id', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, message: '관리자 권한이 필요합니다.' }, 401)
+  }
+  const rawId = c.req.param('id')
+  const id = Number(rawId)
+  if (!Number.isFinite(id) || id <= 0) {
+    return c.json({ success: false, message: '유효한 ID가 아닙니다.' }, 400)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    await db.prepare('DELETE FROM challenge_periods WHERE id = ?').bind(id).run()
+    const periods = await listDashboardChallengePeriods(db)
+    return c.json({ success: true, message: '기간이 삭제되었습니다.', data: periods })
+  } catch (error) {
+    console.error('❌ 기간 삭제 오류:', error)
+    return c.json({ success: false, message: '삭제 실패' }, 500)
   }
 })
 
@@ -2829,11 +2892,11 @@ app.delete('/api/admin/period', async (c) => {
 
   if (db) {
     try {
-      await db.prepare('DELETE FROM michina_period WHERE id = 1').run()
+      await db.prepare('DELETE FROM challenge_periods').run()
     } catch (error) {
       const message = String(error || '')
-      if (/no such table: michina_period/i.test(message)) {
-        console.warn('[admin] michina_period table missing during delete; skipping')
+      if (/no such table: challenge_periods/i.test(message)) {
+        console.warn('[admin] challenge_periods table missing during delete; skipping')
       } else {
         console.error('[admin] Failed to delete challenge period from D1', error)
         return c.json({ error: 'DATABASE_ERROR' }, 500)
@@ -3025,8 +3088,8 @@ app.get('/api/admin/michina-status', async (c) => {
     period = await getChallengePeriodFromDb(db)
   } catch (error) {
     const message = String(error || '')
-    if (/no such table: michina_period/i.test(message)) {
-      console.warn('[admin] michina_period table is not available')
+    if (/no such table: challenge_periods/i.test(message)) {
+      console.warn('[admin] challenge_periods table is not available')
     } else {
       console.error('[admin] Failed to load challenge period for status', error)
       return c.json({ error: 'DATABASE_ERROR' }, 500)
