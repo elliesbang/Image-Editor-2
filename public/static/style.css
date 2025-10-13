@@ -2721,6 +2721,16 @@ body.is-modal-open {
   flex: 1 1 140px;
 }
 
+[data-role='admin-dashboard'].admin-dashboard--sidebar-hidden {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+[data-role='admin-dashboard'].admin-dashboard--sidebar-hidden > * {
+  grid-column: 1 / -1;
+}
+
 .cookie-banner {
   position: fixed;
   bottom: 24px;
