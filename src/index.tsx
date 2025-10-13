@@ -42,7 +42,6 @@ type Bindings = {
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REDIRECT_URI?: string
-  MICHINA_COMMUNITY_URL?: string
 }
 
 type ChallengeSubmission = {
@@ -306,98 +305,6 @@ const MICHINA_PERIOD_HISTORY_KEY = 'michina:period:history'
 const MICHINA_CHALLENGERS_KEY = 'michina:challengers'
 const MICHINA_USERS_KEY = 'michina:users'
 const MAX_PERIOD_HISTORY_ITEMS = 30
-
-function renderCommunityDashboardPage() {
-  return `<!DOCTYPE html>
-<html lang="ko">
-  <head>
-    <meta charSet="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#fef568" />
-    <meta
-      name="description"
-      content="Elliesbang Image Editor와 함께하는 3주(15일) 미치나 챌린지를 공개 미리보기 모드에서 체험해보세요."
-    />
-    <title>미치나 커뮤니티 대시보드</title>
-    <base href="/" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="/static/community-dashboard.css" />
-  </head>
-  <body>
-    <header class="dashboard-header">💡 미치나 커뮤니티</header>
-    <main class="dashboard-container">
-      <section class="dashboard-card">
-        <h2>미치나 전체 챌린저 현황</h2>
-        <p class="dashboard-card__meta">전체 챌린저의 주차별 제출률을 확인하세요.</p>
-        <canvas id="overallProgressChart" aria-label="미치나 전체 챌린저 주차별 제출률" role="img"></canvas>
-      </section>
-
-      <section class="dashboard-card">
-        <h2>인기 키워드</h2>
-        <p class="dashboard-card__meta">#디자인 #AI #챌린지 #미리캔버스</p>
-        <p class="dashboard-section-copy">커뮤니티에서 가장 많이 언급되는 키워드를 확인해보세요.</p>
-      </section>
-
-      <section class="dashboard-card">
-        <h2>오늘의 미션 제출</h2>
-        <p class="dashboard-card__meta">각 일차는 하루에 한 번만 제출할 수 있어요.</p>
-        <form class="dashboard-form" data-role="submission-form">
-          <div class="form-field">
-            <label for="michina-day-select">도전 일차</label>
-            <select id="michina-day-select" data-role="day-select" aria-label="미션 일차 선택"></select>
-          </div>
-          <div class="form-field">
-            <label for="michina-file-input">이미지 업로드</label>
-            <input id="michina-file-input" type="file" accept="image/*" data-role="file-input" />
-          </div>
-          <button type="submit">오늘 미션 제출</button>
-        </form>
-      </section>
-
-      <section class="dashboard-card mission-status-card">
-        <h2>미션 완주 현황</h2>
-        <p id="missionStatus" class="mission-status">0 / 15일차 완료 · 0%</p>
-        <div class="progress-bar" aria-hidden="true">
-          <div class="progress-fill"></div>
-        </div>
-        <div class="status-details">
-          <p><strong>제출한 일차:</strong> <span id="submittedDays">-</span></p>
-          <p><strong>미제출 일차:</strong> <span id="unsubmittedDays">1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15</span></p>
-        </div>
-        <button type="button" class="certificate-button hidden" data-role="certificate-button">수료증 다시 보기</button>
-      </section>
-
-      <section class="dashboard-card">
-        <h2>미션 진행 안내</h2>
-        <ul class="dashboard-section-copy" role="list">
-          <li>· 15일차까지 모두 제출하면 자동으로 수료증이 발급돼요.</li>
-          <li>· 공개 미리보기 모드는 이 기기에서만 진행률이 저장돼요.</li>
-          <li>· 필요할 때 언제든 “수료증 다시 보기” 버튼으로 PNG를 재다운로드할 수 있어요.</li>
-        </ul>
-      </section>
-    </main>
-    <footer class="footer">© 엘리의방 | elliesbang</footer>
-
-    <div class="certificate-canvas-wrapper" data-role="certificate-canvas">
-      <div class="certificate-template" data-role="certificate-template">
-        <h3>🎉 Elliesbang Michina Challenge 수료증</h3>
-        <p data-role="certificate-date">수료일: -</p>
-        <p>Elliesbang Image Editor</p>
-      </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" integrity="sha384-PST0s43x0oMdHF2G28clmTa/sJ8KPxONQDX/PDQ3VwNa0nCE3awPJn9eo6HozXEI" crossorigin="anonymous"></script>
-    <script type="module" src="/static/community-dashboard.js"></script>
-  </body>
-</html>`
-}
 
 function renderAdminManagementPage() {
   return `<!DOCTYPE html>
@@ -4165,17 +4072,9 @@ app.get('/', async (c) => {
     return response
   }
 
-  const viewParam = (c.req.query('view') || '').trim().toLowerCase()
-  if (viewParam === 'community') {
-    const response = c.html(renderCommunityDashboardPage())
-    response.headers.set('Cache-Control', 'no-store, max-age=0')
-    return response
-  }
-
   const currentYear = new Date().getFullYear()
   const googleClientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim() ?? ''
   const googleRedirectUri = resolveGoogleRedirectUri(c)
-  const communityUrl = c.env.MICHINA_COMMUNITY_URL?.trim() || '/?view=community'
 
   let userSession: { email: string; name?: string; picture?: string } | null = null
   const rawUserCookie = getCookie(c, SESSION_COOKIE_NAME)
@@ -4199,7 +4098,6 @@ app.get('/', async (c) => {
     {
       googleClientId,
       googleRedirectUri,
-      communityUrl,
       user: userSession,
     },
     null,
@@ -4232,15 +4130,6 @@ app.get('/', async (c) => {
             <img class="app-header__avatar" data-role="user-avatar" alt="" hidden />
             <span class="app-header__user" data-role="user-summary"></span>
           </div>
-          <a
-            class="btn btn--ghost btn--sm"
-            href={communityUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-role="community-link"
-          >
-            미치나
-          </a>
           <button class="btn btn--ghost btn--sm" type="button" data-role="header-auth">
             로그인
           </button>

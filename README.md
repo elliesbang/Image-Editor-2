@@ -22,7 +22,6 @@
 - **수료증 발급 (배경 #fef568)**: `/api/challenge/certificate` 응답을 기반으로 html2canvas로 PNG 다운로드 생성
 - **보안 헤더 & 보호**: 전역 CSP, HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, Cross-Origin-Opener-Policy 적용
 - **법적 문서 & 쿠키 배너**: 개인정보 처리방침(`/privacy`), 이용약관(`/terms`), 쿠키 정책(`/cookies`) 및 선택형 쿠키 배너
-- **헤더 커뮤니티 링크**: 로그인 버튼 옆 “미치나 커뮤니티” 버튼을 새 탭으로 열어 외부 커뮤니티 또는 내부 뷰(`/?view=community`)에 접근 가능
 
 ## 관리자 & 챌린지 운영 흐름
 0. **이메일 로그인**: 로그인 모달에서 이메일 주소 입력 → 6자리 인증 코드 전송 → 코드 확인 후 로그인(샌드박스에서는 코드가 즉시 안내됨)
@@ -35,7 +34,6 @@
 7. **세션 종료**: `/api/auth/admin/logout` 호출 또는 401 응답 시 프론트에서 세션 제거 및 관리자 모달 재요청
 
 ## 참가자 UI 가이드
-0. **커뮤니티 이동**: 헤더 로그인 버튼 옆 “미치나 커뮤니티” 새 탭 링크를 통해 커뮤니티 페이지 접근
 1. **프로필 확인**: 로그인 후 이메일이 챌린지 참가자라면 `/api/challenge/profile` 로드 → 진행률·남은 제출 수 표시
 2. **일일 제출**: Day 선택 → URL 입력 또는 이미지 업로드(이미지 선택 시 URL보다 우선) → 제출 시 `/api/challenge/submit`
 3. **진행률 추적**: 진행률 바(퍼센트), 남은 횟수, 각 Day 카드(`예정/제출 대기/완주/기록 없음`) 확인
@@ -92,7 +90,6 @@
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 클라이언트 ID | 필수 (관리자 로그인) | Google Cloud Console에서 발급 |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 필수 (관리자 로그인) | Pages Secret으로 관리 |
 | `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 미설정 시 `/api/auth/callback/google` 기준으로 자동 계산 |
-| `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
 | `CHALLENGE_KV` | Cloudflare KV 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | Cloudflare KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 
@@ -116,7 +113,6 @@ ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
 GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
 GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
 # GOOGLE_REDIRECT_URI="http://localhost:3000/api/auth/callback/google"
-MICHINA_COMMUNITY_URL="https://community.example.com"
 # CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 Cloudflare 바인딩 시 자동 주입
 EOF
 
@@ -191,7 +187,7 @@ curl http://localhost:3000/api/health
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
 - **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
-- **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
+- **참가자**: 로그인 후 메인 화면에서 참가자용 진행률 대시보드와 제출 영역 확인 → Day별 제출 완료 시 수료증 PNG 다운로드
 - **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
 
 ## URL & 배포 상태
