@@ -31,14 +31,12 @@
     welcome: document.querySelector('[data-role="welcome"]'),
     sessionInfo: document.querySelector('[data-role="session-info"]'),
     logout: document.querySelector('[data-role="logout"]'),
-    periodForm: document.querySelector('[data-role="period-form"]'),
-    periodStart: document.querySelector('[data-role="period-start"]'),
-    periodEnd: document.querySelector('[data-role="period-end"]'),
-    periodSubmit: document.querySelector('[data-role="period-submit"]'),
-    periodMessage: document.querySelector('[data-role="period-message"]'),
-    periodList: document.querySelector('[data-role="period-list"]'),
-    periodListEmpty: document.querySelector('[data-role="period-list-empty"]'),
-    periodClear: document.querySelector('[data-role="period-clear"]'),
+    periodForm: document.querySelector('[data-role="challenge-form"]'),
+    periodStart: document.querySelector('[data-role="start"]'),
+    periodEnd: document.querySelector('[data-role="end"]'),
+    periodSubmit: document.querySelector('[data-role="challenge-form"] button[type="submit"]'),
+    periodList: document.querySelector('[data-role="challenge-list"]'),
+    periodDelete: document.querySelector('[data-role="challenge-delete"]'),
     uploadHint: document.querySelector('[data-role="upload-hint"]'),
     participantsForm: document.querySelector('[data-role="participants-form"]'),
     participantsFile: document.querySelector('[data-role="participants-file"]'),
@@ -53,7 +51,8 @@
   const state = {
     periods: [],
     isSavingPeriod: false,
-    isClearingPeriods: false,
+    isDeletingPeriod: false,
+    selectedPeriodId: null,
     participants: [],
     isUploading: false,
   };
@@ -104,16 +103,6 @@
       .filter(Boolean)
       .forEach((className) => element.classList.add(className));
     element.textContent = message;
-  }
-
-  function formatDate(value) {
-    if (!value) return '-';
-    const date = new Date(value);
-    if (!Number.isFinite(date.valueOf())) return value;
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
   }
 
   function formatDateTime(value) {
@@ -300,41 +289,42 @@
 
   function renderPeriods() {
     const list = elements.periodList;
-    const empty = elements.periodListEmpty;
-    if (!(list instanceof HTMLElement) || !(empty instanceof HTMLElement)) return;
+    if (!(list instanceof HTMLElement)) return;
 
     if (!state.periods.length) {
-      list.innerHTML = '';
-      empty.textContent = '저장된 챌린지 기간이 없습니다.';
-      setStatusMessage(elements.periodMessage, '챌린지 기간을 입력한 뒤 저장하기 버튼을 눌러주세요.', 'info');
+      state.selectedPeriodId = null;
+      list.innerHTML = '<li class="challenge-list__empty">저장된 챌린지 기간이 없습니다.</li>';
       applyLatestPeriodToInputs(null);
+      updatePeriodButtons();
       return;
     }
 
+    if (!state.periods.some((period) => period.id === state.selectedPeriodId)) {
+      state.selectedPeriodId = state.periods[0]?.id ?? null;
+    }
+
     const rows = state.periods.map((period) => {
-      const range = `${escapeHtml(formatDate(period.startDate))} ~ ${escapeHtml(formatDate(period.endDate))}`;
-      const saved = formatDateTime(period.savedAt);
+      const range =
+        `${escapeHtml(formatDateTime(period.startDate))} ~ ${escapeHtml(formatDateTime(period.endDate))}`;
+      const saved = escapeHtml(formatDateTime(period.savedAt));
+      const checked = state.selectedPeriodId === period.id ? ' checked' : '';
       return (
-        '<li class="flex flex-col gap-3 rounded-2xl border border-[#f0dba5] bg-white/90 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">' +
-        '<div>' +
-        `<p class="text-sm font-semibold text-[#3f2f00]">${range}</p>` +
-        `<p class="mt-1 text-xs text-[#7a5a00]">ID #${escapeHtml(period.id)} · 저장 ${escapeHtml(saved)}</p>` +
-        '</div>' +
-        '<div class="flex items-center gap-2 self-start sm:self-center">' +
-        `<button type="button" data-action="delete-period" data-period-id="${escapeHtml(period.id)}" class="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400">🗑 삭제</button>` +
-        '</div>' +
+        '<li class="challenge-list__item">' +
+        '<label class="flex cursor-pointer items-start gap-3">' +
+        `<input type="radio" name="challenge-period" value="${escapeHtml(String(period.id))}"${checked} />` +
+        '<span class="challenge-list__info">' +
+        `<span class="challenge-list__range">${range}</span>` +
+        `<span class="challenge-list__saved">저장 ${saved}</span>` +
+        '</span>' +
+        '</label>' +
         '</li>'
       );
     });
     list.innerHTML = rows.join('');
-    empty.textContent = '가장 최근에 저장된 기간이 목록 상단에 표시됩니다.';
 
-    const latest = state.periods[0];
-    if (latest) {
-      const message = `최근 저장: ${formatDate(latest.startDate)} ~ ${formatDate(latest.endDate)} · 저장 ${formatDateTime(latest.savedAt)}`;
-      setStatusMessage(elements.periodMessage, message, 'success');
-    }
-    applyLatestPeriodToInputs(latest || null);
+    const latest = state.periods[0] || null;
+    applyLatestPeriodToInputs(latest);
+    updatePeriodButtons();
   }
 
   function renderParticipants() {
@@ -374,16 +364,17 @@
         elements.periodSubmit.textContent = '저장 중…';
       } else {
         elements.periodSubmit.disabled = false;
-        elements.periodSubmit.textContent = '저장하기';
+        elements.periodSubmit.textContent = '저장';
       }
     }
-    if (elements.periodClear instanceof HTMLButtonElement) {
-      if (state.isClearingPeriods) {
-        elements.periodClear.disabled = true;
-        elements.periodClear.textContent = '초기화 중…';
+    if (elements.periodDelete instanceof HTMLButtonElement) {
+      if (state.isDeletingPeriod) {
+        elements.periodDelete.disabled = true;
+        elements.periodDelete.textContent = '삭제 중…';
       } else {
-        elements.periodClear.disabled = state.periods.length === 0;
-        elements.periodClear.textContent = '전체 초기화';
+        const disabled = state.periods.length === 0 || !Number.isFinite(state.selectedPeriodId);
+        elements.periodDelete.disabled = disabled;
+        elements.periodDelete.textContent = '선택된 기간 삭제';
       }
     }
   }
@@ -418,9 +409,11 @@
       if (!response.ok) throw new Error('failed_to_load_periods');
       const payload = await response.json().catch(() => ({}));
       state.periods = normalizePeriods(payload?.periods);
+      state.selectedPeriodId = state.periods[0]?.id ?? null;
     } catch (error) {
       console.error('[dashboard] failed to load challenge periods', error);
       state.periods = [];
+      state.selectedPeriodId = null;
       showToast('챌린지 기간 정보를 불러오지 못했습니다.', 'danger');
     }
     renderPeriods();
@@ -443,7 +436,6 @@
     }
     state.isSavingPeriod = true;
     updatePeriodButtons();
-    setStatusMessage(elements.periodMessage, '챌린지 기간을 저장하고 있습니다…', 'info');
     try {
       const response = await fetch('/api/admin/challenge-periods', {
         method: 'POST',
@@ -462,16 +454,11 @@
       }
       const payload = await response.json().catch(() => ({}));
       state.periods = normalizePeriods(payload?.periods);
+      state.selectedPeriodId = state.periods[0]?.id ?? null;
       renderPeriods();
-      setStatusMessage(elements.periodMessage, '챌린지 기간이 저장되었습니다.', 'success');
       showToast('챌린지 기간이 저장되었습니다.', 'success');
     } catch (error) {
       console.error('[dashboard] failed to save challenge period', error);
-      setStatusMessage(
-        elements.periodMessage,
-        error instanceof Error ? error.message : '챌린지 기간을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.',
-        'danger',
-      );
       showToast('챌린지 기간을 저장하지 못했습니다.', 'danger');
     } finally {
       state.isSavingPeriod = false;
@@ -480,14 +467,8 @@
     }
   }
 
-  async function handlePeriodDelete(id, button) {
-    if (!Number.isFinite(id) || !id) return;
-    const confirmed = window.confirm('선택한 챌린지 기간을 삭제하시겠어요?');
-    if (!confirmed) return;
-    if (button instanceof HTMLButtonElement) {
-      button.disabled = true;
-      button.textContent = '삭제 중…';
-    }
+  async function handlePeriodDelete(id) {
+    if (!Number.isFinite(id) || !id) return false;
     try {
       const response = await fetch(`/api/admin/challenge-periods/${encodeURIComponent(String(id))}`, {
         method: 'DELETE',
@@ -495,21 +476,22 @@
       });
       if (response.status === 401) {
         redirectToLogin('관리자 세션이 만료되었습니다.', 'danger');
-        return;
+        return false;
       }
       if (!response.ok) throw new Error('failed_to_delete_period');
       const payload = await response.json().catch(() => ({}));
       state.periods = normalizePeriods(payload?.periods);
+      if (!state.periods.some((period) => period.id === state.selectedPeriodId)) {
+        state.selectedPeriodId = state.periods[0]?.id ?? null;
+      }
       renderPeriods();
       showToast('선택한 챌린지 기간을 삭제했습니다.', 'success');
+      return true;
     } catch (error) {
       console.error('[dashboard] failed to delete challenge period', error);
       showToast('챌린지 기간을 삭제하지 못했습니다.', 'danger');
+      return false;
     } finally {
-      if (button instanceof HTMLButtonElement) {
-        button.disabled = false;
-        button.textContent = '🗑 삭제';
-      }
       updatePeriodButtons();
       updateUploadAvailability();
     }
@@ -520,41 +502,30 @@
       showToast('삭제할 기간이 없습니다.', 'warning');
       return;
     }
-    const confirmed = window.confirm('저장된 모든 챌린지 기간을 삭제하시겠어요?');
+    if (!Number.isFinite(state.selectedPeriodId)) {
+      showToast('삭제할 기간을 선택해주세요.', 'warning');
+      return;
+    }
+    const confirmed = window.confirm('선택한 챌린지 기간을 삭제하시겠어요?');
     if (!confirmed) return;
-    state.isClearingPeriods = true;
+    state.isDeletingPeriod = true;
     updatePeriodButtons();
-    try {
-      const response = await fetch('/api/admin/challenge-periods', {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (response.status === 401) {
-        redirectToLogin('관리자 세션이 만료되었습니다.', 'danger');
-        return;
-      }
-      if (!response.ok) throw new Error('failed_to_clear_periods');
-      const payload = await response.json().catch(() => ({}));
-      state.periods = normalizePeriods(payload?.periods);
-      renderPeriods();
-      showToast('모든 챌린지 기간을 삭제했습니다.', 'success');
-    } catch (error) {
-      console.error('[dashboard] failed to clear challenge periods', error);
-      showToast('챌린지 기간 전체를 삭제하지 못했습니다.', 'danger');
-    } finally {
-      state.isClearingPeriods = false;
-      updatePeriodButtons();
+    const deleted = await handlePeriodDelete(Number(state.selectedPeriodId));
+    state.isDeletingPeriod = false;
+    updatePeriodButtons();
+    if (deleted) {
       updateUploadAvailability();
     }
   }
 
-  function handlePeriodListClick(event) {
+  function handlePeriodSelectionChange(event) {
     const target = event.target;
-    if (!(target instanceof HTMLButtonElement)) return;
-    if (target.dataset.action !== 'delete-period') return;
-    const id = Number(target.dataset.periodId);
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.name !== 'challenge-period') return;
+    const id = Number(target.value);
     if (!Number.isFinite(id)) return;
-    handlePeriodDelete(id, target);
+    state.selectedPeriodId = id;
+    updatePeriodButtons();
   }
 
   function splitCsvLine(line) {
@@ -758,11 +729,11 @@
     if (elements.periodForm instanceof HTMLFormElement) {
       elements.periodForm.addEventListener('submit', handlePeriodSubmit);
     }
-    if (elements.periodClear instanceof HTMLButtonElement) {
-      elements.periodClear.addEventListener('click', handlePeriodClear);
+    if (elements.periodDelete instanceof HTMLButtonElement) {
+      elements.periodDelete.addEventListener('click', handlePeriodClear);
     }
     if (elements.periodList instanceof HTMLElement) {
-      elements.periodList.addEventListener('click', handlePeriodListClick);
+      elements.periodList.addEventListener('change', handlePeriodSelectionChange);
     }
     if (elements.participantsForm instanceof HTMLFormElement) {
       elements.participantsForm.addEventListener('submit', handleParticipantsUpload);
@@ -775,7 +746,6 @@
     }
 
     setStatusMessage(elements.participantsStatus, 'CSV 파일을 선택하면 상태가 표시됩니다.', 'info');
-    setStatusMessage(elements.periodMessage, '챌린지 기간을 입력한 뒤 저장하기 버튼을 눌러주세요.', 'info');
     renderParticipants();
     updatePeriodButtons();
     updateUploadAvailability();
