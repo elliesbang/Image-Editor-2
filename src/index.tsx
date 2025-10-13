@@ -746,6 +746,6 @@ function renderAdminManagementPage() {
 
 app.get('/admin-dashboard', (c) => c.redirect('/dashboard'))
 
-app.get('/api/health', (c) => c.json({ status: 'ok' })
+app.get('/api/health', (c) => c.json({ status: 'ok' }))
 
 export default app
