@@ -4,7 +4,7 @@
   const CHANNEL_NAME = 'admin-auth-channel';
   const ADMIN_SESSION_KEY = 'admin_session';
   const ADMIN_EMAIL = document.body?.dataset?.adminEmail || 'admin@local';
-  const LOGIN_URL = new URL('/login.html', window.location.origin).toString();
+  const LOGIN_URL = new URL('/admin-login/', window.location.origin).toString();
 
   const DEFAULT_UPLOAD_FILENAME = '선택된 파일이 없습니다.';
 
