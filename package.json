@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "preinstall": "npm cache clean --force || true",
     "dev": "vite",
-    "build": "npm install --prefer-online --no-audit --force && vite build",
+    "build": "npm cache clean --force && npm install --prefer-online --no-audit --legacy-peer-deps --force && vite build",
     "preview": "vite preview",
     "start": "node server.js"
   },
