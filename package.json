@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "preinstall": "rm -rf node_modules package-lock.json ~/.npm && npm cache clean --force && npm config set registry https://registry.npmmirror.com",
-    "install": "npm install --no-audit --prefer-online --legacy-peer-deps --force",
+    "preinstall": "rm -rf node_modules package-lock.json ~/.npm || true && npm cache clean --force && npm config set registry https://registry.npmmirror.com",
+    "install": "npm install --prefer-online --no-audit --legacy-peer-deps --force",
     "build": "npm run install && vite build",
     "dev": "vite",
     "preview": "vite preview",
