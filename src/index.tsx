@@ -70,6 +70,34 @@ type ChallengeSummary = ChallengeParticipant & {
   missingDays: number
 }
 
+type ChallengePeriodRow = {
+  id: number
+  start_date: string
+  end_date: string
+  saved_at: string
+}
+
+type ChallengePeriodRecord = {
+  id: number
+  startDate: string
+  endDate: string
+  savedAt: string
+}
+
+type MichinaListRow = {
+  id: number
+  name: string | null
+  email: string
+  approved_at: string
+}
+
+type MichinaListEntry = {
+  id: number
+  name: string
+  email: string
+  approvedAt: string
+}
+
 type AdminSessionPayload = {
   sub: string
   role: 'admin'
@@ -1567,7 +1595,7 @@ async function getChallengePeriodFromDb(db: D1Database): Promise<ChallengePeriod
   }
 }
 
-async function ensureChallengePeriodTable(db: D1Database) {
+async function ensureDashboardChallengePeriodTable(db: D1Database) {
   try {
     await db
       .prepare(
@@ -1821,6 +1849,133 @@ function getMainDatabase(env: Bindings) {
     throw new Error('D1 database binding `DB_MAIN` is not configured')
   }
   return db
+}
+
+async function ensureChallengePeriodTable(db: D1Database) {
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS challenge_period (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)',
+  ).run()
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_challenge_period_saved_at ON challenge_period(saved_at DESC, id DESC)').run()
+}
+
+async function listDashboardChallengePeriods(db: D1Database): Promise<ChallengePeriodRecord[]> {
+  try {
+    await ensureDashboardChallengePeriodTable(db)
+  } catch (error) {
+    console.error('[d1] failed to ensure challenge_period table', error)
+    return []
+  }
+  try {
+    const { results } = await db
+      .prepare('SELECT id, start_date, end_date, saved_at FROM challenge_period ORDER BY saved_at DESC, id DESC')
+      .all<ChallengePeriodRow>()
+    if (!results) {
+      return []
+    }
+    return results
+      .map((row) => ({
+        id: Number(row.id),
+        startDate: row.start_date,
+        endDate: row.end_date,
+        savedAt: row.saved_at,
+      }))
+      .filter((record) => Boolean(record.startDate && record.endDate && record.savedAt))
+  } catch (error) {
+    console.error('[d1] failed to query challenge_period table', error)
+    return []
+  }
+}
+
+async function insertDashboardChallengePeriod(db: D1Database, startDate: string, endDate: string) {
+  await ensureDashboardChallengePeriodTable(db)
+  await db
+    .prepare("INSERT INTO challenge_period (start_date, end_date, saved_at) VALUES (?, ?, datetime('now'))")
+    .bind(startDate, endDate)
+    .run()
+}
+
+async function deleteDashboardChallengePeriod(db: D1Database, id: number) {
+  await ensureDashboardChallengePeriodTable(db)
+  await db.prepare('DELETE FROM challenge_period WHERE id = ?').bind(id).run()
+}
+
+async function clearDashboardChallengePeriods(db: D1Database) {
+  await ensureDashboardChallengePeriodTable(db)
+  await db.prepare('DELETE FROM challenge_period').run()
+}
+
+async function hasAnyDashboardChallengePeriod(db: D1Database) {
+  try {
+    await ensureDashboardChallengePeriodTable(db)
+    const row = await db.prepare('SELECT 1 FROM challenge_period LIMIT 1').first<ChallengePeriodRow | null>()
+    return Boolean(row)
+  } catch (error) {
+    console.error('[d1] failed to check challenge_period records', error)
+    return false
+  }
+}
+
+async function ensureMichinaListTable(db: D1Database) {
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS michina_list (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT NOT NULL UNIQUE, approved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)',
+  ).run()
+  await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_michina_list_email ON michina_list(email)').run()
+}
+
+async function listMichinaList(db: D1Database): Promise<MichinaListEntry[]> {
+  try {
+    await ensureMichinaListTable(db)
+  } catch (error) {
+    console.error('[d1] failed to ensure michina_list table', error)
+    return []
+  }
+  try {
+    const { results } = await db
+      .prepare('SELECT id, name, email, approved_at FROM michina_list ORDER BY approved_at DESC, id DESC')
+      .all<MichinaListRow>()
+    if (!results) {
+      return []
+    }
+    return results.map((row) => ({
+      id: Number(row.id),
+      name: (row.name ?? '').trim(),
+      email: row.email,
+      approvedAt: row.approved_at,
+    }))
+  } catch (error) {
+    console.error('[d1] failed to query michina_list table', error)
+    return []
+  }
+}
+
+async function upsertMichinaListEntries(db: D1Database, entries: { name: string; email: string }[]) {
+  if (!entries.length) {
+    return
+  }
+  await ensureMichinaListTable(db)
+  for (const entry of entries) {
+    const trimmedName = entry.name?.trim() ?? ''
+    const normalizedEmail = entry.email.trim().toLowerCase()
+    if (!normalizedEmail) {
+      continue
+    }
+    await db
+      .prepare(
+        "INSERT INTO michina_list (name, email, approved_at) VALUES (?, ?, datetime('now')) ON CONFLICT(email) DO UPDATE SET name=excluded.name, approved_at=datetime('now')",
+      )
+      .bind(trimmedName, normalizedEmail)
+      .run()
+  }
+}
+
+async function promoteUsersToMichina(db: D1Database, emails: string[]) {
+  if (!emails.length) return
+  for (const email of emails) {
+    await db
+      .prepare("UPDATE users SET role = 'michina' WHERE lower(email) = ?")
+      .bind(email.toLowerCase())
+      .run()
+  }
 }
 
 function getMichinaDatabase(env: Bindings) {
@@ -2389,6 +2544,156 @@ app.post('/api/admin/login', async (c) => {
     maxAge: 60 * 60 * 2,
   })
   return c.json({ success: true, message: '관리자 인증 완료', redirect: '/dashboard', email: resolvedEmail })
+})
+
+app.get('/api/admin/challenge-periods', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', periods: [] }, 401)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    const periods = await listDashboardChallengePeriods(db)
+    return c.json({ periods })
+  } catch (error) {
+    console.error('[admin] Failed to load challenge periods', error)
+    return c.json({ error: 'DATABASE_ERROR', periods: [] }, 500)
+  }
+})
+
+app.post('/api/admin/challenge-periods', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const startDate = isValidDateString((payload as { startDate?: string }).startDate)
+    ? (payload as { startDate: string }).startDate
+    : ''
+  const endDate = isValidDateString((payload as { endDate?: string }).endDate)
+    ? (payload as { endDate: string }).endDate
+    : ''
+  if (!startDate || !endDate) {
+    return c.json({ error: 'INVALID_PERIOD' }, 400)
+  }
+  if (startDate > endDate) {
+    return c.json({ error: 'INVALID_RANGE' }, 400)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    await insertDashboardChallengePeriod(db, startDate, endDate)
+    const periods = await listDashboardChallengePeriods(db)
+    return c.json({ success: true, periods })
+  } catch (error) {
+    console.error('[admin] Failed to save challenge period', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.delete('/api/admin/challenge-periods/:id', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  const idRaw = c.req.param('id')
+  const id = Number(idRaw)
+  if (!Number.isFinite(id) || id <= 0) {
+    return c.json({ error: 'INVALID_ID' }, 400)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    await deleteDashboardChallengePeriod(db, id)
+    const periods = await listDashboardChallengePeriods(db)
+    return c.json({ success: true, periods })
+  } catch (error) {
+    console.error('[admin] Failed to delete challenge period', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.delete('/api/admin/challenge-periods', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    await clearDashboardChallengePeriods(db)
+    return c.json({ success: true, periods: [] })
+  } catch (error) {
+    console.error('[admin] Failed to clear challenge periods', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.get('/api/admin/michina-list', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', entries: [] }, 401)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    const entries = await listMichinaList(db)
+    return c.json({ entries })
+  } catch (error) {
+    console.error('[admin] Failed to load michina list', error)
+    return c.json({ error: 'DATABASE_ERROR', entries: [] }, 500)
+  }
+})
+
+app.post('/api/admin/michina-list', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ error: 'INVALID_JSON' }, 400)
+  }
+  const rawEntries: unknown[] = Array.isArray((payload as { entries?: unknown }).entries)
+    ? ((payload as { entries: unknown[] }).entries || [])
+    : []
+  const normalizedMap = new Map<string, { name: string; email: string }>()
+  for (const entry of rawEntries) {
+    if (typeof entry === 'string') {
+      const email = normalizeEmailValue(entry)
+      if (email) {
+        normalizedMap.set(email, { name: '', email })
+      }
+      continue
+    }
+    if (entry && typeof entry === 'object') {
+      const email = normalizeEmailValue((entry as { email?: unknown }).email)
+      if (!email) continue
+      const name = typeof (entry as { name?: unknown }).name === 'string' ? ((entry as { name: string }).name || '').trim() : ''
+      normalizedMap.set(email, { name, email })
+    }
+  }
+  const entries = Array.from(normalizedMap.values())
+  if (entries.length === 0) {
+    return c.json({ error: 'EMPTY_ENTRIES' }, 400)
+  }
+  try {
+    const db = getMainDatabase(c.env)
+    const periodExists = await hasAnyDashboardChallengePeriod(db)
+    if (!periodExists) {
+      return c.json({ error: 'PERIOD_REQUIRED', message: '챌린지 기간이 설정되어 있지 않습니다.' }, 400)
+    }
+    await upsertMichinaListEntries(db, entries)
+    await promoteUsersToMichina(db, entries.map((entry) => entry.email))
+    const savedEntries = await listMichinaList(db)
+    return c.json({ success: true, count: entries.length, entries: savedEntries })
+  } catch (error) {
+    console.error('[admin] Failed to save michina list', error)
+    return c.json({ error: 'DATABASE_ERROR' }, 500)
+  }
 })
 
 app.get('/api/admin/period', async (c) => {
@@ -4720,41 +5025,22 @@ app.get('/dashboard', async (c) => {
       </header>
       <div class="flex flex-1 flex-col gap-6 lg:flex-row">
         <aside class="lg:w-64">
-          <nav class="sticky top-8 space-y-8 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur">
-            <div>
-              <h2 class="text-xs font-semibold uppercase tracking-[0.32em] text-[#7c5a00]">미치나</h2>
-              <ul class="mt-4 space-y-2 text-sm font-semibold text-[#5b4100]">
-                <li>
-                  <a data-role="sidebar-link" href="#michina-period" class="flex items-center justify-between rounded-xl bg-primary/80 px-4 py-2 text-[#3f2f00] transition hover:bg-[#fbe743]">
-                    <span>챌린지 기간 설정</span>
-                    <span class="text-xs text-[#7a5a00]">설정</span>
-                  </a>
-                </li>
-                <li>
-                  <a data-role="sidebar-link" href="#michina-upload" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
-                    <span>참가자 명단 업로드</span>
-                    <span class="text-xs text-[#7a5a00]">관리</span>
-                  </a>
-                </li>
-                <li>
-                  <a data-role="sidebar-link" href="#michina-status" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
-                    <span>챌린저 참여 현황</span>
-                    <span class="text-xs text-[#7a5a00]">현황</span>
-                  </a>
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h2 class="text-xs font-semibold uppercase tracking-[0.32em] text-[#7c5a00]">디비</h2>
-              <ul class="mt-4 space-y-2 text-sm font-semibold text-[#5b4100]">
-                <li>
-                  <a data-role="sidebar-link" href="#database-users" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
-                    <span>전체 사용자 디비 조회</span>
-                    <span class="text-xs text-[#7a5a00]">데이터</span>
-                  </a>
-                </li>
-              </ul>
-            </div>
+          <nav class="sticky top-8 space-y-6 rounded-3xl border border-yellow-100 bg-white/80 p-6 shadow-ellie backdrop-blur">
+            <h2 class="text-xs font-semibold uppercase tracking-[0.32em] text-[#7c5a00]">미치나 챌린지</h2>
+            <ul class="mt-4 space-y-2 text-sm font-semibold text-[#5b4100]">
+              <li>
+                <a data-role="sidebar-link" href="#michina-period" class="flex items-center justify-between rounded-xl bg-primary/80 px-4 py-2 text-[#3f2f00] transition hover:bg-[#fbe743]">
+                  <span>챌린지 기간 설정</span>
+                  <span class="text-xs text-[#7a5a00]">기간</span>
+                </a>
+              </li>
+              <li>
+                <a data-role="sidebar-link" href="#michina-upload" class="flex items-center justify-between rounded-xl bg-white/70 px-4 py-2 text-[#6f5a26] transition hover:bg-primary/50">
+                  <span>참가자 명단 업로드</span>
+                  <span class="text-xs text-[#7a5a00]">명단</span>
+                </a>
+              </li>
+            </ul>
           </nav>
         </aside>
         <main class="flex-1 space-y-6">
@@ -4762,64 +5048,61 @@ app.get('/dashboard', async (c) => {
             <div class="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 class="text-lg font-semibold text-[#3f2f00]">📅 챌린지 기간 설정</h2>
-                <p data-role="period-summary" class="mt-1 text-sm text-[#6f5a26]">시작일과 종료일을 선택한 뒤 저장하면 챌린지 기준 기간이 업데이트됩니다.</p>
+                <p class="mt-1 text-sm text-[#6f5a26]">시작일과 종료일을 입력해 챌린지 운영 기간을 저장하세요.</p>
               </div>
-              <span
-                data-role="period-status"
-                class="rounded-full bg-primary/80 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#3f2f00]"
-              >
-                기간 미설정
-              </span>
             </div>
-            <form data-role="period-form" class="mt-5 grid gap-4 md:grid-cols-2">
-              <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
-                시작일
-                <input
-                  type="date"
-                  required
-                  data-role="period-start"
-                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#3f2f00] shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/80"
-                />
-              </label>
-              <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
-                종료일
-                <input
-                  type="date"
-                  required
-                  data-role="period-end"
-                  class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#3f2f00] shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/80"
-                />
-              </label>
-              <div class="md:col-span-2 flex flex-wrap items-center justify-between gap-3">
-                <p data-role="period-updated" class="text-xs text-[#8c7a4f]">최근 업데이트 정보가 여기에 표시됩니다.</p>
+            <form data-role="period-form" class="mt-5 space-y-4">
+              <div class="grid gap-4 md:grid-cols-2">
+                <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
+                  시작일
+                  <input
+                    type="date"
+                    required
+                    data-role="period-start"
+                    class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#3f2f00] shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/80"
+                  />
+                </label>
+                <label class="flex flex-col gap-2 text-sm font-medium text-[#4f3b0f]">
+                  종료일
+                  <input
+                    type="date"
+                    required
+                    data-role="period-end"
+                    class="rounded-2xl border border-[#f0dba5] bg-[#fefdf4] px-3 py-2 text-sm text-[#3f2f00] shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/80"
+                  />
+                </label>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <p data-role="period-message" class="text-xs text-[#8c7a4f]">챌린지 기간을 입력한 뒤 저장하기 버튼을 눌러주세요.</p>
                 <button
                   type="submit"
+                  data-role="period-submit"
                   class="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-[#3f2f00] shadow-sm transition hover:bg-[#fbe743] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                 >
-                  저장
+                  저장하기
                 </button>
               </div>
             </form>
             <div class="mt-6 rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70 p-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <h3 class="text-sm font-semibold text-[#4f3b0f]">기간 변경 내역</h3>
+                <h3 class="text-sm font-semibold text-[#4f3b0f]">저장된 챌린지 기간 목록</h3>
                 <button
                   type="button"
-                  data-role="period-delete"
+                  data-role="period-clear"
                   class="rounded-full bg-rose-100 px-4 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  기간 초기화
+                  전체 초기화
                 </button>
               </div>
-              <p data-role="period-history-empty" class="mt-1 text-xs text-[#7a5a00]">저장된 기간 변경 내역이 없습니다.</p>
-              <ul data-role="period-history" class="mt-3 space-y-2" hidden></ul>
+              <p data-role="period-list-empty" class="mt-1 text-xs text-[#7a5a00]">저장된 챌린지 기간이 없습니다.</p>
+              <ul data-role="period-list" class="mt-3 space-y-2"></ul>
             </div>
           </section>
           <section id="michina-upload" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
             <div class="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 class="text-lg font-semibold text-[#3f2f00]">📂 참가자 명단 업로드</h2>
-                <p class="mt-1 text-sm text-[#6f5a26]">CSV 파일을 업로드하면 참가자 정보가 자동으로 갱신됩니다.</p>
+                <p data-role="upload-hint" class="mt-1 text-sm text-[#6f5a26]">CSV 파일(name,email)을 업로드하면 참가자 명단이 저장됩니다.</p>
               </div>
             </div>
             <form data-role="participants-form" class="mt-5 space-y-4">
@@ -4834,27 +5117,19 @@ app.get('/dashboard', async (c) => {
               </label>
               <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <span data-role="participants-filename" class="text-xs text-[#7a5a00]">선택된 파일이 없습니다.</span>
-                <div class="flex flex-wrap items-center gap-2">
-                  <button
-                    type="submit"
-                    class="rounded-full bg-[#fef568] px-4 py-2 text-sm font-semibold text-[#333] transition hover:bg-[#fcef3c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
-                  >
-                    명단 업로드
-                  </button>
-                  <button
-                    type="button"
-                    data-role="participants-delete"
-                    class="rounded-full bg-red-400 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
-                  >
-                    명단 전체 삭제
-                  </button>
-                </div>
+                <button
+                  type="submit"
+                  data-role="participants-upload"
+                  class="rounded-full bg-[#fef568] px-4 py-2 text-sm font-semibold text-[#333] transition hover:bg-[#fcef3c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f1cc2b]"
+                >
+                  명단 업로드
+                </button>
               </div>
             </form>
             <p data-role="participants-status" class="mt-4 text-sm text-[#6f5a26]">CSV 파일을 선택하면 상태가 표시됩니다.</p>
             <div class="mt-5 rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70 p-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <h3 class="text-sm font-semibold text-[#4f3b0f]">최근 업로드 명단</h3>
+                <h3 class="text-sm font-semibold text-[#4f3b0f]">업로드된 참가자</h3>
                 <span data-role="participants-count" class="rounded-full bg-primary/70 px-3 py-1 text-xs font-semibold text-[#3f2f00]">0명</span>
               </div>
               <p data-role="participants-message" class="mt-1 text-xs text-[#7a5a00]">등록된 참가자 정보가 없습니다.</p>
@@ -4864,89 +5139,20 @@ app.get('/dashboard', async (c) => {
                     <tr>
                       <th scope="col" class="px-4 py-3">이름</th>
                       <th scope="col" class="px-4 py-3">이메일</th>
-                      <th scope="col" class="px-4 py-3">역할</th>
-                      <th scope="col" class="px-4 py-3">등록일</th>
+                      <th scope="col" class="px-4 py-3">최근 등록일</th>
                     </tr>
                   </thead>
                   <tbody data-role="participants-table" class="divide-y divide-[#f0dba5]/80 bg-white">
                     <tr>
-                      <td colspan="4" class="px-4 py-6 text-center text-sm text-[#7a5a00]">등록된 참가자 정보가 없습니다.</td>
+                      <td colspan="3" class="px-4 py-6 text-center text-sm text-[#7a5a00]">등록된 참가자 정보가 없습니다.</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </div>
           </section>
-          <section id="michina-status" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
-            <div class="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h2 class="text-lg font-semibold text-[#3f2f00]">📊 미치나 챌린저 참여 현황</h2>
-                <p class="mt-1 text-sm text-[#6f5a26]">설정된 챌린지 기간에 맞춰 현재 참여 상태를 확인하세요.</p>
-              </div>
-              <span
-                data-role="status-period"
-                class="rounded-full bg-primary/80 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-[#3f2f00]"
-              >
-                데이터 준비 중
-              </span>
-            </div>
-            <div class="mt-6 grid gap-3 text-center text-sm font-semibold text-[#3f2f00] sm:grid-cols-3">
-              <div class="rounded-3xl bg-primary/70 px-4 py-5">
-                <p class="text-xs uppercase tracking-wide text-[#7a5a00]">전체</p>
-                <p data-role="status-total" class="mt-2 text-3xl font-bold text-[#3f2f00]">0</p>
-              </div>
-              <div class="rounded-3xl bg-[#d6f8a1]/80 px-4 py-5">
-                <p class="text-xs uppercase tracking-wide text-[#3f6212]">진행</p>
-                <p data-role="status-active" class="mt-2 text-3xl font-bold text-[#245501]">0</p>
-              </div>
-              <div class="rounded-3xl bg-[#fcd1c5]/80 px-4 py-5">
-                <p class="text-xs uppercase tracking-wide text-[#9a3412]">종료</p>
-                <p data-role="status-expired" class="mt-2 text-3xl font-bold text-[#7c2d12]">0</p>
-              </div>
-            </div>
-            <div class="mt-8 flex flex-col items-center gap-5 lg:flex-row">
-              <div class="relative h-36 w-36">
-                <div
-                  data-role="status-chart"
-                  class="absolute inset-0 rounded-full bg-[conic-gradient(#d6f8a1_0%,#fcd1c5_0%)] shadow-inner"
-                  aria-hidden="true"
-                ></div>
-                <div class="absolute inset-4 rounded-full bg-white/90 shadow">
-                  <span data-role="status-chart-label" class="flex h-full items-center justify-center text-lg font-semibold text-[#3f2f00]">0%</span>
-                </div>
-              </div>
-              <ul data-role="status-description" class="flex-1 space-y-2 text-sm text-[#6f5a26]">
-                <li>참여자 데이터가 수집되면 현황이 자동으로 업데이트됩니다.</li>
-              </ul>
-            </div>
-          </section>
-          <section id="database-users" data-role="dashboard-section" class="rounded-3xl border border-yellow-100 bg-white/90 p-6 shadow-ellie backdrop-blur">
-            <div class="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h2 class="text-lg font-semibold text-[#3f2f00]">👥 전체 사용자 DB 조회</h2>
-                <p class="mt-1 text-sm text-[#6f5a26]">로그인한 모든 사용자를 최신 순으로 확인하세요.</p>
-              </div>
-              <span data-role="users-count" class="rounded-full bg-primary/80 px-3 py-1 text-xs font-semibold text-[#3f2f00]">0명</span>
-            </div>
-            <div class="mt-4 max-h-72 overflow-y-auto rounded-3xl border border-[#f0dba5] bg-[#fefdf4]/70">
-              <table class="min-w-full divide-y divide-[#f0dba5] text-left text-sm text-[#3f2f00]">
-                <thead class="bg-primary/70 text-xs font-semibold uppercase tracking-widest text-[#4f3b0f]">
-                  <tr>
-                    <th scope="col" class="px-4 py-3">이름</th>
-                    <th scope="col" class="px-4 py-3">이메일</th>
-                    <th scope="col" class="px-4 py-3">역할</th>
-                    <th scope="col" class="px-4 py-3">최근 로그인</th>
-                  </tr>
-                </thead>
-                <tbody data-role="users-table" class="divide-y divide-[#f0dba5]/80 bg-white">
-                  <tr>
-                    <td colspan="4" class="px-4 py-6 text-center text-sm text-[#7a5a00]">불러온 사용자 정보가 없습니다.</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
         </main>
+
       </div>
       <footer class="mt-10 border-t border-yellow-100 pt-6 text-center text-xs text-[#7a5a00]">
         &copy; ${new Date().getFullYear()} Ellie Image Editor. All rights reserved.
