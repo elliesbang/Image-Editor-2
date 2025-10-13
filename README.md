@@ -8,7 +8,7 @@
 ## 현재 구현 기능
 - **이미지 편집 파이프라인**: 최대 50장 동시 업로드, 배경 제거·피사체 타이트 크롭·노이즈 제거·가로폭 리사이즈(Blob 우선 로딩 + `globalCompositeOperation: copy`로 투명 배경/크롭 결과 100% 유지, 결과 선택 시 원본 업로드 자동 제외), PNG → SVG 변환(JSZip + ImageTracer.js), 선택/전체 ZIP 다운로드
 - **Freemium 크레딧 모델**: 로그인 시 30 크레딧 자동 충전, 작업별 차감, 잔여량에 따라 헤더/게이트 상태(`success → warning → danger`) 자동 전환
-- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내, Google 로그인은 비활성화되어 이메일 인증만 지원
+- **이메일 로그인 UX**: 6자리 인증 코드 기반 OTP 흐름, 인증 코드 만료/재시도 안내로 이메일 인증만 지원
 - **관리자 인증 & 보안 강화**
   - SHA-256 해시 기반 자격 검증 + Hono JWT + HttpOnly 세션 쿠키, JWT에는 `iss/aud/ver/iat` 포함
   - 세션 버전(`ADMIN_SESSION_VERSION`)으로 기존 쿠키 무효화 가능
@@ -42,7 +42,7 @@
 4. **수료증**: 15회 제출 완료 시 자동 완주 처리, `/api/challenge/certificate` fetch 후 html2canvas로 PNG 저장(배경 #fef568)
 
 ## 보안 강화 요소
-- 관리자 로그인은 Google OAuth 2.0 기반으로 진행되며 state 쿠키(`admin_oauth_state`)로 CSRF를 방지하고, 인증된 `ADMIN_EMAIL` 계정만 세션을 발급합니다.
+- 관리자 로그인은 이메일/비밀번호 기반으로 진행되며 `ADMIN_EMAIL` 계정만 세션을 발급합니다.
 - JWT 페이로드 → `{ sub, role, exp, iss, aud, ver, iat }`, HttpOnly + Secure + SameSite=Lax 쿠키, 세션 버전 변경 시 즉시 무효화
 - CSP `default-src 'self'`, script/style CDN 화이트리스트, 이미지 data/blob 허용, frame-ancestors 'none'
 - Strict-Transport-Security(180일, preload), Referrer-Policy(`strict-origin-when-cross-origin`), Permissions-Policy(카메라/마이크/geolocation 차단)
@@ -56,8 +56,6 @@
 | GET | `/static/*` | 정적 자산(app.js, styles.css 등) | - |
 | GET | `/api/health` | 상태 점검 JSON `{ "status": "ok" }` | - |
 | POST | `/functions/analyze-keywords` | Cloudflare Function에서 OpenAI GPT-4o-mini 기반 키워드/제목 분석 (data URL 입력) | Cloudflare Pages 환경변수 |
-| GET | `/auth/google` | 관리자 Google OAuth 로그인 시작 (팝업/리디렉션) | - |
-| GET | `/api/auth/callback/google` | Google OAuth 콜백 처리 및 관리자 세션 발급 | Google OAuth 코드 |
 | GET | `/api/auth/session` | 관리자 세션 상태 확인 | 세션 쿠키 |
 | POST | `/api/auth/admin/logout` | 관리자 로그아웃 | 세션 쿠키 |
 | POST | `/api/admin/challenge/import` | 참가자 명단 등록(CSV/JSON/textarea) | 관리자 세션 |
@@ -89,14 +87,11 @@
 | `ADMIN_RATE_LIMIT_MAX_ATTEMPTS` | 관리자 로그인 허용 시도 횟수 | 선택 (기본 `5`) | 1~20 범위 |
 | `ADMIN_RATE_LIMIT_WINDOW_SECONDS` | 레이트 리밋 윈도우(초) | 선택 (기본 `60`) | 10~3600 범위 |
 | `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS` | 최대 시도 초과 시 추가 쿨다운 | 선택 (기본 `300`) | 윈도우 이상 7200 이하 |
-| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 클라이언트 ID | 필수 (관리자 로그인) | Google Cloud Console에서 발급 |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 클라이언트 Secret | 필수 (관리자 로그인) | Pages Secret으로 관리 |
-| `GOOGLE_REDIRECT_URI` | Google OAuth 리디렉션 URI | 선택 | 미설정 시 `/api/auth/callback/google` 기준으로 자동 계산 |
 | `MICHINA_COMMUNITY_URL` | 헤더 “미치나 커뮤니티” 링크 URL | 선택 | 미설정 시 `/?view=community` |
 | `CHALLENGE_KV` | Cloudflare KV 바인딩 이름 | 선택 | 참가자 레코드 기본 저장소 |
 | `CHALLENGE_KV_BACKUP` | Cloudflare KV 백업 바인딩 | 선택 | 미설정 시 in-memory 백업 Map 사용 |
 
-> 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다. 관리자 로그인을 위해 `GOOGLE_CLIENT_ID`와 `GOOGLE_CLIENT_SECRET`을 반드시 구성하세요.
+> 로컬 개발: `.dev.vars` 파일에 위 변수를 정의하고 `.gitignore`에 포함되어 있습니다.
 
 ## 개발 환경 & 실행 방법
 ```bash
@@ -112,10 +107,6 @@ ADMIN_SESSION_VERSION="1"
 ADMIN_RATE_LIMIT_MAX_ATTEMPTS="5"
 ADMIN_RATE_LIMIT_WINDOW_SECONDS="60"
 ADMIN_RATE_LIMIT_COOLDOWN_SECONDS="300"
-# 관리자 Google OAuth 변수
-GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
-GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
-# GOOGLE_REDIRECT_URI="http://localhost:3000/api/auth/callback/google"
 MICHINA_COMMUNITY_URL="https://community.example.com"
 # CHALLENGE_KV / CHALLENGE_KV_BACKUP 은 Cloudflare 바인딩 시 자동 주입
 EOF
@@ -135,11 +126,9 @@ curl http://localhost:3000/api/health
 - KV 개발용: `wrangler pages dev dist --d1=<name> --local` 형태로 수정 가능
 
 ## 테스트/검증 로그
-- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, 관리자용 Google OAuth 로그인 UX, 커뮤니티 헤더 링크, 상태 배너 CTA 템플릿)
+- 2025-10-04 `npm run build` (성공: Blob 우선 리사이즈 파이프라인 + copy 합성으로 투명도 유지, OpenAI Responses API 타임아웃/요청 ID/25개 보강, 커뮤니티 헤더 링크, 상태 배너 CTA 템플릿)
 - 2025-10-04 관리자 로그인 직후 상태 배너 CTA(“관리자 로그인 완료! ...”)·내비 하이라이트·안내 패널 연동 검증(세션 동기화 포함, 자동 이동 제거, 8초 지속·`status--interactive` 적용)
 - `curl http://localhost:3000/api/health` → `{ "status": "ok" }`
-- 관리자 로그인 플로우: Google OAuth 성공 시 세션 쿠키(`admin_session`) 발급 및 `/admin-dashboard` 이동, `ADMIN_EMAIL` 불일치 시 경고 후 홈으로 복귀하는 시나리오 검증
-- Google OAuth 코드 플로우: 팝업 거절/네트워크 오류 시 자동 재시도 메시지 노출, 검증 실패 시 명확한 에러 코드(`GOOGLE_EMAIL_NOT_VERIFIED` 등) 반환
 - `/api/admin/challenge/import` → CSV 업로드 후 참가자 수량/총 인원 응답 확인
 - `/api/admin/challenge/backup` + `/api/admin/challenge/backup/snapshot` → 백업 KV 동기화 및 스냅샷 키 생성 확인
 - `/api/challenge/submit` → URL 제출 성공, 15회 이후 자동 완주 → `/api/challenge/certificate` 200 응답 확인
@@ -156,7 +145,6 @@ curl http://localhost:3000/api/health
 2. **OpenAI API 키 보호**: Cloudflare Pages Secret에 등록 후 로컬 `.dev.vars` 분리
 3. **UI 개선**: 모바일에서 챌린지 카드 및 수료증 슬라이더 도입, 관리자 표 정렬/필터 추가
 4. **빌드 파이프라인**: GitHub Actions + Wrangler Deploy 자동화 구성, main 브랜치 → 프로덕션 자동 배포
-5. **로컬 OAuth 리디렉션 추가**: Google Cloud Console에 `http://localhost:3000/auth/google/callback`을 리디렉션 URI로 등록해 개발 테스트 편의 확보
 
 ## 배포 절차
 1. **GitHub 연동**
@@ -186,13 +174,13 @@ curl http://localhost:3000/api/health
    npx wrangler pages deploy dist --project-name <project-name>
    ```
    - 배포 성공 후 README `URL` 섹션과 `meta_info`에 최종 프로젝트명 기록
-  - Secrets: `ADMIN_EMAIL`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록 (`GOOGLE_CLIENT_SECRET`은 반드시 서버 사이드 시크릿으로 유지)
+  - Secrets: `ADMIN_EMAIL`, `SESSION_SECRET`, `ADMIN_SESSION_VERSION`, `ADMIN_RATE_LIMIT_MAX_ATTEMPTS`, `ADMIN_RATE_LIMIT_WINDOW_SECONDS`, `ADMIN_RATE_LIMIT_COOLDOWN_SECONDS`, `OPENAI_API_KEY` 등을 `npx wrangler pages secret put <NAME> --project-name <project-name>` 명령으로 등록
 
 ## 사용자 가이드 요약
 - **게스트**: 이미지 업로드 → 로그인 모달에서 이메일 주소 입력 및 6자리 인증 코드 확인 → 무료 크레딧 충전 후 편집 진행
 - **관리자**: 헤더 내비게이션에서 관리자 모달을 열고 이메일·비밀번호로 로그인 → 로그인 직후 상단 상태 배너의 "대시보드 이동"/"새 탭에서 열기" 버튼 또는 안내 패널에서 동일한 옵션을 선택해 대시보드에 즉시 접근 → 대시보드에서 명단 업로드·완주 판별·CSV/백업 수행
 - **참가자**: 로그인 후 헤더의 “미치나 커뮤니티” 버튼으로 참가자 안내 페이지 이동, 진행률 확인 및 Day 제출 → 완주 시 수료증 PNG 다운로드
-- **보안 주의**: 관리자 자격 증명과 `GOOGLE_CLIENT_SECRET`은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
+- **보안 주의**: 관리자 자격 증명과 민감한 시크릿은 Cloudflare Secret으로만 배포, 프론트엔드에 노출 금지
 
 ## URL & 배포 상태
 - **Production**: https://project-9cf3a0d0.pages.dev

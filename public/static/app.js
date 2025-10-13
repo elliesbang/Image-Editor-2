@@ -68,153 +68,8 @@ const CREDIT_COSTS = {
 const COMMUNITY_ROLE_STORAGE_KEY = 'role'
 const USER_IDENTITY_STORAGE_KEY = 'elliesbang:user'
 const STAGE_FLOW = ['upload', 'refine', 'export']
-const GOOGLE_SDK_SRC = 'https://accounts.google.com/gsi/client'
-const GOOGLE_ALLOWED_ORIGIN = 'https://image-editor-3.pages.dev'
-const GOOGLE_SIGNIN_TEXT = {
-  default: 'Google로 로그인하기',
-  idle: 'Google로 로그인하기',
-  initializing: 'Google 로그인 준비 중…',
-  loading: 'Google 계정을 확인하는 중…',
-  disabled: 'Google 로그인 준비 중',
-  error: 'Google 로그인 다시 시도',
-  retrying: 'Google 로그인 자동 재시도 준비 중…',
-}
-
-const GOOGLE_TOKEN_STORAGE_KEY = 'token'
-
-const ENABLE_GOOGLE_LOGIN = true
-
-const GOOGLE_MAX_AUTO_RETRY = 3
-const GOOGLE_BACKOFF_BASE_DELAY = 1500
-const GOOGLE_BACKOFF_MAX_DELAY = 30000
-const GOOGLE_BACKOFF_JITTER = 400
-
-const GOOGLE_RECOVERABLE_ERRORS = new Set([
-  'GOOGLE_SDK_TIMEOUT',
-  'GOOGLE_SDK_UNAVAILABLE',
-  'GOOGLE_SDK_LOAD_FAILED',
-  'GOOGLE_CODE_MISSING',
-  'GOOGLE_AUTH_REJECTED',
-  'GOOGLE_TOKEN_EXCHANGE_FAILED',
-  'GOOGLE_AUTH_UNEXPECTED_ERROR',
-  'interaction_required',
-])
-
-const GOOGLE_POPUP_DISMISSED_ERRORS = new Set([
-  'access_denied',
-  'popup_closed_by_user',
-  'popup_blocked_by_browser',
-])
-
-const GOOGLE_CONFIGURATION_ERRORS = new Set(['GOOGLE_CLIENT_ID_MISSING', 'GOOGLE_AUTH_NOT_CONFIGURED'])
-
-const GOOGLE_RETRY_REASON_HINTS = {
-  default: '일시적인 오류가 발생했습니다.',
-  recoverable_error: '일시적인 오류가 발생했습니다.',
-  GOOGLE_SDK_TIMEOUT: 'Google 로그인 응답이 지연되고 있습니다.',
-  GOOGLE_SDK_UNAVAILABLE: 'Google 로그인 서비스와 연결이 원활하지 않습니다.',
-  GOOGLE_SDK_LOAD_FAILED: 'Google 로그인 스크립트를 불러오는 중 문제가 발생했습니다.',
-  GOOGLE_CODE_MISSING: 'Google에서 인증 코드가 전달되지 않았습니다.',
-  GOOGLE_AUTH_REJECTED: 'Google 로그인 요청이 일시적으로 거절되었습니다.',
-  GOOGLE_TOKEN_EXCHANGE_FAILED: 'Google 인증 서버 응답이 지연되고 있습니다.',
-  GOOGLE_AUTH_UNEXPECTED_ERROR: 'Google 인증 서버에서 예기치 않은 응답을 받았습니다.',
-  interaction_required: 'Google 계정 선택이 필요한 상태입니다.',
-}
-
-function describeGoogleRetry(reason) {
-  if (!reason) {
-    return GOOGLE_RETRY_REASON_HINTS.default
-  }
-  return GOOGLE_RETRY_REASON_HINTS[reason] || GOOGLE_RETRY_REASON_HINTS.default
-}
-
-function decodeGoogleCredentialPayload(token) {
-  if (typeof token !== 'string' || !token) {
-    return null
-  }
-
-  const segments = token.split('.')
-  if (segments.length < 2) {
-    return null
-  }
-
-  try {
-    const base64 = segments[1].replace(/-/g, '+').replace(/_/g, '/')
-    const padding = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4))
-    const normalized = base64 + padding
-    const binary = window.atob(normalized)
-    const bytes = new Uint8Array(binary.length)
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index)
-    }
-    const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null
-    const jsonText =
-      textDecoder
-        ? textDecoder.decode(bytes)
-        : Array.from(bytes)
-            .map((value) => String.fromCharCode(value))
-            .join('')
-    return JSON.parse(jsonText)
-  } catch (error) {
-    console.error('Failed to decode Google credential payload', error)
-    return null
-  }
-}
-
-function storeGoogleCredential(token) {
-  try {
-    if (!window.localStorage) {
-      return
-    }
-  } catch (error) {
-    return
-  }
-
-  try {
-    window.localStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, token)
-  } catch (error) {
-    console.warn('Google 로그인 토큰을 저장하지 못했습니다.', error)
-  }
-}
-
-function loadStoredGoogleCredential() {
-  try {
-    const storage = window.localStorage
-    if (!storage) {
-      return ''
-    }
-    const token = storage.getItem(GOOGLE_TOKEN_STORAGE_KEY)
-    return typeof token === 'string' ? token : ''
-  } catch (error) {
-    console.warn('Google 로그인 토큰을 불러오지 못했습니다.', error)
-    return ''
-  }
-}
-
-function clearStoredGoogleCredential() {
-  try {
-    window.localStorage?.removeItem(GOOGLE_TOKEN_STORAGE_KEY)
-  } catch (error) {
-    console.warn('Google 로그인 토큰을 삭제하지 못했습니다.', error)
-  }
-}
-
 const CHALLENGE_TIMEZONE_OFFSET_MINUTES = 9 * 60
 const CHALLENGE_TIMEZONE_OFFSET_MS = CHALLENGE_TIMEZONE_OFFSET_MINUTES * 60 * 1000
-
-function announceGoogleRetry(delayMs, reason = 'recoverable_error', attemptNumber) {
-  const seconds = Math.max(1, Math.ceil(delayMs / 1000))
-  const resolvedAttempt =
-    typeof attemptNumber === 'number' && attemptNumber > 1
-      ? attemptNumber
-      : runtime.google.nextRetryAttempt && runtime.google.nextRetryAttempt > 1
-        ? runtime.google.nextRetryAttempt
-        : 0
-  const attemptMessage =
-    resolvedAttempt > 1 ? `${resolvedAttempt}번째 자동 재시도를 진행합니다.` : '자동으로 다시 시도합니다.'
-  const message = `${describeGoogleRetry(reason)} 약 ${seconds}초 후 ${attemptMessage}`
-  setGoogleLoginHelper(`${message}`, 'info')
-}
 
 const state = {
   uploads: [],
@@ -283,23 +138,6 @@ const runtime = {
   allowViewBypass: false,
   engine: {
     controller: null,
-  },
-  google: {
-    idClient: null,
-    idInitialized: false,
-    promptActive: false,
-    latestCredential: '',
-    prefetchPromise: null,
-    retryCount: 0,
-    cooldownTimer: null,
-    cooldownUntil: 0,
-    cooldownAutoRetry: false,
-    retryTimer: null,
-    retryAt: 0,
-    nextRetryReason: '',
-    nextRetryAttempt: 0,
-    lastErrorHint: '',
-    lastErrorTone: 'muted',
   },
   admin: {
     retryCount: 0,
@@ -640,7 +478,6 @@ function assertEngineReady() {
   return false
 }
 
-let googleSdkPromise = null
 let hasAnnouncedAdminNav = false
 let adminNavHighlightTimer = null
 let hasShownAdminDashboardPrompt = false
@@ -697,128 +534,6 @@ function getAppConfig() {
     runtime.config = {}
   }
   return runtime.config
-}
-
-function waitForGoogleSdk(timeout = 8000) {
-  const start = Date.now()
-  return new Promise((resolve, reject) => {
-    const isReady = () =>
-      Boolean(window.google?.accounts?.id?.initialize) ||
-      Boolean(window.google?.accounts?.oauth2?.initCodeClient)
-    if (isReady()) {
-      resolve(window.google.accounts)
-      return
-    }
-    const timer = window.setInterval(() => {
-      if (isReady()) {
-        window.clearInterval(timer)
-        resolve(window.google.accounts)
-        return
-      }
-      if (Date.now() - start > timeout) {
-        window.clearInterval(timer)
-        reject(new Error('GOOGLE_SDK_TIMEOUT'))
-      }
-    }, 120)
-  })
-}
-
-function loadGoogleSdk(timeout = 10000) {
-  if (window.google?.accounts?.id) {
-    return Promise.resolve()
-  }
-
-  if (googleSdkPromise) {
-    return googleSdkPromise
-  }
-
-  googleSdkPromise = new Promise((resolve, reject) => {
-    let script = document.querySelector('script[data-role="google-sdk"]')
-    let settled = false
-    let timer = null
-
-    const cleanup = () => {
-      if (script) {
-        script.removeEventListener('load', handleLoad)
-        script.removeEventListener('error', handleError)
-      }
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-    }
-
-    const finish = (error) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      if (error) {
-        googleSdkPromise = null
-        reject(error)
-        return
-      }
-      resolve(true)
-    }
-
-    const handleLoad = () => {
-      if (script) {
-        script.setAttribute('data-loaded', 'true')
-      }
-      finish()
-    }
-
-    const handleError = () => {
-      if (script && script.parentNode) {
-        script.parentNode.removeChild(script)
-      }
-      finish(new Error('GOOGLE_SDK_LOAD_FAILED'))
-    }
-
-    if (!script) {
-      script = document.createElement('script')
-      script.src = GOOGLE_SDK_SRC
-      script.async = true
-      script.defer = true
-      script.dataset.role = 'google-sdk'
-      script.addEventListener('load', handleLoad, { once: true })
-      script.addEventListener('error', handleError, { once: true })
-      document.head.appendChild(script)
-    } else if (script.getAttribute('data-loaded') === 'true') {
-      finish()
-      return
-    } else {
-      script.addEventListener('load', handleLoad, { once: true })
-      script.addEventListener('error', handleError, { once: true })
-    }
-
-    timer = window.setTimeout(() => {
-      if (window.google?.accounts?.id) {
-        handleLoad()
-        return
-      }
-      if (script && script.parentNode) {
-        script.parentNode.removeChild(script)
-      }
-      finish(new Error('GOOGLE_SDK_TIMEOUT'))
-    }, timeout)
-  })
-
-  return googleSdkPromise
-}
-
-async function ensureGoogleClient() {
-  if (!ENABLE_GOOGLE_LOGIN) {
-    throw new Error('GOOGLE_CLIENT_ID_MISSING')
-  }
-
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    throw new Error('GOOGLE_CLIENT_ID_MISSING')
-  }
-
-  runtime.google.idInitialized = true
-  runtime.google.idClient = null
-  return true
 }
 
 const elements = {
@@ -917,10 +632,6 @@ const elements = {
   loginModal: document.querySelector('[data-role="login-modal"]'),
   loginEmailPanel: document.querySelector('[data-role="login-email-panel"]'),
   loginEmailChoice: document.querySelector('[data-action="choose-email-login"]'),
-  googleLoginButton: document.querySelector('[data-role="google-login-button"]'),
-  googleLoginText: document.querySelector('[data-role="google-login-text"]'),
-  googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
-  googleLoginHelper: document.querySelector('[data-role="google-login-helper"]'),
   communityLink: document.querySelector('[data-role="community-link"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
   loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
@@ -2084,300 +1795,6 @@ function showStrokeAdjustmentNotice() {
   }, 6000)
 }
 
-function setGoogleButtonState(state = 'idle', labelOverride) {
-  const button = elements.googleLoginButton
-  if (!(button instanceof HTMLButtonElement)) {
-    return
-  }
-
-  const labelKey = typeof GOOGLE_SIGNIN_TEXT[state] === 'string' ? state : 'default'
-  const label =
-    typeof labelOverride === 'string' && labelOverride.trim().length > 0
-      ? labelOverride.trim()
-      : GOOGLE_SIGNIN_TEXT[labelKey] ?? GOOGLE_SIGNIN_TEXT.default
-
-  if (elements.googleLoginText instanceof HTMLElement) {
-    elements.googleLoginText.textContent = label
-  }
-
-  button.setAttribute('aria-label', label)
-
-  const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
-  const shouldDisable = isPending || state === 'disabled' || state === 'error'
-
-  button.disabled = shouldDisable
-  if (shouldDisable) {
-    button.setAttribute('aria-disabled', 'true')
-  } else {
-    button.removeAttribute('aria-disabled')
-  }
-  button.setAttribute('aria-busy', isPending ? 'true' : 'false')
-
-  if (isPending) {
-    button.dataset.loading = 'true'
-  } else if (button.dataset.loading) {
-    delete button.dataset.loading
-  }
-
-  if (state === 'disabled' || state === 'error' || state === 'retrying') {
-    button.dataset.state = state
-  } else if (button.dataset.state) {
-    delete button.dataset.state
-  }
-}
-
-function setGoogleLoginHelper(message = '', tone = 'muted') {
-  if (!(elements.googleLoginHelper instanceof HTMLElement)) {
-    return
-  }
-  const trimmed = typeof message === 'string' ? message.trim() : ''
-  elements.googleLoginHelper.textContent = trimmed
-  elements.googleLoginHelper.hidden = !trimmed
-  runtime.google.lastErrorHint = trimmed
-  if (!trimmed) {
-    delete elements.googleLoginHelper.dataset.tone
-    runtime.google.lastErrorTone = 'muted'
-    return
-  }
-  if (typeof tone === 'string' && tone !== 'muted') {
-    elements.googleLoginHelper.dataset.tone = tone
-    runtime.google.lastErrorTone =
-      tone === 'danger' || tone === 'warning' || tone === 'info' ? tone : 'muted'
-  } else {
-    delete elements.googleLoginHelper.dataset.tone
-    runtime.google.lastErrorTone = 'muted'
-  }
-}
-
-function disableGoogleLoginUI() {
-  if (elements.googleLoginButton instanceof HTMLElement) {
-    elements.googleLoginButton.hidden = true
-    elements.googleLoginButton.setAttribute('aria-hidden', 'true')
-    elements.googleLoginButton.setAttribute('aria-disabled', 'true')
-    if (elements.googleLoginButton instanceof HTMLButtonElement) {
-      elements.googleLoginButton.disabled = true
-    }
-  }
-  if (elements.googleLoginText instanceof HTMLElement) {
-    elements.googleLoginText.textContent = 'Google 로그인은 현재 지원되지 않습니다.'
-  }
-  if (elements.googleLoginSpinner instanceof HTMLElement) {
-    elements.googleLoginSpinner.hidden = true
-  }
-  setGoogleLoginHelper('현재 이메일 로그인만 지원합니다.', 'info')
-}
-
-function updateGoogleProviderAvailability() {
-  if (!ENABLE_GOOGLE_LOGIN) {
-    disableGoogleLoginUI()
-    return
-  }
-  if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
-    disableGoogleLoginUI()
-    return
-  }
-
-  const now = Date.now()
-  if (runtime.google.cooldownUntil && now < runtime.google.cooldownUntil) {
-    const remaining = Math.max(0, runtime.google.cooldownUntil - now)
-    const seconds = Math.max(1, Math.ceil(remaining / 1000))
-    if (runtime.google.cooldownAutoRetry) {
-      setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
-      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
-    } else {
-      setGoogleButtonState('error', `${seconds}초 후 다시 시도`)
-    }
-    return
-  }
-
-  if (runtime.google.retryTimer && runtime.google.retryAt && now < runtime.google.retryAt) {
-    const remaining = Math.max(0, runtime.google.retryAt - now)
-    const seconds = Math.max(1, Math.ceil(remaining / 1000))
-    setGoogleButtonState('retrying', `자동 재시도까지 ${seconds}초`)
-    announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error')
-    return
-  }
-
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-  if (!clientId) {
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
-  if (runtime.google.prefetchPromise) {
-    setGoogleButtonState('initializing')
-    return
-  }
-  runtime.google.idInitialized = true
-  if (elements.googleLoginButton instanceof HTMLButtonElement) {
-    elements.googleLoginButton.hidden = false
-    elements.googleLoginButton.setAttribute('aria-hidden', 'false')
-    elements.googleLoginButton.removeAttribute('aria-disabled')
-    elements.googleLoginButton.disabled = false
-  }
-  setGoogleLoginHelper('', 'muted')
-  setGoogleButtonState('idle')
-}
-
-async function prefetchGoogleClient() {
-  try {
-    setGoogleButtonState('initializing')
-    await ensureGoogleClient()
-    setGoogleButtonState('idle')
-    setGoogleLoginHelper('', 'muted')
-  } catch (error) {
-    console.warn('Google 로그인 초기화에 실패했습니다.', error)
-    setGoogleButtonState('error', 'Google 로그인 다시 시도')
-    setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-  }
-}
-
-function clearGoogleAutoRetry() {
-  if (runtime.google.retryTimer) {
-    window.clearTimeout(runtime.google.retryTimer)
-  }
-  runtime.google.retryTimer = null
-  runtime.google.retryAt = 0
-  runtime.google.nextRetryReason = ''
-  runtime.google.nextRetryAttempt = 0
-}
-
-function clearGoogleCooldown() {
-  if (runtime.google.cooldownTimer) {
-    window.clearTimeout(runtime.google.cooldownTimer)
-  }
-  runtime.google.cooldownTimer = null
-  runtime.google.cooldownUntil = 0
-  runtime.google.cooldownAutoRetry = false
-  clearGoogleAutoRetry()
-  setGoogleLoginHelper('', 'muted')
-  updateGoogleProviderAvailability()
-}
-
-function startGoogleCooldown(durationMs, options = {}) {
-  if (!(elements.googleLoginButton instanceof HTMLButtonElement)) {
-    return
-  }
-  const { autoRetry = false, attemptNumber } = options
-  const normalized = Math.max(1000, durationMs)
-  const target = Date.now() + normalized
-  const upcomingAttempt =
-    typeof attemptNumber === 'number' && attemptNumber > 0
-      ? attemptNumber
-      : runtime.google.nextRetryAttempt || runtime.google.retryCount + 1
-
-  if (autoRetry && upcomingAttempt > 0) {
-    runtime.google.nextRetryAttempt = upcomingAttempt
-  }
-
-  const helperElement =
-    elements.googleLoginHelper instanceof HTMLElement ? elements.googleLoginHelper : null
-  const baseHelperMessage = helperElement ? (helperElement.textContent || '').trim() : ''
-  const fallbackTone =
-    runtime.google.lastErrorTone && runtime.google.lastErrorTone !== 'muted'
-      ? runtime.google.lastErrorTone
-      : autoRetry
-        ? 'info'
-        : 'warning'
-  const baseHelperTone =
-    helperElement && helperElement.dataset.tone && helperElement.dataset.tone !== 'muted'
-      ? helperElement.dataset.tone
-      : fallbackTone
-
-  if (runtime.google.cooldownTimer) {
-    window.clearTimeout(runtime.google.cooldownTimer)
-  }
-  if (!autoRetry) {
-    clearGoogleAutoRetry()
-  }
-
-  runtime.google.cooldownAutoRetry = autoRetry
-  runtime.google.cooldownUntil = target
-
-  const update = () => {
-    const remaining = Math.max(0, runtime.google.cooldownUntil - Date.now())
-    if (remaining <= 0) {
-      clearGoogleCooldown()
-      return
-    }
-    const seconds = Math.ceil(remaining / 1000)
-    const attemptLabel = autoRetry && upcomingAttempt > 1 ? ` (다음 시도 ${upcomingAttempt}번째)` : ''
-    const label = autoRetry
-      ? `자동 재시도까지 ${seconds}초${attemptLabel}`
-      : `${seconds}초 후 다시 시도`
-    setGoogleButtonState(autoRetry ? 'retrying' : 'error', label)
-    if (autoRetry) {
-      announceGoogleRetry(remaining, runtime.google.nextRetryReason || 'recoverable_error', upcomingAttempt)
-    } else {
-      const hint =
-        baseHelperMessage || runtime.google.lastErrorHint || 'Google 로그인에 잠시 문제가 발생했습니다.'
-      setGoogleLoginHelper(`${hint} 약 ${seconds}초 후 다시 시도할 수 있습니다.`, baseHelperTone)
-    }
-    runtime.google.cooldownTimer = window.setTimeout(update, 1000)
-  }
-
-  update()
-}
-
-function calculateGoogleBackoffDelay(retryCount) {
-  const exponent = Math.max(0, retryCount - 1)
-  const baseDelay = GOOGLE_BACKOFF_BASE_DELAY * Math.pow(2, exponent)
-  const cappedDelay = Math.min(GOOGLE_BACKOFF_MAX_DELAY, baseDelay)
-  const jitter = Math.random() * GOOGLE_BACKOFF_JITTER
-  return Math.round(cappedDelay + jitter)
-}
-
-function scheduleGoogleAutoRetry(reason = 'recoverable_error') {
-  if (runtime.google.retryCount > GOOGLE_MAX_AUTO_RETRY) {
-    return false
-  }
-
-  const upcomingAttempt = Math.max(2, runtime.google.retryCount + 1)
-  const delay = calculateGoogleBackoffDelay(runtime.google.retryCount || 1)
-  runtime.google.nextRetryAttempt = upcomingAttempt
-  startGoogleCooldown(delay, { autoRetry: true, attemptNumber: upcomingAttempt })
-
-  if (runtime.google.retryTimer) {
-    window.clearTimeout(runtime.google.retryTimer)
-  }
-
-  runtime.google.retryAt = Date.now() + delay
-  runtime.google.nextRetryReason = reason
-  runtime.google.lastErrorHint = describeGoogleRetry(reason)
-  runtime.google.lastErrorTone = 'info'
-  runtime.google.retryTimer = window.setTimeout(() => {
-    runtime.google.retryTimer = null
-    runtime.google.retryAt = 0
-    runtime.google.nextRetryReason = ''
-    runtime.google.nextRetryAttempt = upcomingAttempt
-    setGoogleLoginHelper(`Google 로그인 ${upcomingAttempt}번째 자동 재시도를 시작합니다…`, 'info')
-    runtime.google.lastErrorTone = 'info'
-    handleGoogleLogin(new Event('retry'))
-  }, delay)
-
-  setStatus(
-    `Google 로그인 ${upcomingAttempt}번째 자동 재시도를 준비하고 있습니다.`,
-    'info',
-    3600,
-  )
-  announceGoogleRetry(delay, reason, upcomingAttempt)
-  return true
-}
-
-function activateEmailFallback() {
-  encourageEmailFallback()
-  if (elements.loginEmailForm instanceof HTMLFormElement) {
-    if (state.auth.step !== 'code') {
-      updateLoginFormState('idle')
-    }
-  }
-  setLoginHelper('Google 로그인에 문제가 발생했습니다. 이메일 인증으로 계속 진행해주세요.', 'warning')
-  if (elements.loginEmailInput instanceof HTMLInputElement) {
-    window.requestAnimationFrame(() => elements.loginEmailInput.focus())
-  }
-}
-
 function toggleProcessing(isProcessing) {
   state.processing = isProcessing
   const analysisMode = resolveAnalysisMode()
@@ -3236,39 +2653,6 @@ function applyLoginProfile({ name, email, credits = FREEMIUM_INITIAL_CREDITS, pl
   persistUserIdentity(state.user.email, state.user.role)
 }
 
-function restoreLoginFromToken() {
-  const stored = loadStoredGoogleCredential()
-  if (!stored) {
-    return false
-  }
-
-  const payload = decodeGoogleCredentialPayload(stored)
-  if (!payload || typeof payload !== 'object') {
-    clearStoredGoogleCredential()
-    return false
-  }
-
-  const email = typeof payload.email === 'string' ? payload.email.trim() : ''
-  if (!email) {
-    clearStoredGoogleCredential()
-    return false
-  }
-
-  const baseName =
-    typeof payload.name === 'string' && payload.name.trim().length > 0
-      ? payload.name.trim()
-      : email
-        ? email.split('@')[0]
-        : 'Google 사용자'
-  const picture =
-    typeof payload.picture === 'string' && payload.picture.trim().length > 0 ? payload.picture.trim() : ''
-
-  runtime.google.latestCredential = stored
-  applyLoginProfile({ name: baseName, email, plan: 'freemium', picture })
-  state.user.isLoggedIn = true
-  return true
-}
-
 function applyCommunityRoleFromStorage() {
   if (state.user.isLoggedIn || state.admin.isLoggedIn) {
     return false
@@ -3353,7 +2737,6 @@ async function handleLogout(event) {
     button.textContent = '로그아웃 중…'
   }
 
-  clearStoredGoogleCredential()
   state.user.isLoggedIn = false
   clearBrowserStorage()
   removeAuthCookies()
@@ -5087,9 +4470,6 @@ function resetLoginFlow() {
     elements.loginEmailResend.disabled = true
   }
   setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
-  clearGoogleCooldown()
-  runtime.google.retryCount = 0
-  updateGoogleProviderAvailability()
 }
 
 function generateVerificationCode() {
@@ -5184,21 +4564,12 @@ function openLoginModal() {
   elements.loginModal.classList.add('is-active')
   elements.loginModal.setAttribute('aria-hidden', 'false')
   syncBodyModalState()
-  if (ENABLE_GOOGLE_LOGIN) {
-    prefetchGoogleClient().catch((error) => {
-      console.warn('Google 로그인 초기화 중 오류', error)
-    })
-  } else {
-    disableGoogleLoginUI()
-  }
   const focusTarget =
     elements.loginEmailChoice instanceof HTMLButtonElement
       ? elements.loginEmailChoice
-      : elements.googleLoginButton instanceof HTMLButtonElement
-        ? elements.googleLoginButton
-        : elements.loginEmailInput instanceof HTMLInputElement
-          ? elements.loginEmailInput
-          : null
+      : elements.loginEmailInput instanceof HTMLInputElement
+        ? elements.loginEmailInput
+        : null
   if (focusTarget) {
     window.requestAnimationFrame(() => focusTarget.focus())
   }
@@ -5211,142 +4582,6 @@ function closeLoginModal() {
   syncBodyModalState()
   resetLoginFlow()
 }
-
-async function handleCredentialResponse(response) {
-  let finalButtonState = 'idle'
-
-  try {
-    setGoogleButtonState('loading', 'Google 계정을 확인하는 중…')
-
-    if (!response || typeof response !== 'object') {
-      throw new Error('GOOGLE_CREDENTIAL_MISSING')
-    }
-
-    const credential = typeof response.credential === 'string' ? response.credential.trim() : ''
-    if (!credential) {
-      throw new Error('GOOGLE_CREDENTIAL_MISSING')
-    }
-
-    runtime.google.promptActive = false
-    runtime.google.latestCredential = credential
-    storeGoogleCredential(credential)
-
-    const payload = decodeGoogleCredentialPayload(credential)
-    if (!payload || typeof payload !== 'object') {
-      clearStoredGoogleCredential()
-      throw new Error('GOOGLE_CREDENTIAL_INVALID')
-    }
-
-    const email = typeof payload.email === 'string' ? payload.email.trim() : ''
-    if (!email) {
-      clearStoredGoogleCredential()
-      throw new Error('GOOGLE_CREDENTIAL_INVALID')
-    }
-
-    const baseName =
-      typeof payload.name === 'string' && payload.name.trim().length > 0
-        ? payload.name.trim()
-        : email
-          ? email.split('@')[0]
-          : 'Google 사용자'
-    const picture =
-      typeof payload.picture === 'string' && payload.picture.trim().length > 0 ? payload.picture.trim() : ''
-
-    applyLoginProfile({ name: baseName, email, plan: 'freemium', picture })
-    state.user.isLoggedIn = true
-    runtime.google.retryCount = 0
-    runtime.google.lastErrorHint = ''
-    runtime.google.lastErrorTone = 'muted'
-
-    const welcomeLabel = `${baseName}${email ? ` (${email})` : ''}님 환영합니다!`
-    setGoogleLoginHelper(welcomeLabel, 'success')
-    window.setTimeout(() => setGoogleLoginHelper('', 'muted'), 3200)
-    closeLoginModal()
-    setStatus(
-      `${baseName} Google 계정으로 로그인되었습니다. 무료 ${FREEMIUM_INITIAL_CREDITS} 크레딧이 충전되었습니다.`,
-      'success',
-    )
-
-    if (email) {
-      try {
-        await syncChallengeProfile(email)
-      } catch (error) {
-        console.warn('Failed to sync challenge profile after Google login', error)
-      }
-    }
-
-    finalButtonState = 'idle'
-  } catch (error) {
-    console.error('Google 로그인 처리 중 오류', error)
-    let message = 'Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.'
-    let helperTone = 'danger'
-    let helperState = 'error'
-
-    if (error instanceof Error) {
-      if (error.message === 'GOOGLE_CREDENTIAL_MISSING') {
-        message = 'Google 계정 인증 정보를 확인하지 못했습니다. 다시 시도해주세요.'
-      } else if (error.message === 'GOOGLE_CREDENTIAL_INVALID') {
-        message = 'Google 계정 정보를 확인할 수 없습니다. 다시 시도해주세요.'
-      } else if (error.message === 'GOOGLE_LOGIN_CANCELLED') {
-        message = 'Google 로그인이 취소되었습니다.'
-        helperTone = 'warning'
-        helperState = 'idle'
-      } else if (GOOGLE_CONFIGURATION_ERRORS.has(error.message)) {
-        message = '현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.'
-        helperTone = 'info'
-        helperState = 'disabled'
-      } else if (GOOGLE_RECOVERABLE_ERRORS.has(error.message)) {
-        message = describeGoogleRetry(error.message)
-        helperTone = 'warning'
-        helperState = 'retrying'
-      }
-    }
-
-    setGoogleLoginHelper(message, helperTone)
-    const statusTone = helperTone === 'warning' ? 'warning' : helperTone === 'info' ? 'info' : 'danger'
-    setStatus(message, statusTone)
-    finalButtonState = helperState === 'disabled' || helperState === 'retrying' ? helperState : 'idle'
-  } finally {
-    runtime.google.promptActive = false
-    runtime.google.cooldownUntil = 0
-    runtime.google.cooldownAutoRetry = false
-    runtime.google.retryTimer = null
-    runtime.google.nextRetryReason = ''
-    runtime.google.nextRetryAttempt = 0
-    setGoogleButtonState(finalButtonState)
-    if (finalButtonState === 'idle') {
-      updateGoogleProviderAvailability()
-    }
-  }
-}
-
-async function handleGoogleLogin(event) {
-  if (event && typeof event.preventDefault === 'function') {
-    event.preventDefault()
-  }
-
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
-
-  if (!ENABLE_GOOGLE_LOGIN || !clientId) {
-    setGoogleButtonState('disabled')
-    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
-    return
-  }
-
-  try {
-    setGoogleButtonState('loading', 'Google 로그인 페이지로 이동합니다…')
-    setGoogleLoginHelper('Google 로그인 페이지로 이동합니다…', 'info')
-    await ensureGoogleClient()
-    window.location.href = '/api/auth/login/google'
-  } catch (error) {
-    console.error('Google 로그인 초기화 중 오류', error)
-    setGoogleLoginHelper('Google 로그인 준비 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-    setStatus('Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-    setGoogleButtonState('error', 'Google 로그인 다시 시도')
-  }
-}
-
 
 function handleEmailResend(event) {
   event.preventDefault()
@@ -9954,26 +9189,6 @@ function attachEventListeners() {
     })
   }
 
-  if (ENABLE_GOOGLE_LOGIN && elements.googleLoginButton instanceof HTMLButtonElement) {
-    elements.googleLoginButton.addEventListener('click', handleGoogleLogin)
-    elements.googleLoginButton.addEventListener('pointerenter', () => {
-      if (!runtime.google.idInitialized && !runtime.google.prefetchPromise) {
-        prefetchGoogleClient().catch((error) => {
-          console.warn('Google client prefetch 중 오류', error)
-        })
-      }
-    })
-    elements.googleLoginButton.addEventListener('focus', () => {
-      if (!runtime.google.idInitialized && !runtime.google.prefetchPromise) {
-        prefetchGoogleClient().catch((error) => {
-          console.warn('Google client prefetch 중 오류', error)
-        })
-      }
-    })
-  } else {
-    disableGoogleLoginUI()
-  }
-
   if (elements.loginEmailForm instanceof HTMLFormElement) {
     elements.loginEmailForm.addEventListener('submit', handleEmailLogin)
   }
@@ -10153,8 +9368,7 @@ function attachEventListeners() {
 function init() {
   const config = getAppConfig()
   const sessionUser = config && typeof config.user === 'object' ? config.user : null
-  const restoredFromToken = restoreLoginFromToken()
-  if (!restoredFromToken && sessionUser && typeof sessionUser.email === 'string' && sessionUser.email.trim()) {
+  if (sessionUser && typeof sessionUser.email === 'string' && sessionUser.email.trim()) {
     applyLoginProfile({
       name: typeof sessionUser.name === 'string' ? sessionUser.name : undefined,
       email: sessionUser.email,
@@ -10280,11 +9494,6 @@ function init() {
   updateAdminUI()
   initCookieBanner()
   resetLoginFlow()
-  if (ENABLE_GOOGLE_LOGIN) {
-    prefetchGoogleClient()
-  } else {
-    disableGoogleLoginUI()
-  }
   renderUploads()
   renderResults()
   resetAnalysisProgress()

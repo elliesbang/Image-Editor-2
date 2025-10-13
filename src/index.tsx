@@ -34,10 +34,6 @@ interface Bindings {
   ADMIN_RATE_LIMIT_COOLDOWN_SECONDS?: string
   CHALLENGE_KV?: KVNamespace
   CHALLENGE_KV_BACKUP?: KVNamespace
-  VITE_GOOGLE_CLIENT_ID?: string
-  GOOGLE_CLIENT_ID?: string
-  GOOGLE_CLIENT_SECRET?: string
-  GOOGLE_REDIRECT_URI?: string
   MICHINA_COMMUNITY_URL?: string
   JWT_SECRET?: string
   SMTP_HOST?: string
