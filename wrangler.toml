@@ -1,10 +1,10 @@
-name = "image-editor-2"
-compatibility_date = "2025-10-12"
+name = "image-editor"
+compatibility_date = "2025-10-13"
 
-[vars]
-# Add environment variables such as AI keys here.
+[build]
+command = "npm install --prefer-online --legacy-peer-deps --force && npm run build"
+cwd = "."
+pages_build_output_dir = "dist"
 
-[[d1_databases]]
-binding = "DB_MAIN"
-database_name = "elliesbang_main"
-database_id = "888b8ddb-1f10-4b41-8d2f-6c7f06dd1fcb"
+[env.production]
+NODE_ENV = "production"
