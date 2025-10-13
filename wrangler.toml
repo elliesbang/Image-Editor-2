@@ -2,7 +2,14 @@ name = "image-editor"
 compatibility_date = "2025-10-13"
 
 [build]
-command = "npm install --prefer-online --legacy-peer-deps --force && npm run build"
+# 매 빌드마다 npm 캐시 및 node_modules 초기화
+command = """
+echo '🧹 Cleaning npm cache...'
+npm cache clean --force || true
+rm -rf node_modules package-lock.json || true
+npm install --prefer-online --no-audit --legacy-peer-deps --force
+npm run build
+"""
 cwd = "."
 pages_build_output_dir = "dist"
 
