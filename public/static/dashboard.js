@@ -9,7 +9,7 @@
   const DEFAULT_UPLOAD_FILENAME = '선택된 파일이 없습니다.';
 
   const MESSAGE_TONES = {
-    info: 'text-[#6f5a26]',
+    info: 'text-[#404040]',
     success: 'text-emerald-600',
     warning: 'text-amber-600',
     danger: 'text-rose-600',
@@ -43,9 +43,6 @@
     participantsFilename: document.querySelector('[data-role="participants-filename"]'),
     participantsUploadButton: document.querySelector('[data-role="participants-upload"]'),
     participantsStatus: document.querySelector('[data-role="participants-status"]'),
-    participantsTable: document.querySelector('[data-role="participants-table"]'),
-    participantsCount: document.querySelector('[data-role="participants-count"]'),
-    participantsMessage: document.querySelector('[data-role="participants-message"]'),
   };
 
   const state = {
@@ -53,7 +50,6 @@
     isSavingPeriod: false,
     isDeletingPeriod: false,
     selectedPeriodId: null,
-    participants: [],
     isUploading: false,
   };
 
@@ -245,27 +241,6 @@
       });
   }
 
-  function normalizeParticipants(value) {
-    if (!Array.isArray(value)) return [];
-    return value
-      .map((item) => {
-        if (!item || typeof item !== 'object') return null;
-        const id = Number(item.id ?? item.ID ?? 0);
-        const name = typeof item.name === 'string' ? item.name : '';
-        const email = typeof item.email === 'string' ? item.email : '';
-        const approved =
-          typeof item.approvedAt === 'string' ? item.approvedAt : typeof item.approved_at === 'string' ? item.approved_at : '';
-        if (!email) return null;
-        return { id, name, email, approvedAt: approved };
-      })
-      .filter((value) => value !== null)
-      .sort((a, b) => {
-        const approvedDiff = String(b.approvedAt).localeCompare(String(a.approvedAt));
-        if (approvedDiff !== 0) return approvedDiff;
-        return Number(b.id) - Number(a.id);
-      });
-  }
-
   function applyLatestPeriodToInputs(latest) {
     if (!(elements.periodStart instanceof HTMLInputElement) || !(elements.periodEnd instanceof HTMLInputElement)) {
       return;
@@ -325,36 +300,6 @@
     const latest = state.periods[0] || null;
     applyLatestPeriodToInputs(latest);
     updatePeriodButtons();
-  }
-
-  function renderParticipants() {
-    if (!(elements.participantsTable instanceof HTMLElement)) return;
-    if (!(elements.participantsCount instanceof HTMLElement)) return;
-    if (!(elements.participantsMessage instanceof HTMLElement)) return;
-
-    if (!state.participants.length) {
-      elements.participantsTable.innerHTML =
-        '<tr><td colspan="3" class="px-4 py-6 text-center text-sm text-[#7a5a00]">등록된 참가자 정보가 없습니다.</td></tr>';
-      elements.participantsCount.textContent = '0명';
-      elements.participantsMessage.textContent = '등록된 참가자 정보가 없습니다.';
-      return;
-    }
-
-    const rows = state.participants.map((participant) => {
-      const name = participant.name ? escapeHtml(participant.name) : '-';
-      const email = escapeHtml(participant.email);
-      const approved = escapeHtml(formatDateTime(participant.approvedAt));
-      return (
-        '<tr class="transition hover:bg-[#fef568]/20">' +
-        `<td class="px-4 py-3 text-sm font-medium text-[#3f2f00]">${name}</td>` +
-        `<td class="px-4 py-3 text-sm text-[#6f5a26]">${email}</td>` +
-        `<td class="px-4 py-3 text-sm text-[#6f5a26]">${approved}</td>` +
-        '</tr>'
-      );
-    });
-    elements.participantsTable.innerHTML = rows.join('');
-    elements.participantsCount.textContent = `${state.participants.length}명`;
-    elements.participantsMessage.textContent = `최근 등록된 참가자 ${state.participants.length}명`;
   }
 
   function updatePeriodButtons() {
@@ -576,24 +521,6 @@
     return Array.from(map.values());
   }
 
-  async function loadParticipants() {
-    try {
-      const response = await fetch('/api/admin/michina-list', { credentials: 'include' });
-      if (response.status === 401) {
-        redirectToLogin('관리자 세션이 만료되었습니다.', 'danger');
-        return;
-      }
-      if (!response.ok) throw new Error('failed_to_load_participants');
-      const payload = await response.json().catch(() => ({}));
-      state.participants = normalizeParticipants(payload?.entries);
-    } catch (error) {
-      console.error('[dashboard] failed to load participants', error);
-      state.participants = [];
-      showToast('참가자 정보를 불러오지 못했습니다.', 'danger');
-    }
-    renderParticipants();
-  }
-
   async function handleParticipantsUpload(event) {
     event.preventDefault();
     if (state.isUploading) return;
@@ -640,9 +567,11 @@
         throw new Error(message);
       }
       const payload = await response.json().catch(() => ({}));
-      state.participants = normalizeParticipants(payload?.entries);
-      renderParticipants();
-      setStatusMessage(elements.participantsStatus, '참가자 명단이 저장되었습니다.', 'success');
+      const successMessage =
+        typeof payload?.message === 'string' && payload.message.trim().length > 0
+          ? payload.message.trim()
+          : '참가자 명단이 저장되었습니다.';
+      setStatusMessage(elements.participantsStatus, successMessage, 'success');
       showToast('참가자 명단이 업로드되었습니다.', 'success');
       if (elements.participantsForm instanceof HTMLFormElement) {
         elements.participantsForm.reset();
@@ -746,11 +675,10 @@
     }
 
     setStatusMessage(elements.participantsStatus, 'CSV 파일을 선택하면 상태가 표시됩니다.', 'info');
-    renderParticipants();
     updatePeriodButtons();
     updateUploadAvailability();
 
-    Promise.all([loadPeriods(), loadParticipants()]).catch((error) => {
+    loadPeriods().catch((error) => {
       console.warn('[dashboard] initialization warning', error);
     });
   }
