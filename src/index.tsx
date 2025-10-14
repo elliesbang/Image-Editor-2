@@ -172,12 +172,18 @@ function renderAdminManagementPage(adminEmail: string) {
     <style>
       :root {
         color-scheme: light;
+        --color-primary: #fef568;
+        --color-ivory: #f5eee9;
+        --color-text: #404040;
+        --color-muted: rgba(64, 64, 64, 0.7);
+        --color-border: rgba(64, 64, 64, 0.12);
+        --color-elevation: rgba(64, 64, 64, 0.08);
       }
       body {
         margin: 0;
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        background-color: #f5eee9;
-        color: #4f3b0f;
+        background-color: var(--color-ivory);
+        color: var(--color-text);
       }
       .admin-container {
         min-height: 100vh;
@@ -187,12 +193,12 @@ function renderAdminManagementPage(adminEmail: string) {
       .admin-header {
         width: 100%;
         max-width: 900px;
-        background-color: #fff6dc;
-        border: 1px solid #f0dba5;
+        background-color: #ffffff;
+        border: 1px solid var(--color-border);
         border-radius: 20px;
         padding: 32px 28px;
         text-align: center;
-        box-shadow: 0 18px 48px rgba(116, 94, 38, 0.14);
+        box-shadow: 0 18px 48px var(--color-elevation);
         margin: 0 auto 32px;
       }
       .admin-header__actions {
@@ -206,11 +212,11 @@ function renderAdminManagementPage(adminEmail: string) {
       .admin-dashboard {
         width: 100%;
         max-width: 900px;
-        background-color: #f5eee9;
+        background-color: var(--color-ivory);
         padding: 40px;
         border-radius: 20px;
         display: block;
-        box-shadow: 0 20px 60px rgba(116, 94, 38, 0.12);
+        box-shadow: 0 20px 60px var(--color-elevation);
         margin: 0 auto;
       }
       .admin-dashboard > section + section {
@@ -221,26 +227,26 @@ function renderAdminManagementPage(adminEmail: string) {
         max-width: 900px;
         text-align: center;
         font-size: 0.75rem;
-        color: #7a5a00;
-        border-top: 1px solid #f0dba5;
+        color: var(--color-muted);
+        border-top: 1px solid var(--color-border);
         padding-top: 20px;
         margin: 32px auto 0;
       }
       .admin-section {
-        background-color: #fffaf0;
-        border: 1px solid #f0dba5;
+        background-color: #ffffff;
+        border: 1px solid var(--color-border);
         border-radius: 18px;
         padding: 28px;
-        box-shadow: 0 15px 40px rgba(116, 94, 38, 0.1);
+        box-shadow: 0 15px 40px var(--color-elevation);
       }
       .admin-section h2 {
         font-size: 1.25rem;
         font-weight: 700;
-        color: #3f2f00;
+        color: var(--color-text);
         margin-bottom: 16px;
       }
       .admin-section p {
-        color: #6f5a26;
+        color: var(--color-muted);
         font-size: 0.95rem;
         line-height: 1.6;
       }
@@ -266,19 +272,19 @@ function renderAdminManagementPage(adminEmail: string) {
       .challenge-form input {
         width: 100%;
         border-radius: 16px;
-        border: 1px solid #f0dba5;
-        background-color: #fefdf4;
+        border: 1px solid var(--color-border);
+        background-color: #ffffff;
         padding: 12px 14px;
         font-size: 0.95rem;
-        color: #3f2f00;
-        box-shadow: inset 0 1px 3px rgba(240, 219, 165, 0.65);
+        color: var(--color-text);
+        box-shadow: inset 0 1px 3px rgba(64, 64, 64, 0.08);
       }
       .challenge-form input:focus-visible {
         outline: 3px solid rgba(254, 245, 104, 0.6);
         outline-offset: 2px;
       }
       .challenge-form button {
-        background-color: #fef568;
+        background-color: var(--color-primary);
         color: #333;
         border: none;
         border-radius: 12px;
@@ -300,8 +306,8 @@ function renderAdminManagementPage(adminEmail: string) {
       }
       .challenge-list__item {
         border-radius: 16px;
-        border: 1px solid #f0dba5;
-        background-color: rgba(254, 253, 244, 0.85);
+        border: 1px solid var(--color-border);
+        background-color: rgba(245, 238, 233, 0.7);
         padding: 16px;
         display: flex;
         align-items: center;
@@ -318,19 +324,19 @@ function renderAdminManagementPage(adminEmail: string) {
       .challenge-list__range {
         font-size: 0.95rem;
         font-weight: 600;
-        color: #3f2f00;
+        color: var(--color-text);
       }
       .challenge-list__saved {
         font-size: 0.8rem;
-        color: #7a5a00;
+        color: var(--color-muted);
       }
       .challenge-list__empty {
         padding: 18px;
         text-align: center;
         border-radius: 16px;
-        border: 1px dashed rgba(240, 219, 165, 0.9);
-        background-color: rgba(255, 250, 240, 0.6);
-        color: #8c7a4f;
+        border: 1px dashed rgba(64, 64, 64, 0.18);
+        background-color: rgba(245, 238, 233, 0.6);
+        color: var(--color-muted);
         font-size: 0.9rem;
       }
       .challenge-delete {
@@ -355,40 +361,7 @@ function renderAdminManagementPage(adminEmail: string) {
       .admin-form-note {
         margin-bottom: 12px;
         font-size: 0.85rem;
-        color: #8c7a4f;
-      }
-      .admin-table {
-        border-radius: 16px;
-        border: 1px solid #f0dba5;
-        background-color: rgba(254, 253, 244, 0.7);
-        padding: 20px;
-        margin-top: 24px;
-      }
-      .admin-card-title {
-        text-align: center;
-        font-size: 0.95rem;
-        font-weight: 600;
-        color: #4f3b0f;
-        margin-bottom: 12px;
-      }
-      .admin-table table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      .admin-table th,
-      .admin-table td {
-        padding: 12px 16px;
-        border-bottom: 1px solid rgba(240, 219, 165, 0.8);
-        text-align: left;
-        font-size: 0.95rem;
-        color: #3f2f00;
-      }
-      .admin-table thead {
-        background-color: rgba(254, 245, 104, 0.45);
-        text-transform: uppercase;
-        font-size: 0.8rem;
-        letter-spacing: 0.04em;
-        color: #4f3b0f;
+        color: var(--color-muted);
       }
       .admin-count-pill {
         display: inline-block;
@@ -398,7 +371,7 @@ function renderAdminManagementPage(adminEmail: string) {
         background-color: rgba(254, 245, 104, 0.8);
         font-size: 0.8rem;
         font-weight: 600;
-        color: #3f2f00;
+        color: var(--color-text);
       }
       button:disabled {
         opacity: 0.6;
@@ -406,7 +379,7 @@ function renderAdminManagementPage(adminEmail: string) {
       }
     </style>
   </head>
-  <body data-admin-email="${adminEmail}" class="bg-[#f5eee9] text-[#4f3b0f]">
+  <body data-admin-email="${adminEmail}" class="bg-[#f5eee9] text-[#404040]">
     <div class="pointer-events-none fixed inset-x-0 top-6 z-50 flex justify-center px-4">
       <div
         data-role="dashboard-toast"
@@ -417,8 +390,8 @@ function renderAdminManagementPage(adminEmail: string) {
     </div>
     <div class="admin-container">
       <header class="admin-header">
-        <h1 class="text-3xl font-bold text-[#5b4100] md:text-4xl">관리자 대시보드</h1>
-        <p data-role="welcome" class="mt-3 text-sm text-[#6f5a26]">관리자 전용 대시보드 영역입니다.</p>
+        <h1 class="text-3xl font-bold text-[#404040] md:text-4xl">관리자 대시보드</h1>
+        <p data-role="welcome" class="mt-3 text-sm text-[rgba(64,64,64,0.75)]">관리자 전용 대시보드 영역입니다.</p>
         <div class="admin-header__actions">
           <span data-role="session-info" class="admin-count-pill uppercase tracking-[0.16em]">세션 정보 확인 중</span>
           <button type="button" data-role="logout">로그아웃</button>
@@ -454,27 +427,6 @@ function renderAdminManagementPage(adminEmail: string) {
             </div>
           </form>
           <p data-role="participants-status" class="admin-form-note">CSV 파일을 선택하면 상태가 표시됩니다.</p>
-          <div class="admin-table">
-            <h3 class="admin-card-title">업로드된 참가자</h3>
-            <span data-role="participants-count" class="admin-count-pill">0명</span>
-            <p data-role="participants-message" class="admin-form-note">등록된 참가자 정보가 없습니다.</p>
-            <div class="mt-3 max-h-64 overflow-y-auto rounded-2xl border border-[#f0dba5] bg-white">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">이름</th>
-                    <th scope="col">이메일</th>
-                    <th scope="col">최근 등록일</th>
-                  </tr>
-                </thead>
-                <tbody data-role="participants-table">
-                  <tr>
-                    <td colspan="3" class="text-center text-sm text-[#7a5a00]">등록된 참가자 정보가 없습니다.</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
         </section>
       </main>
       <footer class="admin-footer">
