@@ -661,6 +661,98 @@ const elements = {
   resultsCreditCount: document.querySelector('[data-role="results-credit-count"]'),
 }
 
+function pruneCommunityExperience() {
+  if (elements.communityLink instanceof HTMLElement) {
+    const parent = elements.communityLink.parentElement
+    elements.communityLink.remove()
+    elements.communityLink = null
+    if (parent && parent.childElementCount === 0) {
+      parent.remove()
+    }
+  }
+
+  if (Array.isArray(elements.navButtons)) {
+    const retainedButtons = []
+    elements.navButtons.forEach((button) => {
+      if (!(button instanceof HTMLElement)) {
+        return
+      }
+      if ((button.dataset.viewTarget || '').trim().toLowerCase() === 'community') {
+        button.remove()
+      } else {
+        retainedButtons.push(button)
+      }
+    })
+    elements.navButtons = retainedButtons
+  }
+
+  if (Array.isArray(elements.viewSections)) {
+    const retainedSections = []
+    elements.viewSections.forEach((section) => {
+      if (!(section instanceof HTMLElement)) {
+        return
+      }
+      if ((section.dataset.view || '').trim().toLowerCase() === 'community') {
+        section.remove()
+      } else {
+        retainedSections.push(section)
+      }
+    })
+    elements.viewSections = retainedSections
+  }
+
+  const communityRoot = document.getElementById('community-dashboard-root')
+  if (communityRoot instanceof HTMLElement) {
+    communityRoot.remove()
+  }
+}
+
+function removeAdminSidebar() {
+  if (!(elements.adminDashboard instanceof HTMLElement)) {
+    return
+  }
+
+  const sidebarSelectors = [
+    '[data-role="admin-sidebar"]',
+    '.admin-sidebar',
+    '.admin__sidebar',
+    '.dashboard__sidebar',
+    '.dashboard-sidebar',
+    '.admin-panel__sidebar',
+  ]
+
+  let sidebar = null
+  for (const selector of sidebarSelectors) {
+    const candidate = elements.adminDashboard.querySelector(selector)
+    if (candidate instanceof HTMLElement) {
+      sidebar = candidate
+      break
+    }
+  }
+
+  if (!(sidebar instanceof HTMLElement)) {
+    const fallbackAside = elements.adminDashboard.querySelector('aside')
+    if (fallbackAside instanceof HTMLElement) {
+      sidebar = fallbackAside
+    }
+  }
+
+  if (!(sidebar instanceof HTMLElement)) {
+    const fallbackNav = elements.adminDashboard.querySelector('nav')
+    if (fallbackNav instanceof HTMLElement && fallbackNav.parentElement === elements.adminDashboard) {
+      sidebar = fallbackNav
+    }
+  }
+
+  if (sidebar instanceof HTMLElement) {
+    sidebar.remove()
+    elements.adminDashboard.classList.add('admin-dashboard--sidebar-hidden')
+    elements.adminDashboard.style.setProperty('display', 'grid')
+    elements.adminDashboard.style.setProperty('gap', '24px')
+    elements.adminDashboard.style.setProperty('grid-template-columns', 'minmax(0, 1fr)')
+  }
+}
+
 let statusTimer = null
 let svgOptimizerReadyPromise = null
 
@@ -2297,9 +2389,6 @@ function canAccessView(rawView) {
   if (!view || view === 'home') {
     return true
   }
-  if (view === 'community') {
-    return state.user.isLoggedIn && state.user.plan === 'michina'
-  }
   if (view === 'admin') {
     return state.admin.isLoggedIn
   }
@@ -2377,12 +2466,7 @@ function handleNavigationClick(targetView) {
     return
   }
   if (view === 'community') {
-    if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-      setStatus('미치나 커뮤니티는 로그인 후 이용할 수 있습니다.', 'warning')
-      openLoginModal()
-    } else {
-      setStatus('미치나 플랜 참가자로 등록된 계정만 접근할 수 있습니다.', 'warning')
-    }
+    setStatus('미치나 대시보드는 더 이상 제공되지 않습니다. 미치나 등급 혜택은 계속 이용하실 수 있어요.', 'info')
     return
   }
   if (view === 'admin') {
@@ -9367,6 +9451,8 @@ function attachEventListeners() {
 
 function init() {
   const config = getAppConfig()
+  pruneCommunityExperience()
+  removeAdminSidebar()
   const sessionUser = config && typeof config.user === 'object' ? config.user : null
   if (sessionUser && typeof sessionUser.email === 'string' && sessionUser.email.trim()) {
     applyLoginProfile({
@@ -9377,30 +9463,37 @@ function init() {
       credits: FREEMIUM_INITIAL_CREDITS,
     })
   }
-  const allowedViews = new Set(['home', 'community', 'admin'])
+  const allowedViews = new Set(['home', 'admin'])
   const normalizeView = (value) => {
     if (typeof value !== 'string') return ''
     const trimmed = value.trim().toLowerCase()
     return allowedViews.has(trimmed) ? trimmed : ''
   }
 
-  let requestedView = ''
+  let rawRequestedView = ''
   try {
     const url = new URL(window.location.href)
-    requestedView = normalizeView(url.searchParams.get('view'))
-    if (!requestedView && url.hash) {
-      requestedView = normalizeView(url.hash.replace('#', ''))
+    const queryView = url.searchParams.get('view')
+    if (typeof queryView === 'string') {
+      rawRequestedView = queryView.trim().toLowerCase()
+    }
+    if (!rawRequestedView && url.hash) {
+      rawRequestedView = url.hash.replace('#', '').trim().toLowerCase()
     }
   } catch (error) {
-    requestedView = ''
+    rawRequestedView = ''
   }
 
-  const configInitial = normalizeView(config.initialView)
+  const requestedView = normalizeView(rawRequestedView)
+  const configInitialRaw = typeof config.initialView === 'string' ? config.initialView : ''
+  const normalizedConfigInitialRaw = configInitialRaw.trim().toLowerCase()
+  const configInitial = normalizeView(configInitialRaw)
   const initialView = requestedView || configInitial || 'home'
+  const communityRequested = rawRequestedView === 'community' || normalizedConfigInitialRaw === 'community'
 
   runtime.config = config
   runtime.initialView = initialView
-  const allowBypass = initialView !== 'home' && initialView !== 'admin'
+  const allowBypass = false
   runtime.allowViewBypass = allowBypass
   state.view = initialView
 
@@ -9448,39 +9541,7 @@ function init() {
   initializeSubscriptionState()
   initializeAdminAuthSync()
 
-  if (initialView === 'community') {
-    if (document.body) {
-      document.body.dataset.activeView = 'community'
-    }
-
-    import('./community-dashboard.js')
-      .then((module) => {
-        if (typeof module.bootstrapCommunityDashboard === 'function') {
-          module.bootstrapCommunityDashboard()
-        } else {
-          console.warn('커뮤니티 대시보드 모듈에서 bootstrapCommunityDashboard 함수를 찾을 수 없습니다.')
-        }
-      })
-      .catch((error) => {
-        console.error('미치나 커뮤니티 대시보드를 불러오지 못했습니다.', error)
-        const root = document.getElementById('community-dashboard-root')
-        if (root instanceof HTMLElement) {
-          root.innerHTML =
-            '<div class="flex min-h-screen items-center justify-center bg-slate-950 p-8 text-center text-lg font-semibold text-white/80">커뮤니티 대시보드를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</div>'
-        }
-        window.alert('커뮤니티 대시보드를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
-      })
-
-    return
-  }
-
   const unlockedViaCommunity = applyCommunityRoleFromStorage()
-
-  if (elements.communityLink instanceof HTMLAnchorElement) {
-    const configuredUrl = '/?view=community'
-    elements.communityLink.href = configuredUrl
-    elements.communityLink.rel = 'noopener noreferrer'
-  }
 
   if (runtime.allowViewBypass) {
     setView(initialView, { force: true, bypassAccess: true })
@@ -9499,6 +9560,10 @@ function init() {
   resetAnalysisProgress()
   displayAnalysisFor(null)
   refreshAccessStates()
+
+  if (communityRequested) {
+    setStatus('미치나 대시보드는 더 이상 제공되지 않습니다. 미치나 등급 혜택은 계속 이용하실 수 있어요.', 'info')
+  }
 
   if (unlockedViaCommunity) {
     setStatus('미치나 커뮤니티 수료 이력이 확인되어 모든 기능이 해금되었습니다.', 'success', 5200)
