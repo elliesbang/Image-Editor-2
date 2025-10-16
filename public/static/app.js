@@ -6588,10 +6588,12 @@ function refineBoundsFromMask(mask, width, height, bounds) {
   const minColumnCoverage = Math.max(1, Math.floor((bottom - top + 1) * 0.015))
 
   let refinedTop = top
+  let firstForegroundRow = null
   for (let y = top; y <= bottom; y += 1) {
     let count = 0
     for (let x = left; x <= right; x += 1) {
       if (mask[y * width + x]) {
+        if (firstForegroundRow === null) firstForegroundRow = y
         count += 1
         if (count >= minRowCoverage) break
       }
@@ -6601,12 +6603,17 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       break
     }
   }
+  if (refinedTop === top && firstForegroundRow !== null) {
+    refinedTop = firstForegroundRow
+  }
 
   let refinedBottom = bottom
+  let lastForegroundRow = null
   for (let y = bottom; y >= refinedTop; y -= 1) {
     let count = 0
     for (let x = left; x <= right; x += 1) {
       if (mask[y * width + x]) {
+        if (lastForegroundRow === null) lastForegroundRow = y
         count += 1
         if (count >= minRowCoverage) break
       }
@@ -6616,12 +6623,17 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       break
     }
   }
+  if (refinedBottom === bottom && lastForegroundRow !== null) {
+    refinedBottom = lastForegroundRow
+  }
 
   let refinedLeft = left
+  let firstForegroundColumn = null
   for (let x = left; x <= right; x += 1) {
     let count = 0
     for (let y = refinedTop; y <= refinedBottom; y += 1) {
       if (mask[y * width + x]) {
+        if (firstForegroundColumn === null) firstForegroundColumn = x
         count += 1
         if (count >= minColumnCoverage) break
       }
@@ -6631,12 +6643,17 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       break
     }
   }
+  if (refinedLeft === left && firstForegroundColumn !== null) {
+    refinedLeft = firstForegroundColumn
+  }
 
   let refinedRight = right
+  let lastForegroundColumn = null
   for (let x = right; x >= refinedLeft; x -= 1) {
     let count = 0
     for (let y = refinedTop; y <= refinedBottom; y += 1) {
       if (mask[y * width + x]) {
+        if (lastForegroundColumn === null) lastForegroundColumn = x
         count += 1
         if (count >= minColumnCoverage) break
       }
@@ -6645,6 +6662,9 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       refinedRight = x
       break
     }
+  }
+  if (refinedRight === right && lastForegroundColumn !== null) {
+    refinedRight = lastForegroundColumn
   }
 
   return {
@@ -6799,8 +6819,7 @@ function detectSubjectBounds(imageData, width, height) {
   if (maxX === -1 || maxY === -1) {
     const fallback = findBoundingBox(imageData, width, height, 235, Math.sqrt(baseColorThresholdSq))
     if (fallback) {
-      const fallbackPadding = Math.round(Math.max(width, height) * 0.02)
-      return expandBounds(fallback, width, height, fallbackPadding)
+      return expandBounds(fallback, width, height, 0)
     }
     return {
       top: 0,
@@ -6818,8 +6837,7 @@ function detectSubjectBounds(imageData, width, height) {
   }
 
   const refined = refineBoundsFromMask(mask, width, height, initialBounds)
-  const padding = Math.max(2, Math.round(Math.min(width, height) * 0.015))
-  return expandBounds(refined, width, height, padding)
+  return expandBounds(refined, width, height, 0)
 }
 
 function cropCanvas(canvas, ctx, bounds) {
