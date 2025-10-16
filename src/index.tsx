@@ -4577,38 +4577,6 @@ app.get('/', async (c) => {
         </div>
       </section>
 
-      <section class="stage" data-view="home" aria-label="작업 단계 안내">
-        <ol class="stage__list" data-role="stage-indicator">
-          <li class="stage__item is-active" data-stage="1">
-            <span class="stage__step">1</span>
-            <div class="stage__meta">
-              <span class="stage__title">업로드 &amp; 선택</span>
-              <span class="stage__copy">이미지를 추가하고 비교하기</span>
-            </div>
-          </li>
-          <li class="stage__item" data-stage="2">
-            <span class="stage__step">2</span>
-            <div class="stage__meta">
-              <span class="stage__title">보정 &amp; 변환</span>
-              <span class="stage__copy">배경 제거·크롭·SVG 변환</span>
-            </div>
-          </li>
-          <li class="stage__item" data-stage="3">
-            <span class="stage__step">3</span>
-            <div class="stage__meta">
-              <span class="stage__title">다운로드</span>
-              <span class="stage__copy">결과 저장 및 키워드 분석</span>
-            </div>
-          </li>
-        </ol>
-        <div class="stage__status" data-role="stage-status">
-          <div class="stage__status-text" data-role="stage-message">
-            로그인하면 30개의 무료 크레딧이 자동으로 충전됩니다.
-          </div>
-        </div>
-      </section>
-
-
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
         <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
         <div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
