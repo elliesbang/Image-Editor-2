@@ -2297,9 +2297,6 @@ function canAccessView(rawView) {
   if (!view || view === 'home') {
     return true
   }
-  if (view === 'community') {
-    return state.user.isLoggedIn && state.user.plan === 'michina'
-  }
   if (view === 'admin') {
     return state.admin.isLoggedIn
   }
@@ -2376,18 +2373,13 @@ function handleNavigationClick(targetView) {
     setView(view)
     return
   }
-  if (view === 'community') {
-    if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-      setStatus('미치나 커뮤니티는 로그인 후 이용할 수 있습니다.', 'warning')
-      openLoginModal()
-    } else {
-      setStatus('미치나 플랜 참가자로 등록된 계정만 접근할 수 있습니다.', 'warning')
-    }
-    return
-  }
   if (view === 'admin') {
     setStatus('관리자 로그인이 필요합니다.', 'warning')
     openAdminModal()
+    return
+  }
+  if (view === 'community') {
+    setStatus('미치나 커뮤니티 대시보드는 더 이상 제공되지 않습니다.', 'info')
   }
 }
 
@@ -9067,19 +9059,6 @@ function attachEventListeners() {
     trigger.addEventListener('click', () => elements.fileInput?.click())
   })
 
-  if (elements.communityLink instanceof HTMLElement) {
-    elements.communityLink.addEventListener('click', (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      const targetUrl = '/?view=community'
-      try {
-        window.open(targetUrl, '_blank', 'noopener')
-      } catch (error) {
-        console.error('커뮤니티 대시보드를 새 창으로 여는 데 실패했습니다.', error)
-      }
-    })
-  }
-
   if (elements.adminFooterLink instanceof HTMLElement) {
     elements.adminFooterLink.addEventListener('click', (event) => {
       event.preventDefault()
@@ -9377,7 +9356,7 @@ function init() {
       credits: FREEMIUM_INITIAL_CREDITS,
     })
   }
-  const allowedViews = new Set(['home', 'community', 'admin'])
+  const allowedViews = new Set(['home', 'admin'])
   const normalizeView = (value) => {
     if (typeof value !== 'string') return ''
     const trimmed = value.trim().toLowerCase()
@@ -9403,6 +9382,32 @@ function init() {
   const allowBypass = initialView !== 'home' && initialView !== 'admin'
   runtime.allowViewBypass = allowBypass
   state.view = initialView
+
+  elements.navButtons = (elements.navButtons || []).filter((button) => {
+    if (!(button instanceof HTMLElement)) {
+      return false
+    }
+    if ((button.dataset.viewTarget || '').trim() === 'community') {
+      button.remove()
+      return false
+    }
+    return true
+  })
+
+  elements.viewSections = (elements.viewSections || []).filter((section) => {
+    if (!(section instanceof HTMLElement)) {
+      return false
+    }
+    if ((section.dataset.view || '').trim() === 'community') {
+      section.remove()
+      return false
+    }
+    return true
+  })
+
+  if (elements.communityLink instanceof HTMLElement) {
+    elements.communityLink.remove()
+  }
 
   const engineController = typeof AbortController !== 'undefined' ? new AbortController() : null
   if (engineController) {
@@ -9448,40 +9453,6 @@ function init() {
   initializeSubscriptionState()
   initializeAdminAuthSync()
 
-  if (initialView === 'community') {
-    if (document.body) {
-      document.body.dataset.activeView = 'community'
-    }
-
-    import('./community-dashboard.js')
-      .then((module) => {
-        if (typeof module.bootstrapCommunityDashboard === 'function') {
-          module.bootstrapCommunityDashboard()
-        } else {
-          console.warn('커뮤니티 대시보드 모듈에서 bootstrapCommunityDashboard 함수를 찾을 수 없습니다.')
-        }
-      })
-      .catch((error) => {
-        console.error('미치나 커뮤니티 대시보드를 불러오지 못했습니다.', error)
-        const root = document.getElementById('community-dashboard-root')
-        if (root instanceof HTMLElement) {
-          root.innerHTML =
-            '<div class="flex min-h-screen items-center justify-center bg-slate-950 p-8 text-center text-lg font-semibold text-white/80">커뮤니티 대시보드를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</div>'
-        }
-        window.alert('커뮤니티 대시보드를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
-      })
-
-    return
-  }
-
-  const unlockedViaCommunity = applyCommunityRoleFromStorage()
-
-  if (elements.communityLink instanceof HTMLAnchorElement) {
-    const configuredUrl = '/?view=community'
-    elements.communityLink.href = configuredUrl
-    elements.communityLink.rel = 'noopener noreferrer'
-  }
-
   if (runtime.allowViewBypass) {
     setView(initialView, { force: true, bypassAccess: true })
   } else {
@@ -9499,10 +9470,6 @@ function init() {
   resetAnalysisProgress()
   displayAnalysisFor(null)
   refreshAccessStates()
-
-  if (unlockedViaCommunity) {
-    setStatus('미치나 커뮤니티 수료 이력이 확인되어 모든 기능이 해금되었습니다.', 'success', 5200)
-  }
 
   syncAdminSession().finally(() => {
     if (runtime.initialView === 'admin' && !state.admin.isLoggedIn) {

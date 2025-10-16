@@ -52,6 +52,12 @@ body::before {
   z-index: -1;
 }
 
+[data-role='community-link'],
+[data-view-target='community'],
+[data-view='community'] {
+  display: none !important;
+}
+
 .admin-dashboard-prompt {
   position: fixed;
   right: 32px;
