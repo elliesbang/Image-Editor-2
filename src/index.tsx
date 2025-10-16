@@ -4776,14 +4776,11 @@ app.get('/', async (c) => {
 
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
         <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
-        <div class="login-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+        <div class="login-modal__dialog" role="dialog" aria-modal="true">
           <button class="login-modal__close" type="button" data-action="close-login" aria-label="로그인 창 닫기">
             <i class="ri-close-line" aria-hidden="true"></i>
           </button>
-          <header class="login-modal__hero">
-            <h2 class="login-modal__title" id="login-modal-title">엘리의 방에 오신 것을 환영해요</h2>
-            <p class="login-modal__subtitle">포근한 노랑빛 속에서 로그인하고 무료 크레딧을 받아보세요.</p>
-          </header>
+          <header class="login-modal__hero"></header>
           <section class="login-modal__email-panel" data-role="login-email-panel">
             <form class="login-modal__form" data-role="login-email-form" data-state="idle">
               <div class="login-modal__field">
@@ -4820,9 +4817,7 @@ app.get('/', async (c) => {
                 </button>
               </div>
             </form>
-            <p class="login-modal__helper" data-role="login-email-helper">
-              이메일 주소를 입력하면 인증 코드를 보내드립니다.
-            </p>
+            <p class="login-modal__helper" data-role="login-email-helper"></p>
             <a class="login-modal__signup" href="/signup" data-role="login-signup-link">
               아직 회원이 아니신가요? 회원가입
             </a>
