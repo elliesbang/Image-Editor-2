@@ -2,6 +2,7 @@ name = "image-editor"
 compatibility_date = "2025-10-13"
 
 [build]
+# Cloudflare Pages 환경변수로 npm registry 강제 지정 가능 (NPM_CONFIG_REGISTRY)
 # 매 빌드마다 npm 캐시 및 node_modules 초기화
 command = """
 echo '🧹 Cleaning npm cache...'
@@ -11,7 +12,7 @@ npm install --prefer-online --no-audit --legacy-peer-deps --force
 npm run build
 """
 cwd = "."
-pages_build_output_dir = "dist"
+pages_build_output_dir = "./dist"
 
 [env.production]
 NODE_ENV = "production"
