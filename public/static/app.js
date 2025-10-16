@@ -56,7 +56,6 @@ const ADMIN_ACCESS_STORAGE_KEY = 'admin'
 const ADMIN_SESSION_STORAGE_KEY = 'adminSessionState'
 const ADMIN_SESSION_ID_STORAGE_KEY = 'adminSessionId'
 const ADMIN_SESSION_CHANNEL_NAME = 'admin-auth-channel'
-const ADMIN_DASHBOARD_PATH = '/dashboard'
 const CREDIT_COSTS = {
   operation: 1,
   resize: 1,
@@ -872,10 +871,8 @@ const elements = {
   adminLoginMessage: document.querySelector('[data-role="admin-login-message"]'),
   adminModalSubtitle: document.querySelector('[data-role="admin-modal-subtitle"]'),
   adminModalActions: document.querySelector('[data-role="admin-modal-actions"]'),
-  adminModalDashboardButton: document.querySelector('[data-role="admin-modal-dashboard"]'),
   adminModalLogoutButton: document.querySelector('[data-role="admin-modal-logout"]'),
   adminCategoryBadge: document.querySelector('[data-role="admin-category"]'),
-  adminDashboard: document.querySelector('[data-role="admin-dashboard"]'),
   adminImportForm: document.querySelector('[data-role="admin-import-form"]'),
   adminImportFile: document.querySelector('[data-role="admin-import-file"]'),
   adminImportManual: document.querySelector('[data-role="admin-import-manual"]'),
@@ -892,7 +889,6 @@ const elements = {
   userSummary: document.querySelector('[data-role="user-summary"]'),
   userGreeting: document.querySelector('[data-role="user-greeting"]'),
   challengeSection: document.querySelector('[data-role="challenge-section"]'),
-  challengeDashboard: document.querySelector('[data-role="challenge-dashboard"]'),
   challengeLocked: document.querySelector('[data-role="challenge-locked"]'),
   challengeSummary: document.querySelector('[data-role="challenge-summary"]'),
   challengeProgress: document.querySelector('[data-role="challenge-progress"]'),
@@ -921,7 +917,6 @@ const elements = {
   googleLoginText: document.querySelector('[data-role="google-login-text"]'),
   googleLoginSpinner: document.querySelector('[data-role="google-login-spinner"]'),
   googleLoginHelper: document.querySelector('[data-role="google-login-helper"]'),
-  communityLink: document.querySelector('[data-role="community-link"]'),
   loginEmailForm: document.querySelector('[data-role="login-email-form"]'),
   loginEmailInput: document.querySelector('[data-role="login-email-input"]'),
   loginEmailCodeInput: document.querySelector('[data-role="login-email-code"]'),
@@ -1837,10 +1832,10 @@ function initializeAdminAuthSync() {
 
 function getAdminDashboardUrl() {
   try {
-    return new URL(ADMIN_DASHBOARD_PATH, window.location.origin).toString()
+    return new URL('/?view=admin', window.location.origin).toString()
   } catch (error) {
     console.warn('관리자 대시보드 경로를 계산하지 못했습니다.', error)
-    return ADMIN_DASHBOARD_PATH
+    return '/?view=admin'
   }
 }
 
@@ -2880,9 +2875,6 @@ function canAccessView(rawView) {
   if (!view || view === 'home') {
     return true
   }
-  if (view === 'community') {
-    return state.user.isLoggedIn && state.user.plan === 'michina'
-  }
   if (view === 'admin') {
     return state.admin.isLoggedIn
   }
@@ -2957,15 +2949,6 @@ function handleNavigationClick(targetView) {
       clearAdminNavHighlight()
     }
     setView(view)
-    return
-  }
-  if (view === 'community') {
-    if (!state.user.isLoggedIn && !state.admin.isLoggedIn) {
-      setStatus('미치나 커뮤니티는 로그인 후 이용할 수 있습니다.', 'warning')
-      openLoginModal()
-    } else {
-      setStatus('미치나 플랜 참가자로 등록된 계정만 접근할 수 있습니다.', 'warning')
-    }
     return
   }
   if (view === 'admin') {
@@ -3480,10 +3463,6 @@ function openAdminModal() {
 
   window.requestAnimationFrame(() => {
     if (isAdmin) {
-      if (elements.adminModalDashboardButton instanceof HTMLButtonElement) {
-        elements.adminModalDashboardButton.focus()
-        return
-      }
       if (elements.adminModalLogoutButton instanceof HTMLButtonElement) {
         elements.adminModalLogoutButton.focus()
         return
@@ -9832,19 +9811,6 @@ function attachEventListeners() {
     trigger.addEventListener('click', () => elements.fileInput?.click())
   })
 
-  if (elements.communityLink instanceof HTMLElement) {
-    elements.communityLink.addEventListener('click', (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      const targetUrl = '/?view=community'
-      try {
-        window.open(targetUrl, '_blank', 'noopener')
-      } catch (error) {
-        console.error('커뮤니티 대시보드를 새 창으로 여는 데 실패했습니다.', error)
-      }
-    })
-  }
-
   if (elements.adminFooterLink instanceof HTMLElement) {
     elements.adminFooterLink.addEventListener('click', (event) => {
       event.preventDefault()
@@ -9888,23 +9854,6 @@ function attachEventListeners() {
       handleNavigationClick(button.dataset.viewTarget || 'home')
     })
   })
-
-  const openDashboardButton = document.getElementById('openDashboardBtn')
-  if (openDashboardButton instanceof HTMLButtonElement) {
-    openDashboardButton.addEventListener('click', () => {
-      if (!isAdminSessionActive()) {
-        window.alert('관리자 세션이 만료되었습니다. 다시 로그인해주세요.')
-        return
-      }
-      closeAdminModal()
-      try {
-        window.open('/dashboard', '_blank', 'noopener')
-      } catch (error) {
-        console.error('관리자 대시보드를 새 탭으로 여는 데 실패했습니다.', error)
-        window.location.href = '/dashboard'
-      }
-    })
-  }
 
   const adminLogoutButton = document.getElementById('adminLogoutBtn')
   if (adminLogoutButton instanceof HTMLButtonElement) {
@@ -10163,7 +10112,7 @@ function init() {
       credits: FREEMIUM_INITIAL_CREDITS,
     })
   }
-  const allowedViews = new Set(['home', 'community', 'admin'])
+  const allowedViews = new Set(['home', 'admin'])
   const normalizeView = (value) => {
     if (typeof value !== 'string') return ''
     const trimmed = value.trim().toLowerCase()
@@ -10234,39 +10183,7 @@ function init() {
   initializeSubscriptionState()
   initializeAdminAuthSync()
 
-  if (initialView === 'community') {
-    if (document.body) {
-      document.body.dataset.activeView = 'community'
-    }
-
-    import('./community-dashboard.js')
-      .then((module) => {
-        if (typeof module.bootstrapCommunityDashboard === 'function') {
-          module.bootstrapCommunityDashboard()
-        } else {
-          console.warn('커뮤니티 대시보드 모듈에서 bootstrapCommunityDashboard 함수를 찾을 수 없습니다.')
-        }
-      })
-      .catch((error) => {
-        console.error('미치나 커뮤니티 대시보드를 불러오지 못했습니다.', error)
-        const root = document.getElementById('community-dashboard-root')
-        if (root instanceof HTMLElement) {
-          root.innerHTML =
-            '<div class="flex min-h-screen items-center justify-center bg-slate-950 p-8 text-center text-lg font-semibold text-white/80">커뮤니티 대시보드를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</div>'
-        }
-        window.alert('커뮤니티 대시보드를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
-      })
-
-    return
-  }
-
-  const unlockedViaCommunity = applyCommunityRoleFromStorage()
-
-  if (elements.communityLink instanceof HTMLAnchorElement) {
-    const configuredUrl = '/?view=community'
-    elements.communityLink.href = configuredUrl
-    elements.communityLink.rel = 'noopener noreferrer'
-  }
+  applyCommunityRoleFromStorage()
 
   if (runtime.allowViewBypass) {
     setView(initialView, { force: true, bypassAccess: true })
@@ -10290,10 +10207,6 @@ function init() {
   resetAnalysisProgress()
   displayAnalysisFor(null)
   refreshAccessStates()
-
-  if (unlockedViaCommunity) {
-    setStatus('미치나 커뮤니티 수료 이력이 확인되어 모든 기능이 해금되었습니다.', 'success', 5200)
-  }
 
   syncAdminSession().finally(() => {
     if (runtime.initialView === 'admin' && !state.admin.isLoggedIn) {
