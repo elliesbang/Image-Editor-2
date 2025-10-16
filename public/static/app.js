@@ -923,6 +923,8 @@ const elements = {
   loginEmailSubmit: document.querySelector('[data-role="login-email-submit"]'),
   loginEmailResend: document.querySelector('[data-role="login-email-resend"]'),
   loginEmailHelper: document.querySelector('[data-role="login-email-helper"]'),
+  loginSignupLink: document.querySelector('[data-role="login-signup-link"]'),
+  michinaLoginButton: document.querySelector('[data-role="michina-login"]'),
   cookieBanner: document.querySelector('[data-role="cookie-banner"]'),
   cookieAnalytics: document.querySelector('[data-role="cookie-analytics"]'),
   cookieMarketing: document.querySelector('[data-role="cookie-marketing"]'),
@@ -4969,33 +4971,30 @@ function handleChallengeDayClick(event) {
   updateChallengeSubmitState(state.challenge.profile)
 }
 
-function setLoginModalMode(mode = 'choice') {
+function setLoginModalMode() {
   if (!(elements.loginModal instanceof HTMLElement)) {
     return
   }
-  const normalized = mode === 'email' ? 'email' : 'choice'
-  elements.loginModal.dataset.mode = normalized
+  elements.loginModal.dataset.mode = 'email'
   if (elements.loginEmailPanel instanceof HTMLElement) {
-    if (normalized === 'email') {
-      elements.loginEmailPanel.hidden = false
-    } else {
-      elements.loginEmailPanel.hidden = true
-    }
-  }
-  if (elements.loginEmailChoice instanceof HTMLButtonElement) {
-    elements.loginEmailChoice.setAttribute('aria-pressed', normalized === 'email' ? 'true' : 'false')
+    elements.loginEmailPanel.hidden = false
   }
 }
 
 function showEmailLoginPanel({ focus = true } = {}) {
-  setLoginModalMode('email')
+  setLoginModalMode()
   if (focus && elements.loginEmailInput instanceof HTMLInputElement) {
     window.requestAnimationFrame(() => elements.loginEmailInput.focus())
   }
 }
 
 function resetLoginModalMode() {
-  setLoginModalMode('choice')
+  if (elements.loginModal instanceof HTMLElement) {
+    elements.loginModal.dataset.mode = 'email'
+  }
+  if (elements.loginEmailPanel instanceof HTMLElement) {
+    elements.loginEmailPanel.hidden = false
+  }
 }
 
 function setLoginHelper(message) {
@@ -5022,7 +5021,7 @@ function updateLoginFormState(step) {
     elements.loginEmailForm.dataset.state = step
   }
   if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
-    elements.loginEmailSubmit.textContent = step === 'code' ? '코드 확인 후 로그인' : '인증 코드 받기'
+    elements.loginEmailSubmit.textContent = step === 'code' ? '코드 확인 후 로그인' : '로그인'
     elements.loginEmailSubmit.disabled = false
   }
   if (elements.loginEmailResend instanceof HTMLButtonElement) {
@@ -5034,6 +5033,8 @@ function updateLoginFormState(step) {
   }
   if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
     elements.loginEmailCodeInput.disabled = step !== 'code'
+    elements.loginEmailCodeInput.placeholder =
+      step === 'code' ? '이메일로 받은 6자리 코드를 입력하세요' : '비밀번호를 입력하세요'
     if (step !== 'code') {
       elements.loginEmailCodeInput.value = ''
     }
@@ -5059,9 +5060,10 @@ function resetLoginFlow() {
   if (elements.loginEmailCodeInput instanceof HTMLInputElement) {
     elements.loginEmailCodeInput.disabled = true
     elements.loginEmailCodeInput.value = ''
+    elements.loginEmailCodeInput.placeholder = '비밀번호를 입력하세요'
   }
   if (elements.loginEmailSubmit instanceof HTMLButtonElement) {
-    elements.loginEmailSubmit.textContent = '인증 코드 받기'
+    elements.loginEmailSubmit.textContent = '로그인'
     elements.loginEmailSubmit.disabled = false
   }
   if (elements.loginEmailResend instanceof HTMLButtonElement) {
@@ -5175,13 +5177,11 @@ function openLoginModal() {
     disableGoogleLoginUI()
   }
   const focusTarget =
-    elements.loginEmailChoice instanceof HTMLButtonElement
-      ? elements.loginEmailChoice
+    elements.loginEmailInput instanceof HTMLInputElement
+      ? elements.loginEmailInput
       : elements.googleLoginButton instanceof HTMLButtonElement
         ? elements.googleLoginButton
-        : elements.loginEmailInput instanceof HTMLInputElement
-          ? elements.loginEmailInput
-          : null
+        : null
   if (focusTarget) {
     window.requestAnimationFrame(() => focusTarget.focus())
   }
@@ -5308,6 +5308,8 @@ async function handleGoogleLogin(event) {
     event.preventDefault()
   }
 
+  console.log('🔍 Ellie Google 로그인 버튼 클릭')
+
   const config = getAppConfig()
   const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
 
@@ -5336,6 +5338,7 @@ function handleEmailResend(event) {
   const currentEmail =
     state.auth.pendingEmail ||
     (elements.loginEmailInput instanceof HTMLInputElement ? elements.loginEmailInput.value.trim() : '')
+  console.log('⏳ Ellie 인증 코드 다시 보내기 클릭', currentEmail || '(이메일 미입력)')
   if (!currentEmail) {
     setStatus('이메일을 먼저 입력해주세요.', 'danger')
     updateLoginFormState('idle')
@@ -5353,9 +5356,28 @@ function handleEmailResend(event) {
   setStatus(`${currentEmail} 주소로 새로운 인증 코드를 전송했습니다.`, 'success')
 }
 
+function handleMichinaLoginClick(event) {
+  if (event && typeof event.preventDefault === 'function') {
+    event.preventDefault()
+  }
+  console.log('🌟 Ellie 미치나 로그인 버튼 클릭')
+  setStatus('미치나 로그인은 관리자 승인 후 이용할 수 있어요.', 'info')
+}
+
 function handleEmailLogin(event) {
   event.preventDefault()
   if (!(elements.loginEmailForm instanceof HTMLFormElement)) return
+
+  const rawEmail =
+    state.auth.step === 'code'
+      ? state.auth.pendingEmail
+      : elements.loginEmailInput instanceof HTMLInputElement
+        ? elements.loginEmailInput.value.trim()
+        : ''
+  console.log(
+    `🌼 Ellie 이메일 로그인 버튼 클릭 (단계: ${state.auth.step})`,
+    rawEmail || '(이메일 미입력)',
+  )
 
   if (state.auth.step === 'code') {
     if (!(elements.loginEmailCodeInput instanceof HTMLInputElement)) return
@@ -9932,6 +9954,16 @@ function attachEventListeners() {
     })
   } else {
     disableGoogleLoginUI()
+  }
+
+  if (elements.michinaLoginButton instanceof HTMLButtonElement) {
+    elements.michinaLoginButton.addEventListener('click', handleMichinaLoginClick)
+  }
+
+  if (elements.loginSignupLink instanceof HTMLAnchorElement) {
+    elements.loginSignupLink.addEventListener('click', () => {
+      console.log('🧸 Ellie 회원가입 링크 클릭')
+    })
   }
 
   if (elements.loginEmailForm instanceof HTMLFormElement) {
