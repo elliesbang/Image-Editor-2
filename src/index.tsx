@@ -4235,6 +4235,7 @@ app.post('/api/analyze', async (c) => {
 조건:
 - keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
 - 모든 키워드는 이미지에서 식별되는 피사체, 배경, 분위기, 활용처를 구체적으로 표현합니다.
+- 키워드는 이미지에서 확인되는 색상, 조명, 스타일, 질감, 분위기를 세밀하게 반영합니다.
 - 숫자로 표기된 비율, 해상도, 픽셀 수치, 용량 등 기술적 정보는 키워드에 포함하지 않습니다.
 - 여러 장의 이미지가 주어지면 공통 요소와 각 이미지의 특징을 통합해 중복 없는 25개의 키워드를 제시합니다.
 - 제목은 핵심 키워드를 자연스럽게 이어 붙인 한 문장으로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
@@ -4283,7 +4284,7 @@ app.post('/api/analyze', async (c) => {
     const imageUrl = dataUrl.startsWith('data:') ? dataUrl : `data:image/png;base64,${base64Source}`
 
     const requestPayload = {
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       temperature: 0.6,
       top_p: 0.9,
       presence_penalty: 0,
@@ -4517,7 +4518,7 @@ app.post('/api/analyze', async (c) => {
       summary: safeSummary,
       keywords,
       provider: 'openai',
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       requestId,
     })
   } catch (error) {

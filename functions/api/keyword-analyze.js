@@ -330,14 +330,14 @@ export async function onRequestPost(context) {
       if (gemini.success) {
         userContent.push({
           type: 'text',
-          text: `다음 키워드를 참고해서 중복 없이 핵심적인 SEO 키워드 25개와 자연스럽고 매력적인 제목 1개를 한국어로 작성해줘. 키워드는 번호와 함께 줄바꿈으로 구분해줘: ${gemini.keywords
+          text: `다음 키워드를 참고해서 중복 없이 핵심적인 SEO 키워드 25개와 자연스럽고 매력적인 제목 1개를 한국어로 작성해줘. 키워드는 이미지의 색상, 조명, 스타일, 분위기, 피사체를 구체적으로 반영하고 번호와 함께 줄바꿈으로 구분해줘: ${gemini.keywords
             .slice(0, 50)
             .join(', ')}`,
         })
       } else {
         userContent.push({
           type: 'text',
-          text: '이 이미지를 분석해 핵심 SEO 키워드 25개와 자연스러운 SEO 제목 1개를 한국어로 작성해줘. 키워드는 번호와 함께 줄바꿈으로 구분해줘.',
+          text: '이 이미지를 분석해 핵심 SEO 키워드 25개와 자연스러운 SEO 제목 1개를 한국어로 작성해줘. 키워드는 이미지의 색상, 조명, 스타일, 분위기, 피사체를 구체적으로 반영하고 번호와 함께 줄바꿈으로 구분해줘.',
         })
       }
       userContent.push({
@@ -354,14 +354,14 @@ export async function onRequestPost(context) {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4o',
           temperature: 0.6,
           max_tokens: 800,
           messages: [
             {
               role: 'system',
               content:
-                '너는 미리캔버스 SEO 전문가야. 이미지를 기반으로 중복 없는 핵심 SEO 키워드 25개와 간결하면서 매력적인 한국어 SEO 제목 1개를 만들어야 해. 응답은 명확하게 키워드와 제목을 구분해서 제공해.',
+                '너는 미리캔버스 SEO 전문가야. 이미지를 기반으로 중복 없는 핵심 SEO 키워드 25개와 간결하면서 매력적인 한국어 SEO 제목 1개를 만들어야 해. 키워드는 이미지의 색상, 조명, 스타일, 분위기, 피사체를 구체적으로 반영해야 하며 응답은 명확하게 키워드와 제목을 구분해서 제공해.',
             },
             {
               role: 'user',

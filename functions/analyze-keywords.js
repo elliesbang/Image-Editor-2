@@ -222,6 +222,7 @@ export async function onRequest({ request, env }) {
 - keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
 - 제목은 한국어로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
 - 요약은 이미지의 메시지, 분위기, 활용처를 한 문장으로 설명합니다.
+- 키워드는 이미지에서 확인되는 색상, 조명, 스타일, 질감, 분위기, 피사체를 구체적으로 반영합니다.
 - 필요 시 색상, 분위기, 활용 매체 등을 키워드에 조합합니다.`
 
   const userInstruction = `다음 이미지를 분석하여 한국어 키워드 25개와 SEO 제목, 요약을 JSON 형식으로 작성해 주세요.
@@ -274,7 +275,7 @@ export async function onRequest({ request, env }) {
         authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         temperature: 0.6,
         top_p: 0.9,
         response_format: responseFormat,
@@ -308,7 +309,7 @@ export async function onRequest({ request, env }) {
       return jsonResponse({ error: 'OPENAI_RESPONSE_INVALID', message: 'API 키가 감지되지 않음', requestId }, { status: 502 })
     }
 
-    const model = typeof result?.model === 'string' ? result.model : 'gpt-4o-mini'
+    const model = typeof result?.model === 'string' ? result.model : 'gpt-4o'
     const choice = Array.isArray(result?.choices) ? result.choices[0] : null
     const messageContent = choice?.message?.content
     if (!messageContent) {
