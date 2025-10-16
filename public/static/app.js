@@ -6811,9 +6811,13 @@ function detectSubjectBounds(imageData, width, height) {
   let workingMask = mask
   const maskLength = width * height
   if (maskLength > 0) {
+    const holeMask = identifyMaskHoles(mask, width, height)
     workingMask = closeMask(mask, width, height, 1)
-    workingMask = fillMaskHoles(workingMask, width, height)
     for (let i = 0; i < maskLength; i += 1) {
+      if (holeMask && holeMask[i]) {
+        workingMask[i] = 0
+        continue
+      }
       if (mask[i]) {
         workingMask[i] = 1
       }
@@ -7004,6 +7008,64 @@ function fillMaskHoles(mask, width, height) {
   return filled
 }
 
+function identifyMaskHoles(mask, width, height) {
+  if (!mask || width <= 0 || height <= 0) {
+    return new Uint8Array(0)
+  }
+
+  const length = width * height
+  const visited = new Uint8Array(length)
+  const queue = []
+
+  const enqueue = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return
+    const index = y * width + x
+    if (visited[index] || mask[index]) return
+    visited[index] = 1
+    queue.push(index)
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0)
+    enqueue(x, height - 1)
+  }
+  for (let y = 0; y < height; y += 1) {
+    enqueue(0, y)
+    enqueue(width - 1, y)
+  }
+
+  let head = 0
+  while (head < queue.length) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    const y = Math.floor(index / width)
+
+    const neighbors = [
+      [x - 1, y],
+      [x + 1, y],
+      [x, y - 1],
+      [x, y + 1],
+    ]
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+      const neighborIndex = ny * width + nx
+      if (visited[neighborIndex] || mask[neighborIndex]) continue
+      visited[neighborIndex] = 1
+      queue.push(neighborIndex)
+    }
+  }
+
+  const holes = new Uint8Array(length)
+  for (let i = 0; i < length; i += 1) {
+    if (!mask[i] && !visited[i]) {
+      holes[i] = 1
+    }
+  }
+
+  return holes
+}
+
 function isolateLargestComponent(mask, width, height) {
   const length = width * height
   const visited = new Uint8Array(length)
@@ -7096,10 +7158,14 @@ function refineAlphaMask(imageData, width, height) {
     return null
   }
 
+  const holeMask = identifyMaskHoles(baseMask, width, height)
   let refinedMask = closeMask(baseMask, width, height, 2)
-  refinedMask = fillMaskHoles(refinedMask, width, height)
 
   for (let i = 0; i < refinedMask.length; i += 1) {
+    if (holeMask && holeMask[i]) {
+      refinedMask[i] = 0
+      continue
+    }
     if (baseMask[i]) {
       refinedMask[i] = 1
     }
