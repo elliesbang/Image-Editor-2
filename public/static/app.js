@@ -5070,7 +5070,7 @@ function resetLoginFlow() {
     elements.loginEmailResend.hidden = true
     elements.loginEmailResend.disabled = true
   }
-  setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+  setLoginHelper('')
   clearGoogleCooldown()
   runtime.google.retryCount = 0
   updateGoogleProviderAvailability()
@@ -5413,7 +5413,7 @@ function handleEmailLogin(event) {
           state.auth.code = ''
           state.auth.expiresAt = 0
           updateLoginFormState('idle')
-          setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+          setLoginHelper('')
           if (elements.loginEmailInput instanceof HTMLInputElement) {
             elements.loginEmailInput.focus()
           }
@@ -5431,7 +5431,7 @@ function handleEmailLogin(event) {
       state.auth.code = ''
       state.auth.expiresAt = 0
       updateLoginFormState('idle')
-      setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+      setLoginHelper('')
       return
     }
     const nickname = email.includes('@') ? email.split('@')[0] : email
@@ -10029,7 +10029,7 @@ function attachEventListeners() {
       if (state.auth.step !== 'code') {
         const value = elements.loginEmailInput.value.trim()
         if (!value) {
-          setLoginHelper('이메일 주소를 입력하면 인증 코드를 보내드립니다.')
+          setLoginHelper('')
         }
       }
     })
