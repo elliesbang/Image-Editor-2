@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "preinstall": "npm cache clean --force || true",
-    "build": "vite build",
     "dev": "vite",
+    "build": "npm config set registry https://registry.npmjs.org/ && vite build",
     "preview": "vite preview",
     "start": "node server.js"
   },
