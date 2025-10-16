@@ -3996,46 +3996,49 @@ app.get('/api/challenge/certificate', async (c) => {
 })
 
 const OPENAI_KEYWORD_FALLBACK_POOL: string[] = [
-  '이미지',
-  '사진',
-  '디자인',
-  '그래픽',
-  '브랜딩',
-  '콘텐츠',
-  '마케팅',
-  '소셜미디어',
-  '프로모션',
-  '브랜드',
-  '광고',
-  '썸네일',
-  '배너',
-  '포스터',
-  '프레젠테이션',
-  '템플릿',
-  '고화질',
-  '투명 배경',
-  '크롭',
-  '배경 제거',
-  '비주얼',
-  '크리에이티브',
-  '트렌디',
-  '감각적인',
-  '현대적인',
-  '컬러 팔레트',
-  '하이라이트',
-  '제품 촬영',
-  '모델 컷',
-  'SNS 콘텐츠',
-  '웹디자인',
-  'e커머스',
-  '프리미엄',
-  '상업용',
-  '브랜드 아이덴티티',
-  '컨셉 아트',
-  '라이프스타일',
-  '무드 보드',
-  '스토리텔링',
+  '감각적인 비주얼',
+  '감성적인 분위기',
+  '밝은 조명감',
+  '따뜻한 색감',
+  '차분한 색조',
+  '모던 무드',
+  '세련된 연출',
+  '트렌디한 감성',
+  '풍부한 디테일',
+  '부드러운 질감',
+  '강조된 피사체',
+  '중앙 집중 구도',
+  '여백을 살린 구성',
+  '다채로운 팔레트',
+  '포근한 무드',
+  '산뜻한 색조',
+  '프리미엄 연출',
+  '브랜드 무드보드',
+  '스토리텔링 비주얼',
+  '라이프스타일 감성',
+  '콘텐츠 제작 인사이트',
+  '마케팅 활용 아이디어',
+  'SNS 비주얼 제안',
+  '캠페인 메인 이미지',
+  '온라인 홍보 소재',
 ]
+
+const KEYWORD_DISALLOWED_PATTERNS: RegExp[] = [
+  /\b\d+\s*[:x×]\s*\d+\b/i,
+  /\b\d+\s*(?:px|픽셀|dpi)\b/i,
+  /\b(?:4k|8k|16k|1080p|720p|480p)\b/i,
+]
+
+const KEYWORD_DISALLOWED_TERMS: string[] = ['비율', '해상도', '사이즈', '크기']
+
+const isKeywordDisallowed = (keyword: string): boolean => {
+  if (!keyword) return true
+  if (KEYWORD_DISALLOWED_PATTERNS.some((pattern) => pattern.test(keyword))) {
+    return true
+  }
+  const lower = keyword.toLowerCase()
+  return KEYWORD_DISALLOWED_TERMS.some((term) => lower.includes(term))
+}
 
 const KEYWORD_TEXT_SPLIT_PATTERN = /[,\n，、·•|\/\\;:()\[\]{}<>!?！？]+/
 
@@ -4108,6 +4111,7 @@ const buildKeywordListFromOpenAI = (
   const pushKeyword = (value: string) => {
     const normalized = normalizeKeywordCandidate(value)
     if (!normalized) return
+    if (isKeywordDisallowed(normalized)) return
     if (normalized.length > 48) return
     if (seen.has(normalized)) return
     seen.add(normalized)
@@ -4189,7 +4193,10 @@ app.post('/api/analyze', async (c) => {
 }
 조건:
 - keywords 배열은 정확히 25개의 한글 키워드로 구성합니다.
-- 제목은 한국어로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
+- 모든 키워드는 이미지에서 식별되는 피사체, 배경, 분위기, 활용처를 구체적으로 표현합니다.
+- 숫자로 표기된 비율, 해상도, 픽셀 수치, 용량 등 기술적 정보는 키워드에 포함하지 않습니다.
+- 여러 장의 이미지가 주어지면 공통 요소와 각 이미지의 특징을 통합해 중복 없는 25개의 키워드를 제시합니다.
+- 제목은 핵심 키워드를 자연스럽게 이어 붙인 한 문장으로 작성하고, '미리캔버스'를 활용하는 마케터가 검색할 법한 문구를 넣습니다.
 - 요약은 이미지의 메시지, 분위기, 활용처를 한 문장으로 설명합니다.
 - 필요 시 색상, 분위기, 활용 매체 등을 키워드에 조합합니다.`
 
