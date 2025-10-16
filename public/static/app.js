@@ -1832,10 +1832,10 @@ function initializeAdminAuthSync() {
 
 function getAdminDashboardUrl() {
   try {
-    return new URL('/?view=admin', window.location.origin).toString()
+    return new URL('/admin-dashboard', window.location.origin).toString()
   } catch (error) {
     console.warn('관리자 대시보드 경로를 계산하지 못했습니다.', error)
-    return '/?view=admin'
+    return '/admin-dashboard'
   }
 }
 
@@ -3765,12 +3765,12 @@ document.addEventListener('click', (event) => {
     const openTarget = origin.dataset.openTarget || 'self'
     const dashboardUrl = getAdminDashboardUrl()
     if (openTarget === 'new') {
-      window.open(dashboardUrl, '_blank', 'noopener')
-    } else {
-      setView('admin', { force: true })
-      if (elements.adminDashboard instanceof HTMLElement) {
-        elements.adminDashboard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      const opened = window.open(dashboardUrl, '_blank', 'noopener')
+      if (!opened) {
+        window.location.href = dashboardUrl
       }
+    } else {
+      window.location.href = dashboardUrl
     }
     dismissAdminDashboardPrompt()
     clearAdminNavHighlight()
@@ -3960,12 +3960,15 @@ async function handleAdminSecretSubmit(event) {
       elements.adminLoginForm.reset()
     }
     updateAdminLoginState('success', payload.message || '관리자 인증이 완료되었습니다!', 'success')
-    setStatus('관리자 인증이 완료되었습니다. 관리자 대시보드로 이동합니다.', 'success')
+    setStatus('관리자 인증이 완료되었습니다. 대시보드를 새 탭에서 열고 있습니다.', 'success')
     window.setTimeout(() => {
       closeAdminModal()
       const redirectUrl = typeof payload?.redirect === 'string' ? payload.redirect : getAdminDashboardUrl()
-      window.location.href = redirectUrl
-    }, 600)
+      const opened = window.open(redirectUrl, '_blank', 'noopener')
+      if (!opened) {
+        window.location.href = redirectUrl
+      }
+    }, 400)
   } catch (error) {
     console.error('관리자 인증 요청 중 오류가 발생했습니다.', error)
     updateAdminLoginState('idle', '관리자 인증 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')

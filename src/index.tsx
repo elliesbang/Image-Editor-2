@@ -205,6 +205,49 @@ type ParticipantRecord = {
   status: ParticipantStatus
 }
 
+type MichinaDashboardPeriodRow = {
+  id: number
+  start_date: string
+  end_date: string
+  status: string | null
+  created_at: string | null
+}
+
+type MichinaDashboardPeriod = {
+  id: number
+  startDate: string
+  endDate: string
+  startDateTime: string
+  endDateTime: string
+  status: string
+  createdAt: string
+}
+
+type MichinaDemotionLogRow = {
+  id: number
+  executed_at: string
+  updated_count: number | null
+  status: string | null
+  message?: string | null
+}
+
+type MichinaDemotionLogEntry = {
+  id: number
+  executedAt: string
+  updatedCount: number
+  status: 'success' | 'failure'
+  message?: string
+}
+
+type MichinaDashboardUser = {
+  name: string
+  email: string
+  startDate?: string
+  endDate?: string
+  startDateTime?: string
+  endDateTime?: string
+}
+
 type UserRow = {
   id: number
   name: string | null
@@ -776,6 +819,243 @@ function renderAdminOAuthPage({
 </html>`
 }
 
+function renderAdminDashboardPage(config: { adminEmail: string }) {
+  const safeEmail = escapeHtml(config.adminEmail)
+  const configJson = JSON.stringify({ adminEmail: config.adminEmail }).replace(/</g, '\\u003c')
+  return `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>관리자 대시보드 | Elliesbang</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css"
+    />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.3.0/fonts/remixicon.css" />
+    <link rel="stylesheet" href="/static/admin-dashboard.css" />
+  </head>
+  <body>
+    <div class="dashboard" data-role="dashboard-root">
+      <aside class="dashboard__sidebar" aria-label="관리자 내비게이션">
+        <div class="sidebar__brand">
+          <span class="sidebar__logo" aria-hidden="true">🏠</span>
+          <span class="sidebar__title">Elliesbang</span>
+        </div>
+        <nav class="sidebar__nav">
+          <button type="button" class="sidebar__link is-active" data-section="period">
+            <i class="ri-calendar-event-line" aria-hidden="true"></i>
+            <span>기간 설정</span>
+          </button>
+          <button type="button" class="sidebar__link" data-section="users">
+            <i class="ri-team-line" aria-hidden="true"></i>
+            <span>사용자 현황</span>
+          </button>
+          <button type="button" class="sidebar__link" data-section="logs">
+            <i class="ri-time-line" aria-hidden="true"></i>
+            <span>자동 하향 로그</span>
+          </button>
+        </nav>
+      </aside>
+      <main class="dashboard__main">
+        <header class="dashboard__header">
+          <div class="dashboard__heading">
+            <p class="dashboard__eyebrow">관리자 대시보드</p>
+            <h1 class="dashboard__title">관리자 대시보드 | Elliesbang</h1>
+          </div>
+          <div class="dashboard__account" aria-live="polite">
+            <span class="dashboard__account-label">로그인 계정</span>
+            <span class="dashboard__account-value" data-role="admin-email">${safeEmail}</span>
+          </div>
+        </header>
+
+        <section class="panel is-active" data-panel="period" aria-labelledby="panel-period-heading">
+          <header class="panel__header">
+            <h2 class="panel__title" id="panel-period-heading">📅 미치나 챌린지 기간 설정</h2>
+            <p class="panel__description">시작일과 종료일을 지정해 챌린지 운영 기간을 관리하세요.</p>
+          </header>
+          <form class="card card--form" data-role="period-form">
+            <div class="form-grid">
+              <label class="form-field">
+                <span class="form-field__label">시작일</span>
+                <div class="form-field__control">
+                  <input type="date" name="startDate" required data-role="period-start" />
+                </div>
+              </label>
+              <label class="form-field">
+                <span class="form-field__label">종료일</span>
+                <div class="form-field__control">
+                  <input type="date" name="endDate" required data-role="period-end" />
+                </div>
+              </label>
+            </div>
+            <p class="form-hint">선택한 종료일의 23:59:59까지 참여자가 유지됩니다.</p>
+            <div class="form-actions">
+              <button type="submit" class="btn btn--primary" data-role="period-submit">
+                <i class="ri-save-3-line" aria-hidden="true"></i>
+                <span>저장하기</span>
+              </button>
+            </div>
+            <p class="form-status" data-role="period-status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="panel" data-panel="users" aria-labelledby="panel-users-heading">
+          <header class="panel__header">
+            <h2 class="panel__title" id="panel-users-heading">👥 미치나 등급 사용자 현황</h2>
+            <p class="panel__description">grade가 "michina"인 계정만 조회됩니다.</p>
+          </header>
+          <div class="card">
+            <div class="card__toolbar">
+              <label class="search" aria-label="이메일 검색">
+                <i class="ri-search-line" aria-hidden="true"></i>
+                <input type="search" placeholder="이메일 검색" data-role="user-search" />
+              </label>
+              <button type="button" class="btn btn--ghost" data-action="refresh-users">
+                <i class="ri-refresh-line" aria-hidden="true"></i>
+                <span>새로고침</span>
+              </button>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" aria-describedby="panel-users-heading">
+                <thead>
+                  <tr>
+                    <th scope="col">이름</th>
+                    <th scope="col">이메일</th>
+                    <th scope="col">시작일</th>
+                    <th scope="col">종료일</th>
+                    <th scope="col">남은일수</th>
+                  </tr>
+                </thead>
+                <tbody data-role="user-tbody"></tbody>
+              </table>
+              <p class="empty" data-role="user-empty" hidden>표시할 사용자가 없습니다.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="logs" aria-labelledby="panel-logs-heading">
+          <header class="panel__header">
+            <h2 class="panel__title" id="panel-logs-heading">🕓 자동 하향 실행 로그</h2>
+            <p class="panel__description">매일 0시에 실행된 자동 등급 변경 이력을 확인하세요.</p>
+          </header>
+          <div class="card">
+            <div class="card__toolbar">
+              <span class="card__caption">최신 순으로 정렬됩니다.</span>
+              <button type="button" class="btn btn--ghost" data-action="refresh-logs">
+                <i class="ri-refresh-line" aria-hidden="true"></i>
+                <span>새로고침</span>
+              </button>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" aria-describedby="panel-logs-heading">
+                <thead>
+                  <tr>
+                    <th scope="col">실행일시</th>
+                    <th scope="col">변경된 사용자 수</th>
+                    <th scope="col">상태</th>
+                    <th scope="col">메모</th>
+                  </tr>
+                </thead>
+                <tbody data-role="log-tbody"></tbody>
+              </table>
+              <p class="empty" data-role="log-empty" hidden>최근 실행 로그가 없습니다.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div class="toast" data-role="toast" hidden aria-live="assertive"></div>
+    <script type="application/json" data-role="dashboard-config">${configJson}</script>
+    <script type="module" src="/static/admin-dashboard.js"></script>
+  </body>
+</html>`
+}
+
+function renderAdminDashboardUnauthorizedPage(loginPath: string) {
+  const safePath = escapeHtml(loginPath)
+  const redirectScript = JSON.stringify(loginPath)
+  const alertMessage = JSON.stringify('접근 권한이 없습니다')
+  return `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>접근 권한이 없습니다</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css"
+    />
+    <meta http-equiv="refresh" content="2;url=${safePath}" />
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f5eee9;
+        color: #2b2522;
+        font-family: 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
+      }
+      .notice {
+        background: rgba(255, 255, 255, 0.88);
+        border-radius: 20px;
+        padding: 32px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
+        max-width: 360px;
+        text-align: center;
+      }
+      .notice h1 {
+        margin: 0 0 12px;
+        font-size: 1.4rem;
+      }
+      .notice p {
+        margin: 0 0 16px;
+        line-height: 1.6;
+        color: rgba(43, 37, 34, 0.7);
+      }
+      .notice a {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 18px;
+        background: #fef568;
+        color: inherit;
+        border-radius: 999px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+      }
+      .notice a:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(254, 245, 104, 0.35);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="notice">
+      <h1>접근 권한이 없습니다</h1>
+      <p>관리자 로그인이 필요합니다. 잠시 후 로그인 페이지로 이동합니다.</p>
+      <a href="${safePath}">
+        <span>로그인 페이지로 이동</span>
+        <i class="ri-external-link-line" aria-hidden="true"></i>
+      </a>
+    </div>
+    <script>
+      window.alert(${alertMessage});
+      window.setTimeout(() => {
+        window.location.replace(${redirectScript});
+      }, 200);
+    </script>
+  </body>
+</html>`
+}
+
 function generateRandomState() {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -900,6 +1180,38 @@ function normalizeDateColumnValue(value: unknown) {
     return new Date(parsed).toISOString().slice(0, 10)
   }
   return ''
+}
+
+function toIsoTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return ''
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+  if (/\dT\d/.test(trimmed)) {
+    if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+      return trimmed
+    }
+    return `${trimmed}Z`
+  }
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}$/.test(trimmed)) {
+    return `${trimmed.replace(' ', 'T')}Z`
+  }
+  const parsed = Date.parse(trimmed)
+  if (Number.isFinite(parsed)) {
+    return new Date(parsed).toISOString()
+  }
+  return trimmed
+}
+
+function buildStartOfDayTimestamp(date: string) {
+  return `${date}T00:00:00`
+}
+
+function buildEndOfDayTimestamp(date: string) {
+  return `${date}T23:59:59`
 }
 
 function formatChallengeDateTime(date: Date) {
@@ -1495,6 +1807,117 @@ async function ensureChallengePeriodTable(db: D1Database) {
   await db
     .prepare('CREATE INDEX IF NOT EXISTS idx_challenge_periods_saved_at ON challenge_periods(saved_at DESC, id DESC)')
     .run()
+}
+
+async function ensureMichinaPeriodsTable(db: D1Database) {
+  await db
+    .prepare(
+      "CREATE TABLE IF NOT EXISTS michina_periods (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+    )
+    .run()
+  try {
+    await db.prepare("ALTER TABLE michina_periods ADD COLUMN status TEXT NOT NULL DEFAULT 'active'").run()
+  } catch (error) {
+    const message = String(error || '')
+    if (!/duplicate column name: status/i.test(message)) {
+      throw error
+    }
+  }
+  try {
+    await db.prepare("ALTER TABLE michina_periods ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP").run()
+  } catch (error) {
+    const message = String(error || '')
+    if (!/duplicate column name: created_at/i.test(message)) {
+      throw error
+    }
+  }
+  await db
+    .prepare('CREATE INDEX IF NOT EXISTS idx_michina_periods_created_at ON michina_periods(created_at DESC, id DESC)')
+    .run()
+}
+
+async function saveMichinaPeriodRecord(db: D1Database, record: { startDateTime: string; endDateTime: string; status?: string }) {
+  await ensureMichinaPeriodsTable(db)
+  const status = record.status && record.status.trim() ? record.status.trim() : 'active'
+  await db
+    .prepare('INSERT INTO michina_periods (start_date, end_date, status) VALUES (?, ?, ?)')
+    .bind(record.startDateTime, record.endDateTime, status)
+    .run()
+}
+
+async function getLatestMichinaPeriod(db: D1Database): Promise<MichinaDashboardPeriod | null> {
+  await ensureMichinaPeriodsTable(db)
+  const row = await db
+    .prepare(
+      'SELECT id, start_date, end_date, status, created_at FROM michina_periods ORDER BY datetime(created_at) DESC, id DESC LIMIT 1',
+    )
+    .first<MichinaDashboardPeriodRow>()
+  if (!row) {
+    return null
+  }
+  const startDateTime = row.start_date ?? ''
+  const endDateTime = row.end_date ?? ''
+  const startDate = normalizeDateColumnValue(startDateTime)
+  const endDate = normalizeDateColumnValue(endDateTime)
+  const createdAt = toIsoTimestamp(row.created_at)
+  const status = (row.status ?? 'active').trim() || 'active'
+  return {
+    id: row.id,
+    startDate,
+    endDate,
+    startDateTime,
+    endDateTime,
+    status,
+    createdAt,
+  }
+}
+
+async function ensureMichinaDemotionLogTable(db: D1Database) {
+  await db
+    .prepare(
+      "CREATE TABLE IF NOT EXISTS michina_demotion_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, executed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_count INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'success', message TEXT)",
+    )
+    .run()
+  try {
+    await db.prepare("ALTER TABLE michina_demotion_logs ADD COLUMN status TEXT NOT NULL DEFAULT 'success'").run()
+  } catch (error) {
+    const message = String(error || '')
+    if (!/duplicate column name: status/i.test(message)) {
+      throw error
+    }
+  }
+  try {
+    await db.prepare('ALTER TABLE michina_demotion_logs ADD COLUMN message TEXT').run()
+  } catch (error) {
+    const message = String(error || '')
+    if (!/duplicate column name: message/i.test(message)) {
+      throw error
+    }
+  }
+  await db
+    .prepare('CREATE INDEX IF NOT EXISTS idx_michina_demotion_logs_executed_at ON michina_demotion_logs(executed_at DESC, id DESC)')
+    .run()
+}
+
+async function listMichinaDemotionLogs(db: D1Database, limit = 60): Promise<MichinaDemotionLogEntry[]> {
+  await ensureMichinaDemotionLogTable(db)
+  const cappedLimit = Math.max(1, Math.min(limit, 200))
+  const query = `SELECT id, executed_at, updated_count, status, message FROM michina_demotion_logs ORDER BY datetime(executed_at) DESC, id DESC LIMIT ${cappedLimit}`
+  const result = await db.prepare(query).all<MichinaDemotionLogRow>()
+  const rows = Array.isArray(result.results) ? result.results : []
+  return rows.map((row) => {
+    const status = (row.status ?? 'success').toLowerCase() === 'failure' ? 'failure' : 'success'
+    const updatedCount = Number.isFinite(Number(row.updated_count)) ? Number(row.updated_count) : 0
+    const executedAt = toIsoTimestamp(row.executed_at)
+    const message = typeof row.message === 'string' && row.message.trim() ? row.message.trim() : undefined
+    return {
+      id: row.id,
+      executedAt,
+      updatedCount,
+      status,
+      message,
+    }
+  })
 }
 
 async function listDashboardChallengePeriods(db: D1Database): Promise<ChallengePeriodSummary[]> {
@@ -2194,7 +2617,181 @@ app.post('/api/admin/login', async (c) => {
     path: '/',
     maxAge: 60 * 60 * 2,
   })
-  return c.json({ success: true, message: '관리자 인증 완료', redirect: '/dashboard', email: resolvedEmail })
+  return c.json({ success: true, message: '관리자 인증 완료', redirect: '/admin-dashboard', email: resolvedEmail })
+})
+
+app.get('/api/admin/dashboard/periods', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', period: null }, 401)
+  }
+  let db: D1Database
+  try {
+    db = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.error('[admin] Michina database binding is not configured', error)
+    return c.json({ error: 'DATABASE_NOT_CONFIGURED', period: null }, 500)
+  }
+  try {
+    const period = await getLatestMichinaPeriod(db)
+    return c.json({ period })
+  } catch (error) {
+    console.error('[admin] Failed to load michina dashboard period', error)
+    return c.json({ error: 'DATABASE_ERROR', period: null }, 500)
+  }
+})
+
+app.post('/api/admin/dashboard/periods', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, error: 'UNAUTHORIZED' }, 401)
+  }
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ success: false, error: 'INVALID_JSON' }, 400)
+  }
+  const startInput =
+    (payload as { startDate?: string; start_date?: string }).startDate ??
+    (payload as { start_date?: string }).start_date ??
+    ''
+  const endInput =
+    (payload as { endDate?: string; end_date?: string }).endDate ??
+    (payload as { end_date?: string }).end_date ??
+    ''
+  const startDate = isValidDateString(startInput) ? startInput : ''
+  const endDate = isValidDateString(endInput) ? endInput : ''
+  if (!startDate || !endDate) {
+    return c.json({ success: false, error: 'INVALID_DATE' }, 400)
+  }
+  if (endDate < startDate) {
+    return c.json({ success: false, error: 'END_BEFORE_START' }, 400)
+  }
+  let db: D1Database
+  try {
+    db = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.error('[admin] Michina database binding is not configured', error)
+    return c.json({ success: false, error: 'DATABASE_NOT_CONFIGURED' }, 500)
+  }
+  try {
+    await saveMichinaPeriodRecord(db, {
+      startDateTime: buildStartOfDayTimestamp(startDate),
+      endDateTime: buildEndOfDayTimestamp(endDate),
+      status: 'active',
+    })
+    const period = await getLatestMichinaPeriod(db)
+    return c.json({ success: true, period })
+  } catch (error) {
+    console.error('[admin] Failed to save michina dashboard period', error)
+    return c.json({ success: false, error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.get('/api/admin/dashboard/users', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', users: [] }, 401)
+  }
+  let mainDb: D1Database
+  try {
+    mainDb = getMainDatabase(c.env)
+  } catch (error) {
+    console.error('[admin] Main database binding is not configured', error)
+    return c.json({ error: 'DATABASE_NOT_CONFIGURED', users: [] }, 500)
+  }
+
+  let userRows: UserRow[] = []
+  try {
+    const result = await mainDb
+      .prepare("SELECT id, name, email, role, last_login FROM users WHERE lower(role) = 'michina' ORDER BY lower(email) ASC")
+      .all<UserRow>()
+    userRows = Array.isArray(result.results) ? result.results : []
+  } catch (error) {
+    console.error('[admin] Failed to load michina grade users', error)
+    return c.json({ error: 'DATABASE_ERROR', users: [] }, 500)
+  }
+
+  const participantLookup = new Map<string, { name?: string; startDate?: string; endDate?: string; startDateTime?: string; endDateTime?: string }>()
+  let michinaDb: D1Database | null = null
+  try {
+    michinaDb = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.warn('[admin] Michina database binding is not configured; continuing without participant metadata')
+  }
+
+  if (michinaDb) {
+    try {
+      await ensureParticipantsTable(michinaDb)
+      const result = await michinaDb
+        .prepare('SELECT name, email, start_date, end_date, role FROM michina_participants WHERE role IN (\'미치나\', \'michina\')')
+        .all<ParticipantRow>()
+      const rows = Array.isArray(result.results) ? result.results : []
+      for (const row of rows) {
+        const email = typeof row.email === 'string' ? row.email.trim().toLowerCase() : ''
+        if (!email) {
+          continue
+        }
+        const name = typeof row.name === 'string' && row.name.trim() ? row.name.trim() : undefined
+        const startDate = normalizeDateColumnValue(row.start_date)
+        const endDate = normalizeDateColumnValue(row.end_date)
+        const rawStart = typeof row.start_date === 'string' ? row.start_date.trim() : ''
+        const rawEnd = typeof row.end_date === 'string' ? row.end_date.trim() : ''
+        participantLookup.set(email, {
+          name,
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+          startDateTime: rawStart || (startDate ? buildStartOfDayTimestamp(startDate) : undefined),
+          endDateTime: rawEnd || (endDate ? buildEndOfDayTimestamp(endDate) : undefined),
+        })
+      }
+    } catch (error) {
+      const message = String(error || '')
+      if (/no such table: michina_participants/i.test(message)) {
+        console.warn('[admin] michina_participants table is not available; skipping participant metadata')
+      } else {
+        console.error('[admin] Failed to load michina participant metadata', error)
+      }
+    }
+  }
+
+  const users: MichinaDashboardUser[] = userRows.map((row) => {
+    const normalizedEmail = row.email.trim().toLowerCase()
+    const participant = participantLookup.get(normalizedEmail)
+    const preferredName = participant?.name || (row.name ?? '').trim()
+    return {
+      name: preferredName || '이름 미등록',
+      email: row.email,
+      startDate: participant?.startDate,
+      endDate: participant?.endDate,
+      startDateTime: participant?.startDateTime,
+      endDateTime: participant?.endDateTime,
+    }
+  })
+
+  return c.json({ users })
+})
+
+app.get('/api/admin/dashboard/demotion-logs', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', logs: [] }, 401)
+  }
+  let db: D1Database
+  try {
+    db = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.warn('[admin] Michina database binding is not configured; returning empty log set')
+    return c.json({ logs: [] })
+  }
+  try {
+    const logs = await listMichinaDemotionLogs(db)
+    return c.json({ logs })
+  } catch (error) {
+    console.error('[admin] Failed to load michina demotion logs', error)
+    return c.json({ error: 'DATABASE_ERROR', logs: [] }, 500)
+  }
 })
 
 app.get('/api/admin/challenge-periods', async (c) => {
@@ -3877,6 +4474,14 @@ app.post('/api/analyze', async (c) => {
     const detail = error instanceof Error ? error.message : String(error)
     return c.json({ error: 'OPENAI_UNHANDLED_ERROR', detail }, 502)
   }
+})
+
+app.get('/admin-dashboard', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.html(renderAdminDashboardUnauthorizedPage('/admin-login/'), 401)
+  }
+  return c.html(renderAdminDashboardPage({ adminEmail }))
 })
 
 app.get('/', async (c) => {
