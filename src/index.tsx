@@ -3947,19 +3947,12 @@ app.get('/', async (c) => {
         </div>
       </header>
 
-      <section class="hero" data-view="home" aria-labelledby="hero-heading">
+      <section class="hero" data-view="home">
         <p class="hero__badge">크레딧 기반 Freemium 베타</p>
-        <h1 class="hero__heading" id="hero-heading">
-          멀티 이미지 편집 스튜디오
-        </h1>
-        <p class="hero__subtitle">
-          최대 50장의 이미지를 한 번에 업로드하고 배경 제거, 여백 크롭, 노이즈 제거, 리사이즈,
-          PNG → SVG 벡터 변환까지 한 곳에서 처리하세요. 로그인하면 무료 30 크레딧으로 모든 기능을 바로 사용할 수 있어요.
-        </p>
       </section>
 
       <section class="features" data-view="home" aria-label="주요 기능 안내">
-        <h2 class="features__title">더 나은 편집 경험을 위한 핵심 기능</h2>
+        <h2 class="features__title">핵심 기능</h2>
         <div class="features__grid">
           <article class="feature-card">
             <h3>배경 제거 &amp; 피사체 크롭</h3>
@@ -3975,38 +3968,6 @@ app.get('/', async (c) => {
           </article>
         </div>
       </section>
-
-      <section class="stage" data-view="home" aria-label="작업 단계 안내">
-        <ol class="stage__list" data-role="stage-indicator">
-          <li class="stage__item is-active" data-stage="1">
-            <span class="stage__step">1</span>
-            <div class="stage__meta">
-              <span class="stage__title">업로드 &amp; 선택</span>
-              <span class="stage__copy">이미지를 추가하고 비교하기</span>
-            </div>
-          </li>
-          <li class="stage__item" data-stage="2">
-            <span class="stage__step">2</span>
-            <div class="stage__meta">
-              <span class="stage__title">보정 &amp; 변환</span>
-              <span class="stage__copy">배경 제거·크롭·SVG 변환</span>
-            </div>
-          </li>
-          <li class="stage__item" data-stage="3">
-            <span class="stage__step">3</span>
-            <div class="stage__meta">
-              <span class="stage__title">다운로드</span>
-              <span class="stage__copy">결과 저장 및 키워드 분석</span>
-            </div>
-          </li>
-        </ol>
-        <div class="stage__status" data-role="stage-status">
-          <div class="stage__status-text" data-role="stage-message">
-            로그인하면 30개의 무료 크레딧이 자동으로 충전됩니다.
-          </div>
-        </div>
-      </section>
-
 
       <div class="login-modal" data-role="login-modal" aria-hidden="true">
         <div class="login-modal__backdrop" data-action="close-login" aria-hidden="true"></div>
