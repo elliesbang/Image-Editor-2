@@ -900,6 +900,33 @@ function renderAdminDashboardPage(config: { adminEmail: string }) {
             </div>
             <p class="form-status" data-role="period-status" aria-live="polite"></p>
           </form>
+          <div class="card" data-role="period-history-card">
+            <div class="card__toolbar">
+              <div class="card__heading">
+                <h3 class="card__title" id="panel-period-history-heading">최근 저장 내역</h3>
+                <p class="card__caption">최대 30개의 저장 이력이 보관됩니다.</p>
+              </div>
+              <button type="button" class="btn btn--ghost" data-action="refresh-period-history">
+                <i class="ri-refresh-line" aria-hidden="true"></i>
+                <span>새로고침</span>
+              </button>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" aria-describedby="panel-period-history-heading">
+                <thead>
+                  <tr>
+                    <th scope="col">저장일시</th>
+                    <th scope="col">시작일</th>
+                    <th scope="col">종료일</th>
+                    <th scope="col">저장자</th>
+                    <th scope="col">관리</th>
+                  </tr>
+                </thead>
+                <tbody data-role="period-history-tbody"></tbody>
+              </table>
+              <p class="empty" data-role="period-history-empty" hidden>저장 내역이 없습니다.</p>
+            </div>
+          </div>
         </section>
 
         <section class="panel" data-panel="users" aria-labelledby="panel-users-heading">
@@ -2172,6 +2199,74 @@ function mapPeriodHistoryToSummaries(history: MichinaPeriodHistoryItem[]): Chall
   })
 }
 
+async function fetchDashboardPeriodHistory(
+  env: Bindings,
+  options: { db?: D1Database | null } = {},
+): Promise<ChallengePeriodSummary[]> {
+  let history: ChallengePeriodSummary[] = []
+  let db: D1Database | null = options.db ?? null
+  if (!db) {
+    try {
+      db = getMichinaDatabase(env)
+    } catch (error) {
+      console.warn('[admin] Michina database binding is not configured; falling back to KV period history', error)
+    }
+  }
+
+  if (db) {
+    try {
+      history = await listChallengePeriodsFromDb(db)
+    } catch (error) {
+      console.error('[admin] Failed to load challenge period history from D1', error)
+      history = []
+    }
+  }
+
+  if (history.length === 0) {
+    const fallback = await listMichinaPeriodHistory(env)
+    history = mapPeriodHistoryToSummaries(fallback)
+  }
+
+  return history
+}
+
+async function deleteDashboardPeriodHistoryEntry(env: Bindings, updatedAt: string) {
+  let removed = false
+  let db: D1Database | null = null
+  try {
+    db = getMichinaDatabase(env)
+  } catch (error) {
+    console.warn('[admin] Michina database binding is not configured; removing history from KV only', error)
+  }
+
+  if (db) {
+    try {
+      const entries = await listChallengePeriodsFromDb(db)
+      const target = entries.find((entry) => entry.updatedAt === updatedAt)
+      if (target && Number.isFinite(Number(target.id))) {
+        await deleteDashboardChallengePeriod(db, Number(target.id))
+        removed = true
+      }
+    } catch (error) {
+      console.error('[admin] Failed to remove challenge period history from D1', error)
+    }
+  }
+
+  const history = await listMichinaPeriodHistory(env)
+  const filtered = history.filter((item) => item.updatedAt !== updatedAt)
+  if (filtered.length !== history.length) {
+    removed = true
+    if (filtered.length > 0) {
+      await kvPut(env, MICHINA_PERIOD_HISTORY_KEY, JSON.stringify(filtered))
+    } else {
+      await kvDelete(env, MICHINA_PERIOD_HISTORY_KEY)
+    }
+  }
+
+  const nextHistory = await fetchDashboardPeriodHistory(env, { db: db ?? undefined })
+  return { removed, history: nextHistory }
+}
+
 async function saveMichinaPeriodRecord(
   env: Bindings,
   data: { start: string; end: string; updatedBy?: string; updatedAt?: string },
@@ -2668,7 +2763,8 @@ app.get('/api/admin/dashboard/periods', async (c) => {
       })
     }
   }
-  return c.json({ period })
+  const history = await fetchDashboardPeriodHistory(c.env, { db: db ?? undefined })
+  return c.json({ period, history })
 })
 
 app.post('/api/admin/dashboard/periods', async (c) => {
@@ -2730,7 +2826,46 @@ app.post('/api/admin/dashboard/periods', async (c) => {
       updatedAt: record.updatedAt,
     })
   }
-  return c.json({ success: true, period })
+  const history = await fetchDashboardPeriodHistory(c.env, { db: db ?? undefined })
+  return c.json({ success: true, period, history })
+})
+
+app.get('/api/admin/dashboard/period-history', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', history: [] }, 401)
+  }
+  const history = await fetchDashboardPeriodHistory(c.env)
+  return c.json({ history })
+})
+
+app.delete('/api/admin/dashboard/period-history', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, error: 'UNAUTHORIZED' }, 401)
+  }
+
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ success: false, error: 'INVALID_JSON' }, 400)
+  }
+
+  const updatedAt = typeof (payload as { updatedAt?: unknown }).updatedAt === 'string'
+    ? ((payload as { updatedAt: string }).updatedAt || '').trim()
+    : ''
+
+  if (!updatedAt) {
+    return c.json({ success: false, error: 'INVALID_UPDATED_AT' }, 400)
+  }
+
+  const { removed, history } = await deleteDashboardPeriodHistoryEntry(c.env, updatedAt)
+  if (!removed) {
+    return c.json({ success: false, error: 'NOT_FOUND', history }, 404)
+  }
+
+  return c.json({ success: true, history })
 })
 
 app.get('/api/admin/dashboard/users', async (c) => {
