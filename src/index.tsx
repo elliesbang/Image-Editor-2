@@ -1848,6 +1848,22 @@ async function saveMichinaPeriodRow(
     .run()
 }
 
+function mapMichinaPeriodToDashboardPeriod(record: { start: string; end: string; updatedAt?: string | null }) {
+  const start = record.start.trim()
+  const end = record.end.trim()
+  const updatedAt = record.updatedAt && record.updatedAt.trim() ? record.updatedAt.trim() : new Date().toISOString()
+  const period: MichinaDashboardPeriod = {
+    id: 0,
+    startDate: start,
+    endDate: end,
+    startDateTime: buildStartOfDayTimestamp(start),
+    endDateTime: buildEndOfDayTimestamp(end),
+    status: 'active',
+    createdAt: updatedAt,
+  }
+  return period
+}
+
 async function getLatestMichinaPeriod(db: D1Database): Promise<MichinaDashboardPeriod | null> {
   await ensureMichinaPeriodsTable(db)
   const row = await db
@@ -2628,20 +2644,31 @@ app.get('/api/admin/dashboard/periods', async (c) => {
   if (!adminEmail) {
     return c.json({ error: 'UNAUTHORIZED', period: null }, 401)
   }
-  let db: D1Database
+  let period: MichinaDashboardPeriod | null = null
+  let db: D1Database | null = null
   try {
     db = getMichinaDatabase(c.env)
   } catch (error) {
-    console.error('[admin] Michina database binding is not configured', error)
-    return c.json({ error: 'DATABASE_NOT_CONFIGURED', period: null }, 500)
+    console.warn('[admin] Michina database binding is not configured; falling back to KV period record', error)
   }
-  try {
-    const period = await getLatestMichinaPeriod(db)
-    return c.json({ period })
-  } catch (error) {
-    console.error('[admin] Failed to load michina dashboard period', error)
-    return c.json({ error: 'DATABASE_ERROR', period: null }, 500)
+  if (db) {
+    try {
+      period = await getLatestMichinaPeriod(db)
+    } catch (error) {
+      console.error('[admin] Failed to load michina dashboard period', error)
+    }
   }
+  if (!period) {
+    const fallback = await getMichinaPeriodRecord(c.env)
+    if (fallback) {
+      period = mapMichinaPeriodToDashboardPeriod({
+        start: fallback.start,
+        end: fallback.end,
+        updatedAt: fallback.updatedAt,
+      })
+    }
+  }
+  return c.json({ period })
 })
 
 app.post('/api/admin/dashboard/periods', async (c) => {
@@ -2671,25 +2698,39 @@ app.post('/api/admin/dashboard/periods', async (c) => {
   if (endDate < startDate) {
     return c.json({ success: false, error: 'END_BEFORE_START' }, 400)
   }
-  let db: D1Database
+  let period: MichinaDashboardPeriod | null = null
+  let db: D1Database | null = null
   try {
     db = getMichinaDatabase(c.env)
   } catch (error) {
-    console.error('[admin] Michina database binding is not configured', error)
-    return c.json({ success: false, error: 'DATABASE_NOT_CONFIGURED' }, 500)
+    console.warn('[admin] Michina database binding is not configured; saving period via KV fallback', error)
   }
-  try {
-    await saveMichinaPeriodRow(db, {
-      startDateTime: buildStartOfDayTimestamp(startDate),
-      endDateTime: buildEndOfDayTimestamp(endDate),
-      status: 'active',
+  if (db) {
+    try {
+      await saveMichinaPeriodRow(db, {
+        startDateTime: buildStartOfDayTimestamp(startDate),
+        endDateTime: buildEndOfDayTimestamp(endDate),
+        status: 'active',
+      })
+      period = await getLatestMichinaPeriod(db)
+    } catch (error) {
+      console.error('[admin] Failed to save michina dashboard period via D1; attempting KV fallback', error)
+      period = null
+    }
+  }
+  if (!period) {
+    const record = await saveMichinaPeriodRecord(c.env, {
+      start: startDate,
+      end: endDate,
+      updatedBy: adminEmail,
     })
-    const period = await getLatestMichinaPeriod(db)
-    return c.json({ success: true, period })
-  } catch (error) {
-    console.error('[admin] Failed to save michina dashboard period', error)
-    return c.json({ success: false, error: 'DATABASE_ERROR' }, 500)
+    period = mapMichinaPeriodToDashboardPeriod({
+      start: record.start,
+      end: record.end,
+      updatedAt: record.updatedAt,
+    })
   }
+  return c.json({ success: true, period })
 })
 
 app.get('/api/admin/dashboard/users', async (c) => {
