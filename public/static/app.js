@@ -5126,9 +5126,10 @@ function updateOperationAvailability() {
     if (operation === 'svg') return
     if (operation === 'resize') {
       button.disabled = isProcessing || !hasResizeSelection || !resizeValue
-    } else {
-      button.disabled = isProcessing || (!hasUploadSelection && !hasResultSelection)
+      return
     }
+
+    button.disabled = isProcessing || !hasUploadSelection
   })
 
   if (elements.uploadDeleteSelected instanceof HTMLButtonElement) {
@@ -6588,10 +6589,12 @@ function refineBoundsFromMask(mask, width, height, bounds) {
   const minColumnCoverage = Math.max(1, Math.floor((bottom - top + 1) * 0.015))
 
   let refinedTop = top
+  let firstForegroundRow = null
   for (let y = top; y <= bottom; y += 1) {
     let count = 0
     for (let x = left; x <= right; x += 1) {
       if (mask[y * width + x]) {
+        if (firstForegroundRow === null) firstForegroundRow = y
         count += 1
         if (count >= minRowCoverage) break
       }
@@ -6601,12 +6604,17 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       break
     }
   }
+  if (refinedTop === top && firstForegroundRow !== null) {
+    refinedTop = firstForegroundRow
+  }
 
   let refinedBottom = bottom
+  let lastForegroundRow = null
   for (let y = bottom; y >= refinedTop; y -= 1) {
     let count = 0
     for (let x = left; x <= right; x += 1) {
       if (mask[y * width + x]) {
+        if (lastForegroundRow === null) lastForegroundRow = y
         count += 1
         if (count >= minRowCoverage) break
       }
@@ -6616,12 +6624,17 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       break
     }
   }
+  if (refinedBottom === bottom && lastForegroundRow !== null) {
+    refinedBottom = lastForegroundRow
+  }
 
   let refinedLeft = left
+  let firstForegroundColumn = null
   for (let x = left; x <= right; x += 1) {
     let count = 0
     for (let y = refinedTop; y <= refinedBottom; y += 1) {
       if (mask[y * width + x]) {
+        if (firstForegroundColumn === null) firstForegroundColumn = x
         count += 1
         if (count >= minColumnCoverage) break
       }
@@ -6631,12 +6644,17 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       break
     }
   }
+  if (refinedLeft === left && firstForegroundColumn !== null) {
+    refinedLeft = firstForegroundColumn
+  }
 
   let refinedRight = right
+  let lastForegroundColumn = null
   for (let x = right; x >= refinedLeft; x -= 1) {
     let count = 0
     for (let y = refinedTop; y <= refinedBottom; y += 1) {
       if (mask[y * width + x]) {
+        if (lastForegroundColumn === null) lastForegroundColumn = x
         count += 1
         if (count >= minColumnCoverage) break
       }
@@ -6645,6 +6663,9 @@ function refineBoundsFromMask(mask, width, height, bounds) {
       refinedRight = x
       break
     }
+  }
+  if (refinedRight === right && lastForegroundColumn !== null) {
+    refinedRight = lastForegroundColumn
   }
 
   return {
@@ -6669,11 +6690,6 @@ function detectSubjectBounds(imageData, width, height) {
   const stats = analyzeBackground(imageData, width, height)
   const backgroundLuma = 0.2126 * stats.meanColor.r + 0.7152 * stats.meanColor.g + 0.0722 * stats.meanColor.b
   const mask = new Uint8Array(width * height)
-
-  let minX = width
-  let minY = height
-  let maxX = -1
-  let maxY = -1
 
   const baseColorThresholdSq = Math.max(stats.toleranceSq * 0.6, 1200)
   const relaxedColorThresholdSq = Math.max(stats.relaxedToleranceSq * 0.45, baseColorThresholdSq * 0.85)
@@ -6788,19 +6804,41 @@ function detectSubjectBounds(imageData, width, height) {
       if (isForeground) {
         const maskIndex = y * width + x
         mask[maskIndex] = 1
-        if (x < minX) minX = x
-        if (x > maxX) maxX = x
-        if (y < minY) minY = y
-        if (y > maxY) maxY = y
       }
+    }
+  }
+
+  let workingMask = mask
+  const maskLength = width * height
+  if (maskLength > 0) {
+    workingMask = closeMask(mask, width, height, 1)
+    workingMask = fillMaskHoles(workingMask, width, height)
+    for (let i = 0; i < maskLength; i += 1) {
+      if (mask[i]) {
+        workingMask[i] = 1
+      }
+    }
+  }
+
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!workingMask[y * width + x]) continue
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
     }
   }
 
   if (maxX === -1 || maxY === -1) {
     const fallback = findBoundingBox(imageData, width, height, 235, Math.sqrt(baseColorThresholdSq))
     if (fallback) {
-      const fallbackPadding = Math.round(Math.max(width, height) * 0.02)
-      return expandBounds(fallback, width, height, fallbackPadding)
+      return expandBounds(fallback, width, height, 0)
     }
     return {
       top: 0,
@@ -6817,9 +6855,8 @@ function detectSubjectBounds(imageData, width, height) {
     bottom: Math.min(height - 1, maxY),
   }
 
-  const refined = refineBoundsFromMask(mask, width, height, initialBounds)
-  const padding = Math.max(2, Math.round(Math.min(width, height) * 0.015))
-  return expandBounds(refined, width, height, padding)
+  const refined = refineBoundsFromMask(workingMask, width, height, initialBounds)
+  return expandBounds(refined, width, height, 0)
 }
 
 function cropCanvas(canvas, ctx, bounds) {
@@ -8889,12 +8926,12 @@ async function runOperation(operation) {
       setStatus('리사이즈할 업로드 또는 결과 이미지를 선택해주세요.', 'danger')
       return
     }
-  } else if (uploadIds.length === 0 && resultIds.length === 0) {
-    setStatus('먼저 처리할 업로드 또는 결과 이미지를 선택해주세요.', 'danger')
+  } else if (uploadIds.length === 0) {
+    setStatus('배경 제거와 크롭은 업로드 이미지만 지원합니다. 업로드 이미지를 선택해주세요.', 'danger')
     return
   }
 
-  const targetCount = uploadIds.length + resultIds.length
+  const targetCount = operation === 'resize' ? uploadIds.length + resultIds.length : uploadIds.length
   if (!ensureActionAllowed(operation === 'resize' ? 'resize' : 'operation', { count: Math.max(1, targetCount), gate: 'operations' })) {
     return
   }
@@ -9008,60 +9045,20 @@ async function runOperation(operation) {
         return
       }
 
-      const targets = []
-
-      for (const uploadId of uploadIds) {
-        const upload = state.uploads.find((item) => item.id === uploadId)
-        if (!upload) continue
-        targets.push({ type: 'upload', payload: upload })
-      }
-
-      for (const resultId of resultIds) {
-        const result = state.results.find((item) => item.id === resultId)
-        if (!result) continue
-        targets.push({ type: 'result', payload: result })
-      }
-
-      if (targets.length === 0) {
-        setStatus('먼저 처리할 업로드 또는 결과 이미지를 선택해주세요.', 'danger')
+      if (uploadIds.length === 0) {
+        setStatus('배경 제거와 크롭은 업로드 이미지만 지원합니다. 업로드 이미지를 선택해주세요.', 'danger')
         toggleProcessing(false)
         return
       }
 
-      for (const target of targets) {
-        if (target.type === 'upload') {
-          const upload = target.payload
-          // eslint-disable-next-line no-await-in-loop
-          const result = await handler(upload, [])
-          if (result && result.blob) {
-            processedCount += 1
-            appendResult(upload, result)
-          }
-        } else {
-          const resultItem = target.payload
-          if (!resultItem) {
-            // eslint-disable-next-line no-continue
-            continue
-          }
-
-          const pseudoUpload = {
-            id: resultItem.id,
-            name: resultItem.name,
-            size: resultItem.size,
-            type: resultItem.blob?.type || 'image/png',
-            dataUrl: resultItem.previewDataUrl || resultItem.objectUrl,
-            objectUrl: resultItem.objectUrl,
-            blob: resultItem.blob,
-            width: resultItem.width,
-            height: resultItem.height,
-          }
-          const previousOps = Array.isArray(resultItem.operations) ? [...resultItem.operations] : []
-          // eslint-disable-next-line no-await-in-loop
-          const updated = await handler(pseudoUpload, previousOps)
-          if (updated && updated.blob) {
-            processedCount += 1
-            replaceResult(resultItem, updated)
-          }
+      for (const uploadId of uploadIds) {
+        const upload = state.uploads.find((item) => item.id === uploadId)
+        if (!upload) continue
+        // eslint-disable-next-line no-await-in-loop
+        const result = await handler(upload, [])
+        if (result && result.blob) {
+          processedCount += 1
+          appendResult(upload, result)
         }
       }
     }
