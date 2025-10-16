@@ -1836,7 +1836,10 @@ async function ensureMichinaPeriodsTable(db: D1Database) {
     .run()
 }
 
-async function saveMichinaPeriodRecord(db: D1Database, record: { startDateTime: string; endDateTime: string; status?: string }) {
+async function saveMichinaPeriodRow(
+  db: D1Database,
+  record: { startDateTime: string; endDateTime: string; status?: string },
+) {
   await ensureMichinaPeriodsTable(db)
   const status = record.status && record.status.trim() ? record.status.trim() : 'active'
   await db
@@ -2676,7 +2679,7 @@ app.post('/api/admin/dashboard/periods', async (c) => {
     return c.json({ success: false, error: 'DATABASE_NOT_CONFIGURED' }, 500)
   }
   try {
-    await saveMichinaPeriodRecord(db, {
+    await saveMichinaPeriodRow(db, {
       startDateTime: buildStartOfDayTimestamp(startDate),
       endDateTime: buildEndOfDayTimestamp(endDate),
       status: 'active',
