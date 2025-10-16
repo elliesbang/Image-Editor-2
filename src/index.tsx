@@ -7,6 +7,7 @@ import { Google } from 'arctic'
 import { renderer } from './renderer'
 import { registerAuthRoutes } from '../routes/auth.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
+import SignupPage from './Signup'
 
 type D1Result<T = unknown> = {
   success: boolean
@@ -4682,6 +4683,10 @@ app.get('/admin-dashboard', async (c) => {
     return c.html(renderAdminDashboardUnauthorizedPage('/admin-login/'), 401)
   }
   return c.html(renderAdminDashboardPage({ adminEmail }))
+})
+
+app.get('/signup', (c) => {
+  return c.render(<SignupPage />)
 })
 
 app.get('/', async (c) => {
