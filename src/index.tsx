@@ -7,6 +7,7 @@ import { Google } from 'arctic'
 import { renderer } from './renderer'
 import { registerAuthRoutes } from '../routes/auth.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
+import SignupPage from './SignupPage'
 
 type D1Result<T = unknown> = {
   success: boolean
@@ -4684,6 +4685,10 @@ app.get('/admin-dashboard', async (c) => {
   return c.html(renderAdminDashboardPage({ adminEmail }))
 })
 
+app.get('/signup', (c) => {
+  return c.render(<SignupPage />)
+})
+
 app.get('/', async (c) => {
   const currentYear = new Date().getFullYear()
   const googleClientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim() ?? ''
@@ -4857,6 +4862,19 @@ app.get('/', async (c) => {
               </p>
             </form>
           </section>
+          <footer class="login-modal__footer">
+            <p class="login-modal__signup" role="note">
+              아직 회원이 아니신가요?
+              <a
+                class="login-modal__signup-link"
+                href="/signup"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                회원가입
+              </a>
+            </p>
+          </footer>
         </div>
       </div>
 
