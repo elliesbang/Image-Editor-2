@@ -15,6 +15,7 @@ if (adminEmailLabel instanceof HTMLElement && typeof adminConfig.adminEmail === 
 
 const state = {
   period: null,
+  periodHistory: [],
   users: [],
   logs: [],
 }
@@ -25,6 +26,9 @@ const elements = {
   periodEnd: document.querySelector('[data-role="period-end"]'),
   periodStatus: document.querySelector('[data-role="period-status"]'),
   periodSubmit: document.querySelector('[data-role="period-submit"]'),
+  periodHistoryCard: document.querySelector('[data-role="period-history-card"]'),
+  periodHistoryTbody: document.querySelector('[data-role="period-history-tbody"]'),
+  periodHistoryEmpty: document.querySelector('[data-role="period-history-empty"]'),
   userSearch: document.querySelector('[data-role="user-search"]'),
   userTbody: document.querySelector('[data-role="user-tbody"]'),
   userEmpty: document.querySelector('[data-role="user-empty"]'),
@@ -92,6 +96,16 @@ function setPeriodLoading(isLoading) {
   }
   if (elements.periodSubmit instanceof HTMLButtonElement) {
     elements.periodSubmit.disabled = isLoading
+  }
+}
+
+function setPeriodHistoryLoading(isLoading) {
+  if (elements.periodHistoryCard instanceof HTMLElement) {
+    elements.periodHistoryCard.dataset.state = isLoading ? 'loading' : 'idle'
+  }
+  const refreshButton = document.querySelector('[data-action="refresh-period-history"]')
+  if (refreshButton instanceof HTMLButtonElement) {
+    refreshButton.disabled = isLoading
   }
 }
 
@@ -164,6 +178,59 @@ function renderPeriod(period) {
   } else {
     startInput.value = ''
     endInput.value = ''
+  }
+}
+
+function renderPeriodHistory() {
+  if (!(elements.periodHistoryTbody instanceof HTMLElement)) {
+    return
+  }
+
+  elements.periodHistoryTbody.innerHTML = ''
+
+  if (elements.periodHistoryEmpty instanceof HTMLElement) {
+    if (!state.periodHistory.length) {
+      elements.periodHistoryEmpty.hidden = false
+      elements.periodHistoryEmpty.textContent = '저장 내역이 없습니다.'
+    } else {
+      elements.periodHistoryEmpty.hidden = true
+    }
+  }
+
+  for (const entry of state.periodHistory) {
+    const tr = document.createElement('tr')
+
+    const savedAtCell = document.createElement('td')
+    savedAtCell.textContent = formatDateTime(entry.updatedAt)
+
+    const startCell = document.createElement('td')
+    startCell.textContent = formatDateDisplay(entry.startDate)
+
+    const endCell = document.createElement('td')
+    endCell.textContent = formatDateDisplay(entry.endDate)
+
+    const actorCell = document.createElement('td')
+    actorCell.textContent = entry.updatedBy || entry.savedBy || '—'
+
+    const actionsCell = document.createElement('td')
+    actionsCell.className = 'table-action-cell'
+
+    const deleteButton = document.createElement('button')
+    deleteButton.type = 'button'
+    deleteButton.className = 'table-action table-action--danger'
+    deleteButton.dataset.action = 'delete-period-history'
+    deleteButton.dataset.updatedAt = entry.updatedAt || ''
+    deleteButton.innerHTML = '<i class="ri-delete-bin-6-line" aria-hidden="true"></i><span>삭제</span>'
+
+    actionsCell.appendChild(deleteButton)
+
+    tr.appendChild(savedAtCell)
+    tr.appendChild(startCell)
+    tr.appendChild(endCell)
+    tr.appendChild(actorCell)
+    tr.appendChild(actionsCell)
+
+    elements.periodHistoryTbody.appendChild(tr)
   }
 }
 
@@ -266,9 +333,47 @@ async function loadPeriod() {
     const payload = await response.json().catch(() => ({}))
     state.period = payload?.period ?? null
     renderPeriod(state.period)
+    if (Array.isArray(payload?.history)) {
+      state.periodHistory = payload.history
+      renderPeriodHistory()
+    } else if (!state.periodHistory.length) {
+      loadPeriodHistory()
+    }
   } catch (error) {
     console.error('챌린지 기간을 불러오지 못했습니다.', error)
     updatePeriodStatus('기간 정보를 불러오지 못했습니다.', 'error')
+    if (!state.periodHistory.length) {
+      loadPeriodHistory()
+    }
+  }
+}
+
+async function loadPeriodHistory(options = {}) {
+  if (elements.periodHistoryEmpty instanceof HTMLElement) {
+    elements.periodHistoryEmpty.hidden = false
+    elements.periodHistoryEmpty.textContent = '저장 내역을 불러오는 중입니다…'
+  }
+  setPeriodHistoryLoading(true)
+  try {
+    const response = await fetch('/api/admin/dashboard/period-history', { credentials: 'include' })
+    if (response.status === 401) {
+      handleUnauthorized()
+      return
+    }
+    const payload = await response.json().catch(() => ({}))
+    state.periodHistory = Array.isArray(payload?.history) ? payload.history : []
+    renderPeriodHistory()
+    if (options.showToast) {
+      showToast('저장 내역을 갱신했습니다.', 'info')
+    }
+  } catch (error) {
+    console.error('저장 내역을 불러오지 못했습니다.', error)
+    if (elements.periodHistoryEmpty instanceof HTMLElement) {
+      elements.periodHistoryEmpty.hidden = false
+      elements.periodHistoryEmpty.textContent = '저장 내역을 불러오지 못했습니다.'
+    }
+  } finally {
+    setPeriodHistoryLoading(false)
   }
 }
 
@@ -324,6 +429,45 @@ async function loadLogs(options = {}) {
   }
 }
 
+async function deletePeriodHistoryEntry(updatedAt) {
+  if (!updatedAt) {
+    return
+  }
+  const confirmed = window.confirm('선택한 저장 내역을 삭제할까요?')
+  if (!confirmed) {
+    return
+  }
+  setPeriodHistoryLoading(true)
+  try {
+    const response = await fetch('/api/admin/dashboard/period-history', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ updatedAt }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (response.status === 401) {
+      handleUnauthorized()
+      return
+    }
+    if (!response.ok || payload?.success !== true) {
+      const message = typeof payload?.error === 'string' && payload.error === 'NOT_FOUND'
+        ? '이미 삭제된 내역입니다.'
+        : '저장 내역을 삭제하지 못했습니다. 다시 시도해주세요.'
+      showToast(message, 'danger')
+      return
+    }
+    state.periodHistory = Array.isArray(payload?.history) ? payload.history : []
+    renderPeriodHistory()
+    showToast('선택한 저장 내역을 삭제했습니다.', 'success')
+  } catch (error) {
+    console.error('저장 내역 삭제에 실패했습니다.', error)
+    showToast('저장 내역을 삭제하지 못했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  } finally {
+    setPeriodHistoryLoading(false)
+  }
+}
+
 if (elements.periodForm instanceof HTMLFormElement) {
   elements.periodForm.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -360,6 +504,12 @@ if (elements.periodForm instanceof HTMLFormElement) {
       }
       state.period = payload.period ?? null
       renderPeriod(state.period)
+      if (Array.isArray(payload?.history)) {
+        state.periodHistory = payload.history
+        renderPeriodHistory()
+      } else {
+        loadPeriodHistory()
+      }
       updatePeriodStatus('✅ 챌린지 기간이 저장되었습니다', 'success')
       showToast('✅ 챌린지 기간이 저장되었습니다', 'success')
     } catch (error) {
@@ -384,6 +534,13 @@ if (refreshUsersButton instanceof HTMLElement) {
   })
 }
 
+const refreshPeriodHistoryButton = document.querySelector('[data-action="refresh-period-history"]')
+if (refreshPeriodHistoryButton instanceof HTMLElement) {
+  refreshPeriodHistoryButton.addEventListener('click', () => {
+    loadPeriodHistory({ showToast: true })
+  })
+}
+
 const refreshLogsButton = document.querySelector('[data-action="refresh-logs"]')
 if (refreshLogsButton instanceof HTMLElement) {
   refreshLogsButton.addEventListener('click', () => {
@@ -400,9 +557,27 @@ navButtons.forEach((button) => {
   })
 })
 
+if (elements.periodHistoryTbody instanceof HTMLElement) {
+  elements.periodHistoryTbody.addEventListener('click', (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+    const button = target.closest('[data-action="delete-period-history"]')
+    if (!(button instanceof HTMLButtonElement)) {
+      return
+    }
+    const updatedAt = button.dataset.updatedAt || ''
+    if (updatedAt) {
+      deletePeriodHistoryEntry(updatedAt)
+    }
+  })
+}
+
 showSection('period')
 renderUsers()
 renderLogs()
+renderPeriodHistory()
 
 loadPeriod()
 loadUsers()
@@ -412,5 +587,6 @@ window.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     loadUsers()
     loadLogs()
+    loadPeriodHistory()
   }
 })
