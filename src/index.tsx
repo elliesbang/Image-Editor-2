@@ -689,17 +689,28 @@ function resolveGoogleRedirectUri(c: Context<{ Bindings: Bindings }>) {
   if (configured) {
     return configured
   }
+
+  try {
+    const url = new URL(c.req.url)
+    url.pathname = '/api/auth/callback/google'
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch (error) {
+    console.warn('Failed to infer Google redirect URI from request URL', error)
+  }
+
   return DEFAULT_GOOGLE_REDIRECT_URI
 }
 
-function createGoogleClient(env: Bindings) {
+function createGoogleClient(env: Bindings, redirectUri?: string) {
   const clientId = env.GOOGLE_CLIENT_ID?.trim()
   const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim()
   if (!clientId || !clientSecret) {
     return null
   }
-  const redirectUri = env.GOOGLE_REDIRECT_URI?.trim() || DEFAULT_GOOGLE_REDIRECT_URI
-  return new Google(clientId, clientSecret, redirectUri)
+  const resolvedRedirectUri = (redirectUri ?? env.GOOGLE_REDIRECT_URI ?? DEFAULT_GOOGLE_REDIRECT_URI).trim()
+  return new Google(clientId, clientSecret, resolvedRedirectUri)
 }
 
 function applyCorsHeaders(response: Response) {
@@ -3767,7 +3778,8 @@ app.get('/api/users', async (c) => {
 })
 
 app.get('/api/auth/login/google', (c) => {
-  const googleClient = createGoogleClient(c.env)
+  const redirectUri = resolveGoogleRedirectUri(c)
+  const googleClient = createGoogleClient(c.env, redirectUri)
   if (!googleClient) {
     return applyCorsHeaders(c.text('Google OAuth credentials are not configured.', 500))
   }
@@ -3793,7 +3805,8 @@ app.get('/api/auth/login/google', (c) => {
 })
 
 app.get('/api/auth/callback/google', async (c) => {
-  const googleClient = createGoogleClient(c.env)
+  const redirectUri = resolveGoogleRedirectUri(c)
+  const googleClient = createGoogleClient(c.env, redirectUri)
   if (!googleClient) {
     return applyCorsHeaders(c.text('Google OAuth credentials are not configured.', 500))
   }
