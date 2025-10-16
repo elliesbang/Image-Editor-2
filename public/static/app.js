@@ -75,7 +75,7 @@ const GOOGLE_SIGNIN_TEXT = {
   initializing: 'Google 로그인 준비 중…',
   loading: 'Google 계정을 확인하는 중…',
   disabled: 'Google 로그인 준비 중',
-  error: 'Google 로그인 다시 시도',
+  error: 'Google 로그인',
   retrying: 'Google 로그인 자동 재시도 준비 중…',
 }
 
@@ -2098,7 +2098,7 @@ function setGoogleButtonState(state = 'idle', labelOverride) {
   button.setAttribute('aria-label', label)
 
   const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
-  const shouldDisable = isPending || state === 'disabled' || state === 'error'
+  const shouldDisable = isPending || state === 'disabled'
 
   button.disabled = shouldDisable
   if (shouldDisable) {
@@ -2223,7 +2223,7 @@ async function prefetchGoogleClient() {
     setGoogleLoginHelper('', 'muted')
   } catch (error) {
     console.warn('Google 로그인 초기화에 실패했습니다.', error)
-    setGoogleButtonState('error', 'Google 로그인 다시 시도')
+    setGoogleButtonState('error', 'Google 로그인')
     setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
   }
 }
@@ -5326,7 +5326,7 @@ async function handleGoogleLogin(event) {
     console.error('Google 로그인 초기화 중 오류', error)
     setGoogleLoginHelper('Google 로그인 준비 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
     setStatus('Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
-    setGoogleButtonState('error', 'Google 로그인 다시 시도')
+    setGoogleButtonState('error', 'Google 로그인')
   }
 }
 
