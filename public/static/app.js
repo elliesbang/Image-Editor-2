@@ -7622,7 +7622,7 @@ function displayAnalysisFor(target) {
   const keywords = Array.isArray(data.keywords)
     ? data.keywords.map((keyword) => (typeof keyword === 'string' ? keyword.trim() : '')).filter(Boolean)
     : []
-  const keywordText = keywords.join(', ')
+  const keywordText = keywords.join('\n')
   if (keywordResult) {
     keywordResult.hidden = false
   }
@@ -7706,60 +7706,6 @@ function describeSaturation(value) {
   if (value >= 0.45) return '중간 채도'
   if (value >= 0.2) return '저채도'
   return '무채색'
-}
-
-function greatestCommonDivisor(a, b) {
-  const x = Math.abs(Math.round(a))
-  const y = Math.abs(Math.round(b))
-  if (y === 0) return x || 1
-  return greatestCommonDivisor(y, x % y)
-}
-
-function formatAspectRatio(width, height) {
-  if (!width || !height) return '1:1'
-  const ratio = width / height
-  const presets = [
-    { label: '1:1', value: 1 },
-    { label: '5:4', value: 5 / 4 },
-    { label: '4:3', value: 4 / 3 },
-    { label: '3:2', value: 3 / 2 },
-    { label: '16:10', value: 16 / 10 },
-    { label: '16:9', value: 16 / 9 },
-    { label: '21:9', value: 21 / 9 },
-    { label: '2:1', value: 2 },
-    { label: '9:16', value: 9 / 16 },
-    { label: '4:5', value: 4 / 5 },
-    { label: '3:4', value: 3 / 4 },
-  ]
-
-  let best = presets[0]
-  let bestDiff = Math.abs(ratio - presets[0].value)
-
-  for (const preset of presets) {
-    const diff = Math.abs(ratio - preset.value)
-    if (diff < bestDiff) {
-      best = preset
-      bestDiff = diff
-    }
-  }
-
-  if (bestDiff <= 0.08) {
-    return best.label
-  }
-
-  const divisor = greatestCommonDivisor(width, height) || 1
-  let simplifiedW = Math.round(width / divisor)
-  let simplifiedH = Math.round(height / divisor)
-
-  while ((simplifiedW > 20 || simplifiedH > 20) && simplifiedW > 0 && simplifiedH > 0) {
-    simplifiedW = Math.round(simplifiedW / 2)
-    simplifiedH = Math.round(simplifiedH / 2)
-  }
-
-  simplifiedW = Math.max(1, simplifiedW)
-  simplifiedH = Math.max(1, simplifiedH)
-
-  return `${simplifiedW}:${simplifiedH}`
 }
 
 function prepareAnalysisSurface(sourceCanvas, sourceCtx) {
@@ -7942,7 +7888,6 @@ function analyzeCanvasForKeywords(canvas, ctx) {
   const orientation = width > height * 1.2 ? '가로형' : height > width * 1.2 ? '세로형' : '균형형'
   const brightnessLabel = describeBrightness(avgBrightness)
   const saturationLabel = describeSaturation(avgSaturation)
-  const ratioLabel = formatAspectRatio(width, height)
   const contrastRange = maxBrightness - minBrightness
 
   const temperatureLabel =
@@ -7998,7 +7943,7 @@ function analyzeCanvasForKeywords(canvas, ctx) {
     균형형: '정방형 구도',
   }
   addKeyword(orientationKeywordMap[orientation] || `${orientation} 구도`)
-  addKeyword(`비율 ${ratioLabel}`)
+  addKeyword('안정적인 화면 구성')
 
   const brightnessKeywordMap = {
     '매우 밝음': '강한 하이라이트 조명',
@@ -8170,7 +8115,7 @@ function analyzeCanvasForKeywords(canvas, ctx) {
         ? '부드러운 그라데이션이 자연스럽고 우아한 인상을 줍니다.'
         : '질감이 균형 잡혀 다양한 용도에 활용하기 좋습니다.'
 
-  const summary = `${orientationSummary} (${ratioLabel}) 구성에 ${mainColorTitle}을 활용한 ${
+  const summary = `${orientationSummary} 구성에 ${mainColorTitle}을 활용한 ${
     brightnessKeywordMap[brightnessLabel] || brightnessLabel
   } 이미지입니다. ${temperatureLabel} 분위기와 ${paletteSentence} ${transparencySentence} ${textureSentence} 주요 키워드: ${finalKeywords
     .slice(0, 6)
@@ -8517,7 +8462,7 @@ async function copyAnalysisToClipboard() {
     return
   }
 
-  const keywordText = keywords.join(', ')
+  const keywordText = keywords.join('\n')
   const textarea =
     elements.analysisKeywordTextarea instanceof HTMLTextAreaElement ? elements.analysisKeywordTextarea : null
 
