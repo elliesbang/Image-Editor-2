@@ -1,301 +1,121 @@
-import { FormEvent, useMemo, useState } from "react";
+import { useState } from "react";
 import GoogleLoginButton from "../components/GoogleLoginButton";
 
-const COLORS = {
-  accent: "#fef568",
-  backdrop: "#f5eee9",
-  text: "#404040",
-  google: "#d9d9d9",
-  overlay: "rgba(64, 64, 64, 0.35)",
-};
-
 export default function LoginPage() {
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState("");
 
-  const typographyStyle = useMemo(
-    () => ({
-      fontFamily: "sans-serif",
-      color: COLORS.text,
-    }),
-    [],
-  );
-
-  const handleOpenModal = () => {
-    console.log("🔓 로그인 모달을 열었습니다.");
-    setIsModalOpen(true);
+  const handleSendCode = () => {
+    if (!email) {
+      alert("이메일을 입력해주세요.");
+      return;
+    }
+    // ✅ 이메일 인증 코드 발송 로직 (임시 알림)
+    alert(`인증 코드가 ${email}로 전송되었습니다.`);
+    setCodeSent(true);
   };
 
-  const handleCloseModal = () => {
-    console.log("🔒 로그인 모달을 닫았습니다.");
-    setIsModalOpen(false);
-  };
-
-  const handleEmailLogin = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    console.log(`✉️ 이메일 로그인 시도 - email: ${email}`);
-  };
-
-  const handleSignUpClick = () => {
-    console.log("🧸 회원가입 페이지로 이동합니다.");
-  };
-
-  const handleMichinaLogin = () => {
-    console.log("🌟 미치나 로그인 버튼이 클릭되었습니다.");
-  };
-
-  const handleGoogleLogin = () => {
-    console.log("🔍 Google 로그인 버튼이 클릭되었습니다.");
-
-    const googleButton = document.querySelector<HTMLDivElement>(
-      "#google-login-button div[role='button']",
-    );
-
-    if (googleButton) {
-      googleButton.click();
+  const handleVerifyCode = () => {
+    if (code === "123456") {
+      alert("이메일 로그인 성공!");
+      // ✅ 로그인 처리 로직 (예: 세션 저장)
     } else {
-      console.warn("⚠️ Google 로그인 버튼이 아직 준비되지 않았습니다.");
+      alert("인증 코드가 올바르지 않습니다.");
     }
   };
 
   return (
     <div
       style={{
-        ...typographyStyle,
         minHeight: "100vh",
-        background: COLORS.backdrop,
         display: "flex",
-        alignItems: "center",
+        flexDirection: "column",
         justifyContent: "center",
-        padding: "24px",
+        alignItems: "center",
+        backgroundColor: "#fffdf2",
       }}
     >
-      <button
-        onClick={handleOpenModal}
+      <h2 style={{ marginBottom: "30px", color: "#333" }}>로그인</h2>
+
+      {/* ✅ 이메일 로그인 영역 */}
+      <div
         style={{
-          ...typographyStyle,
-          background: COLORS.accent,
-          border: "none",
-          borderRadius: "999px",
-          padding: "14px 32px",
-          fontSize: "1rem",
-          fontWeight: 600,
-          cursor: "pointer",
-          boxShadow: "0 10px 20px rgba(0, 0, 0, 0.12)",
-          transition: "transform 0.2s ease, box-shadow 0.2s ease",
-        }}
-        onMouseEnter={(event) => {
-          event.currentTarget.style.transform = "translateY(-2px)";
-          event.currentTarget.style.boxShadow = "0 12px 24px rgba(0, 0, 0, 0.18)";
-        }}
-        onMouseLeave={(event) => {
-          event.currentTarget.style.transform = "translateY(0)";
-          event.currentTarget.style.boxShadow = "0 10px 20px rgba(0, 0, 0, 0.12)";
+          background: "#fff",
+          borderRadius: "12px",
+          padding: "30px",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
+          width: "280px",
+          textAlign: "center",
         }}
       >
-        엘리의 방 로그인
-      </button>
-
-      {isModalOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
+        <p style={{ fontWeight: "bold", marginBottom: "10px" }}>이메일로 로그인</p>
+        <input
+          type="email"
+          placeholder="이메일 주소를 입력하세요"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
           style={{
-            position: "fixed",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "24px",
-            background: COLORS.overlay,
-            zIndex: 999,
+            width: "100%",
+            padding: "10px",
+            borderRadius: "6px",
+            border: "1px solid #ddd",
+            marginBottom: "10px",
           }}
-        >
-          <div
+        />
+        {codeSent ? (
+          <>
+            <input
+              type="text"
+              placeholder="6자리 인증 코드 입력"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px",
+                borderRadius: "6px",
+                border: "1px solid #ddd",
+                marginBottom: "10px",
+              }}
+            />
+            <button
+              onClick={handleVerifyCode}
+              style={{
+                backgroundColor: "#fef568",
+                border: "none",
+                borderRadius: "6px",
+                padding: "10px 20px",
+                width: "100%",
+                fontWeight: "bold",
+                cursor: "pointer",
+              }}
+            >
+              인증하기
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={handleSendCode}
             style={{
-              ...typographyStyle,
-              position: "relative",
+              backgroundColor: "#fef568",
+              border: "none",
+              borderRadius: "6px",
+              padding: "10px 20px",
               width: "100%",
-              maxWidth: "420px",
-              background: "linear-gradient(145deg, #fffef2, " + COLORS.backdrop + ")",
-              borderRadius: "26px",
-              boxShadow: "0 28px 64px rgba(0, 0, 0, 0.18)",
-              padding: "36px 32px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "24px",
+              fontWeight: "bold",
+              cursor: "pointer",
             }}
           >
-            <button
-              aria-label="로그인 창 닫기"
-              onClick={handleCloseModal}
-              style={{
-                position: "absolute",
-                top: "18px",
-                right: "18px",
-                background: "transparent",
-                border: "none",
-                fontSize: "20px",
-                cursor: "pointer",
-                color: COLORS.text,
-              }}
-            >
-              ×
-            </button>
+            6자리 인증 코드 받기
+          </button>
+        )}
+      </div>
 
-            <header style={{ textAlign: "center" }}>
-              <h2
-                style={{
-                  margin: 0,
-                  fontSize: "1.5rem",
-                  fontWeight: 700,
-                }}
-              >
-                엘리의 방에 오신 것을 환영해요
-              </h2>
-              <p style={{ margin: "8px 0 0", fontSize: "0.95rem", color: "#5c5c5c" }}>
-                따스한 노랑빛 속에서 마음 편히 로그인해보세요.
-              </p>
-            </header>
-
-            <section
-              style={{
-                background: "rgba(255, 255, 255, 0.85)",
-                borderRadius: "18px",
-                padding: "22px",
-                boxShadow: "inset 0 0 0 1px rgba(0, 0, 0, 0.04)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "14px",
-              }}
-            >
-              <div>
-                <h3 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 600 }}>이메일 로그인</h3>
-                <p style={{ margin: "6px 0 0", fontSize: "0.85rem", color: "#5c5c5c" }}>
-                  이메일과 비밀번호를 입력하고 로그인 버튼을 눌러주세요.
-                </p>
-              </div>
-
-              <form onSubmit={handleEmailLogin} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "0.85rem" }}>
-                  이메일
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    placeholder="you@example.com"
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: "12px",
-                      border: "1px solid rgba(0,0,0,0.08)",
-                      fontSize: "0.95rem",
-                      color: COLORS.text,
-                      background: "rgba(255, 255, 255, 0.9)",
-                    }}
-                  />
-                </label>
-
-                <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "0.85rem" }}>
-                  비밀번호
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    placeholder="비밀번호를 입력하세요"
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: "12px",
-                      border: "1px solid rgba(0,0,0,0.08)",
-                      fontSize: "0.95rem",
-                      color: COLORS.text,
-                      background: "rgba(255, 255, 255, 0.9)",
-                    }}
-                  />
-                </label>
-
-                <button
-                  type="submit"
-                  style={{
-                    marginTop: "4px",
-                    padding: "12px 14px",
-                    borderRadius: "999px",
-                    border: "none",
-                    fontSize: "1rem",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    background: COLORS.accent,
-                    color: COLORS.text,
-                    boxShadow: "0 12px 24px rgba(0, 0, 0, 0.12)",
-                  }}
-                >
-                  로그인
-                </button>
-              </form>
-
-              <a
-                href="#signup"
-                onClick={(event) => {
-                  event.preventDefault();
-                  handleSignUpClick();
-                }}
-                style={{
-                  alignSelf: "center",
-                  marginTop: "2px",
-                  fontSize: "0.85rem",
-                  color: "#6a6a6a",
-                  textDecoration: "underline",
-                  cursor: "pointer",
-                }}
-              >
-                아직 회원이 아니신가요? 회원가입
-              </a>
-            </section>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              <button
-                onClick={handleMichinaLogin}
-                style={{
-                  padding: "14px",
-                  borderRadius: "16px",
-                  border: "none",
-                  fontSize: "1rem",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  background: COLORS.accent,
-                  color: COLORS.text,
-                  boxShadow: "0 16px 28px rgba(254, 245, 104, 0.45)",
-                }}
-              >
-                미치나로 로그인
-              </button>
-
-              <button
-                onClick={handleGoogleLogin}
-                style={{
-                  padding: "14px",
-                  borderRadius: "16px",
-                  border: "none",
-                  fontSize: "1rem",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  background: COLORS.google,
-                  color: COLORS.text,
-                  boxShadow: "0 12px 26px rgba(0, 0, 0, 0.08)",
-                }}
-              >
-                Google 계정으로 로그인
-              </button>
-            </div>
-
-            <div style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
-              <GoogleLoginButton />
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {/* ✅ 구글 로그인 버튼 */}
+      <div style={{ marginTop: "40px", textAlign: "center" }}>
+        <p style={{ color: "#777", marginBottom: "10px" }}>또는 Google로 로그인</p>
+        <GoogleLoginButton />
+      </div>
     </div>
   );
 }
