@@ -5,10 +5,31 @@ import { sendLoginCodeEmail } from '../utils/mail.js'
 import { ensureAuthTables } from '../db/init.js'
 
 const CODE_TTL_MS = 5 * 60 * 1000
+const PASSWORD_ENCODER = new TextEncoder()
 
 function normalizeEmail(input) {
   if (typeof input !== 'string') return ''
   return input.trim().toLowerCase()
+}
+
+function toHex(bytes) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function hashPassword(password) {
+  const data = PASSWORD_ENCODER.encode(password)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return toHex(new Uint8Array(digest))
+}
+
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  if (a.length !== b.length) return false
+  let mismatch = 0
+  for (let i = 0; i < a.length; i += 1) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  }
+  return mismatch === 0
 }
 
 function jsonResponse(body, init = {}) {
@@ -65,6 +86,114 @@ async function ensureUserExists(db, email) {
 }
 
 export function registerAuthRoutes(app) {
+  app.post('/signup', async (c) => {
+    const { DB_MAIN: db } = c.env
+
+    if (!db) {
+      return jsonResponse(
+        { success: false, message: '데이터베이스가 구성되지 않았습니다.' },
+        { status: 500 }
+      )
+    }
+
+    await ensureAuthTables(db)
+
+    let body
+    try {
+      body = await c.req.json()
+    } catch (error) {
+      return jsonResponse({ success: false, message: '잘못된 요청 본문입니다.' }, { status: 400 })
+    }
+
+    const name = typeof body?.name === 'string' ? body.name.trim() : ''
+    const email = normalizeEmail(body?.email)
+    const password = typeof body?.password === 'string' ? body.password : ''
+
+    if (!name || !email || !password) {
+      return jsonResponse(
+        { success: false, message: '이름, 이메일, 비밀번호를 모두 입력해주세요.' },
+        { status: 400 }
+      )
+    }
+
+    const statement = db.prepare('SELECT id FROM users WHERE email = ?').bind(email)
+    const existingUser = (await statement.first?.()) ?? (await statement.all())?.results?.[0]
+    if (existingUser) {
+      return jsonResponse({ success: false, message: '이미 가입된 이메일입니다' }, { status: 409 })
+    }
+
+    const passwordHash = await hashPassword(password)
+
+    await db
+      .prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)')
+      .bind(name, email, passwordHash)
+      .run()
+
+    return jsonResponse({ success: true, message: '회원가입 완료' })
+  })
+
+  app.post('/login', async (c) => {
+    const { DB_MAIN: db } = c.env
+
+    if (!db) {
+      return jsonResponse(
+        { success: false, message: '데이터베이스가 구성되지 않았습니다.' },
+        { status: 500 }
+      )
+    }
+
+    await ensureAuthTables(db)
+
+    let body
+    try {
+      body = await c.req.json()
+    } catch (error) {
+      return jsonResponse({ success: false, message: '잘못된 요청 본문입니다.' }, { status: 400 })
+    }
+
+    const email = normalizeEmail(body?.email)
+    const password = typeof body?.password === 'string' ? body.password : ''
+
+    if (!email || !password) {
+      return jsonResponse(
+        { success: false, message: '이메일과 비밀번호를 입력해주세요.' },
+        { status: 400 }
+      )
+    }
+
+    const statement = db
+      .prepare('SELECT id, password_hash FROM users WHERE email = ?')
+      .bind(email)
+
+    let user = await statement.first?.()
+    if (!user) {
+      const { results } = (await statement.all()) ?? {}
+      if (Array.isArray(results) && results.length > 0) {
+        ;[user] = results
+      }
+    }
+
+    if (!user || typeof user.password_hash !== 'string' || user.password_hash.length === 0) {
+      return jsonResponse(
+        { success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다' },
+        { status: 401 }
+      )
+    }
+
+    const passwordHash = await hashPassword(password)
+
+    if (!timingSafeEqual(user.password_hash, passwordHash)) {
+      return jsonResponse(
+        { success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다' },
+        { status: 401 }
+      )
+    }
+
+    await db.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id).run()
+
+    return jsonResponse({ success: true, message: '로그인 성공' })
+  })
+
   app.post('/auth/request-code', async (c) => {
     const { DB_MAIN: db, SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_FROM } = c.env
 
