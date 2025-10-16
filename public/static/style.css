@@ -1817,6 +1817,7 @@ body.is-modal-open {
   display: none;
   align-items: center;
   justify-content: center;
+  padding: 24px;
   z-index: 80;
 }
 
@@ -1827,68 +1828,158 @@ body.is-modal-open {
 .login-modal__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(8, 13, 28, 0.72);
+  background: rgba(64, 64, 64, 0.4);
   backdrop-filter: blur(6px);
 }
 
 .login-modal__dialog {
   position: relative;
   z-index: 1;
-  width: min(440px, calc(100% - 48px));
-  border-radius: 24px;
-  border: 2px solid #fef568;
-  background: #f5eee9;
-  color: #3f2a00;
-  box-shadow: 0 28px 80px rgba(63, 51, 37, 0.25);
-  padding: 28px;
-  display: grid;
-  gap: 20px;
+  width: min(460px, 100%);
+  border-radius: 28px;
+  background: linear-gradient(145deg, #fffef5 0%, #f5eee9 100%);
+  box-shadow: 0 32px 80px rgba(64, 64, 64, 0.22);
+  padding: 36px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  font-family: 'Pretendard', 'Inter', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
+  color: #404040;
 }
 
-.login-modal__header {
+.login-modal__close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  border: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  color: #404040;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+
+.login-modal__close:hover {
+  background: rgba(255, 255, 255, 0.85);
+  transform: translateY(-1px);
+}
+
+.login-modal__hero {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: center;
-  background: #fef568;
-  border-radius: 20px;
-  margin: -28px -28px 12px;
-  padding: 20px 24px;
-  box-shadow: 0 12px 28px rgba(254, 245, 104, 0.35);
+  text-align: center;
+  gap: 12px;
 }
 
 .login-modal__title {
   margin: 0;
-  font-size: 1.28rem;
-  color: #2f2400;
-}
-
-.login-modal__close {
-  border: none;
-  background: rgba(255, 255, 255, 0.45);
-  color: #2f2400;
-  border-radius: 999px;
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  transition: background var(--transition);
-}
-
-.login-modal__close:hover {
-  background: rgba(255, 255, 255, 0.68);
+  font-size: 1.55rem;
+  font-weight: 700;
 }
 
 .login-modal__subtitle {
   margin: 0;
-  color: rgba(63, 42, 0, 0.72);
-  font-size: 0.95rem;
+  font-size: 0.98rem;
+  color: rgba(64, 64, 64, 0.75);
+}
+
+.login-modal__email-panel {
+  background: rgba(255, 255, 255, 0.94);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: inset 0 0 0 1px rgba(254, 245, 104, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.login-modal__form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.login-modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-modal__label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: rgba(64, 64, 64, 0.85);
+}
+
+.login-modal__input {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(64, 64, 64, 0.15);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 1rem;
+  color: #404040;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.login-modal__input:focus-visible {
+  outline: none;
+  border-color: rgba(254, 245, 104, 0.9);
+  box-shadow: 0 0 0 3px rgba(254, 245, 104, 0.45);
+}
+
+.login-modal__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.login-modal__submit {
+  flex: 1 1 auto;
+  border: none;
+  border-radius: 999px;
+  padding: 14px 18px;
+  font-size: 1rem;
+  font-weight: 700;
+  background: #fef568;
+  color: #404040;
+  cursor: pointer;
+  box-shadow: 0 16px 36px rgba(254, 245, 104, 0.45);
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.login-modal__submit:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 40px rgba(254, 245, 104, 0.5);
+}
+
+.login-modal__resend {
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #6a5d20;
+  background: rgba(254, 245, 104, 0.25);
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+
+.login-modal__resend:hover {
+  background: rgba(254, 245, 104, 0.4);
+  transform: translateY(-1px);
 }
 
 .login-modal__helper {
   margin: 0;
-  font-size: 0.82rem;
-  color: rgba(63, 42, 0, 0.62);
+  font-size: 0.85rem;
+  color: rgba(64, 64, 64, 0.7);
   line-height: 1.5;
 }
 
@@ -1912,131 +2003,124 @@ body.is-modal-open {
   color: rgba(16, 122, 87, 0.9);
 }
 
-.login-modal__actions {
-  display: grid;
+.login-modal__signup {
+  align-self: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: rgba(64, 64, 64, 0.75);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+.login-modal__signup:hover {
+  color: #404040;
+  text-decoration: underline;
+}
+
+.login-modal__divider {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: rgba(64, 64, 64, 0.4);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.login-modal__divider::before,
+.login-modal__divider::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: rgba(64, 64, 64, 0.2);
+}
+
+.login-modal__cta-group {
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
 
-.login-modal__option {
-  width: 100%;
+.login-modal__button {
+  border: none;
   border-radius: 18px;
-  border: 2px solid transparent;
   padding: 16px 18px;
-  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  font-weight: 600;
-  box-shadow: 0 12px 24px rgba(63, 51, 37, 0.12);
-  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition),
-    background var(--transition);
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
 }
 
-.login-modal__option--email {
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  background: linear-gradient(135deg, #fef568 0%, #f9df7d 100%);
-  border-color: #f1c400;
-  color: #2f2400;
-}
-
-.login-modal__option--email:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 18px 32px rgba(241, 196, 0, 0.25);
-}
-
-.login-modal__option--google {
+.login-modal__button--michina {
   background: #fef568;
-  border-color: #f0dd45;
   color: #404040;
-  justify-content: flex-start;
+  box-shadow: 0 20px 40px rgba(254, 245, 104, 0.55);
 }
 
-.login-modal__option--google:hover {
-  background: #fff89b;
-  transform: translateY(-1px);
-  box-shadow: 0 16px 30px rgba(63, 51, 37, 0.2);
-}
-
-.login-modal[data-mode='email'] .login-modal__option--email {
-  box-shadow: 0 18px 32px rgba(241, 196, 0, 0.28);
+.login-modal__button--michina:hover {
   transform: translateY(-2px);
+  box-shadow: 0 24px 48px rgba(254, 245, 104, 0.6);
 }
 
-.login-modal__option .login-modal__icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
-  background: #fef568;
-  display: grid;
-  place-items: center;
-  color: #2f2400;
-  flex-shrink: 0;
-  box-shadow: inset 0 0 0 1px rgba(47, 36, 0, 0.08);
+.login-modal__button--google {
+  background: #dcdcdc;
+  color: #404040;
+  box-shadow: 0 16px 32px rgba(64, 64, 64, 0.12);
 }
 
-.login-modal__option .login-modal__icon i {
-  line-height: 1;
-  font-size: 1.15rem;
+.login-modal__button--google:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 36px rgba(64, 64, 64, 0.15);
 }
 
-.login-modal__option-title {
-  font-size: 1rem;
-  font-weight: 700;
-  flex: 1;
+.login-modal__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  color: inherit;
+  font-size: 1.25rem;
 }
 
-.login-modal__option--email .login-modal__option-title {
-  font-size: 1.05rem;
-}
-
-.login-modal__option-copy {
-  font-size: 0.85rem;
-  color: rgba(63, 42, 0, 0.78);
-}
-
-.login-modal__option--email .login-modal__option-copy {
-  align-self: stretch;
-  opacity: 0.85;
+.login-modal__button-text {
+  flex: 1 1 auto;
 }
 
 .login-modal__spinner {
   width: 18px;
   height: 18px;
-  border-radius: 999px;
-  border: 2px solid rgba(47, 36, 0, 0.25);
-  border-top-color: transparent;
-  animation: spin 1s linear infinite;
-  opacity: 0;
-  transition: opacity var(--transition);
-  margin-left: auto;
+  border-radius: 50%;
+  border: 2px solid rgba(64, 64, 64, 0.25);
+  border-top-color: rgba(64, 64, 64, 0.65);
+  animation: spin 0.9s linear infinite;
+  display: none;
 }
 
-.login-modal__option[data-loading='true'] .login-modal__spinner {
-  opacity: 1;
+.login-modal__button[data-loading='true'] .login-modal__spinner {
+  display: inline-flex;
 }
 
-.login-modal__option[data-state='disabled'] {
-  opacity: 0.55;
-  cursor: not-allowed;
+.login-modal__button[data-state='error'] {
+  background: rgba(248, 113, 113, 0.2);
+  color: #b91c1c;
 }
 
-.login-modal__option[data-state='error'] {
-  border-color: rgba(248, 113, 113, 0.55);
-  background: rgba(248, 113, 113, 0.12);
-  color: rgba(153, 27, 27, 0.92);
+.login-modal__button[data-state='retrying'] {
+  background: rgba(254, 245, 104, 0.35);
+  color: #6a5d20;
 }
 
-.login-modal__option[disabled],
-.login-modal__option[data-loading='true'] {
-  pointer-events: none;
-}
-
-.login-modal__option[data-state='retrying'] {
-  border-color: rgba(241, 196, 0, 0.65);
-  background: rgba(254, 245, 104, 0.32);
+.login-modal__button[data-state='disabled'] {
+  background: rgba(220, 220, 220, 0.6);
+  color: rgba(64, 64, 64, 0.6);
 }
 
 @keyframes spin {
@@ -2045,128 +2129,32 @@ body.is-modal-open {
   }
 }
 
-.login-modal__email-panel {
-  display: none;
-  padding: 20px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 2px dashed #fef568;
-  box-shadow: inset 0 0 0 1px rgba(241, 196, 0, 0.15);
+.login-modal__button[disabled],
+.login-modal__button[data-loading='true'] {
+  cursor: not-allowed;
+  opacity: 0.7;
+  transform: none;
+  box-shadow: none;
 }
 
-.login-modal[data-mode='email'] .login-modal__email-panel {
-  display: block;
+.login-modal__button[disabled] .login-modal__spinner,
+.login-modal__button[data-loading='true'] .login-modal__spinner {
+  display: inline-flex;
 }
 
-.login-modal__section-title {
-  margin: 0 0 4px;
-  font-size: 1.05rem;
-  color: #2f2400;
-}
+@media (max-width: 600px) {
+  .login-modal {
+    padding: 16px;
+  }
 
-.login-modal__section-copy {
-  margin: 0 0 16px;
-  font-size: 0.9rem;
-  color: rgba(63, 42, 0, 0.68);
-}
+  .login-modal__dialog {
+    padding: 32px 22px;
+    gap: 24px;
+  }
 
-.login-modal__form {
-  display: grid;
-  gap: 14px;
-}
-
-.login-modal__label {
-  font-size: 0.88rem;
-  color: rgba(63, 42, 0, 0.75);
-}
-
-.login-modal__field-group {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-}
-
-.login-modal__field-group .login-modal__input {
-  flex: 1 1 auto;
-}
-
-.login-modal__field-group .login-modal__submit {
-  flex: 0 0 auto;
-}
-
-.login-modal__input {
-  width: 100%;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1.5px solid rgba(241, 196, 0, 0.55);
-  background: #ffffff;
-  color: #2f2400;
-  font-size: 0.95rem;
-}
-
-.login-modal__input::placeholder {
-  color: rgba(63, 42, 0, 0.45);
-}
-
-.login-modal__input--code {
-  letter-spacing: 0.3em;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.login-modal__input:focus-visible {
-  outline: 2px solid rgba(241, 196, 0, 0.9);
-  outline-offset: 2px;
-}
-
-.login-modal__submit {
-  padding: 12px 18px;
-  border-radius: 12px;
-  border: none;
-  background: #f1c400;
-  color: #2f2400;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform var(--transition), box-shadow var(--transition);
-  white-space: nowrap;
-  box-shadow: 0 12px 20px rgba(241, 196, 0, 0.25);
-}
-
-.login-modal__submit:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 16px 28px rgba(241, 196, 0, 0.35);
-}
-
-.login-modal__code-group {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-}
-
-.login-modal__code-group .login-modal__input {
-  flex: 1 1 auto;
-}
-
-.login-modal__resend {
-  border-radius: 12px;
-  border: 1.5px solid rgba(241, 196, 0, 0.45);
-  background: rgba(254, 245, 104, 0.25);
-  color: #2f2400;
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 10px 16px;
-  cursor: pointer;
-  transition: background var(--transition), border-color var(--transition), transform var(--transition);
-}
-
-.login-modal__resend:hover {
-  background: rgba(254, 245, 104, 0.4);
-  border-color: rgba(241, 196, 0, 0.65);
-  transform: translateY(-1px);
-}
-
-.login-modal__form[data-state='idle'] .login-modal__code-group {
-  display: none;
+  .login-modal__email-panel {
+    padding: 20px;
+  }
 }
 
 .upgrade-modal {
