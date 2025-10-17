@@ -1,8 +1,9 @@
 name = "image-editor-2"
+main = "src/index.ts"
 compatibility_date = "2025-10-12"
 
 [vars]
-# Add environment variables such as AI keys here.
+JWT_SECRET_KEY = "elliesbang_secret_2025"
 
 [[d1_databases]]
 binding = "DB_MAIN"
