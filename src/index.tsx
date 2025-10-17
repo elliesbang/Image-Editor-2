@@ -3778,6 +3778,27 @@ app.get('/api/users', async (c) => {
   return c.json({ users })
 })
 
+app.get('/api/auth/google/config', (c) => {
+  const googleClientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim() ?? ''
+  if (!googleClientId) {
+    const response = c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 503)
+    response.headers.set('Cache-Control', 'no-store')
+    return applyCorsHeaders(response)
+  }
+
+  const redirectUri = resolveGoogleRedirectUri(c)
+  const response = c.json(
+    {
+      clientId: googleClientId,
+      redirectUri,
+      loginUrl: '/api/auth/login/google',
+    },
+    200,
+  )
+  response.headers.set('Cache-Control', 'no-store')
+  return applyCorsHeaders(response)
+})
+
 app.get('/api/auth/login/google', (c) => {
   const redirectUri = resolveGoogleRedirectUri(c)
   const googleClient = createGoogleClient(c.env, redirectUri)

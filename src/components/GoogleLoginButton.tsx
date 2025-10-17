@@ -25,6 +25,16 @@ type GoogleCredentialResponse = {
 const GOOGLE_SDK_SRC = "https://accounts.google.com/gsi/client";
 const GOOGLE_SDK_ID = "google-client-script";
 
+type GoogleConfigResponse = {
+  clientId?: unknown;
+  redirectUri?: unknown;
+  loginUrl?: unknown;
+  error?: unknown;
+};
+
+let cachedGoogleClientId: string | undefined;
+let googleClientIdPromise: Promise<string | undefined> | null = null;
+
 const resolveGoogleClientId = (): string | undefined => {
   if (typeof window !== "undefined" && typeof window.GOOGLE_CLIENT_ID === "string") {
     const trimmed = window.GOOGLE_CLIENT_ID.trim();
@@ -65,6 +75,67 @@ const resolveGoogleClientId = (): string | undefined => {
   }
 
   return undefined;
+};
+
+const fetchGoogleClientId = async (): Promise<string | undefined> => {
+  if (cachedGoogleClientId) {
+    return cachedGoogleClientId;
+  }
+
+  if (!googleClientIdPromise) {
+    const pending = (async () => {
+      const response = await fetch("/api/auth/google/config", {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      let payload: GoogleConfigResponse | null = null;
+      try {
+        payload = (await response.json()) as GoogleConfigResponse;
+      } catch (error) {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        const fallback = response.status >= 500 ? "GOOGLE_CONFIG_FETCH_FAILED" : "GOOGLE_AUTH_NOT_CONFIGURED";
+        const message =
+          typeof payload?.error === "string" && payload.error.trim()
+            ? payload.error.trim()
+            : fallback;
+        throw new Error(message);
+      }
+
+      const clientId = payload && typeof payload.clientId === "string" ? payload.clientId.trim() : "";
+
+      if (!clientId) {
+        throw new Error("GOOGLE_CLIENT_ID_MISSING");
+      }
+
+      if (typeof window !== "undefined") {
+        window.GOOGLE_CLIENT_ID = clientId;
+      }
+
+      return clientId;
+    })();
+
+    googleClientIdPromise = pending
+      .then((clientId) => {
+        cachedGoogleClientId = clientId;
+        return clientId;
+      })
+      .catch((error) => {
+        cachedGoogleClientId = undefined;
+        throw error;
+      })
+      .finally(() => {
+        googleClientIdPromise = null;
+      });
+  }
+
+  return googleClientIdPromise;
 };
 
 export default function GoogleLoginButton() {
@@ -136,41 +207,70 @@ export default function GoogleLoginButton() {
       render();
     };
 
-    const clientId = resolveGoogleClientId();
-    if (!clientId) {
-      console.error(
-        "❌ Google Client ID가 설정되어 있지 않습니다. `.env` 또는 Cloudflare 환경변수에 GOOGLE_CLIENT_ID (또는 VITE_GOOGLE_CLIENT_ID)를 확인하세요.",
-      );
-      alert("Google Client ID가 누락되었습니다. 관리자에게 문의해주세요.");
-      setStatus("error");
-      return () => {
-        disposed = true;
-      };
-    }
+    const prepareClientId = async (): Promise<string | undefined> => {
+      const cachedId = resolveGoogleClientId();
+      if (cachedId) {
+        return cachedId;
+      }
 
-    setStatus("loading");
-
-    const handleLoad = () => {
-      initializeButton(clientId);
-    };
-
-    const handleError = (event: Event) => {
-      if (!disposed) {
-        console.error("❌ Google SDK 로드에 실패했습니다.", event);
-        setStatus("error");
+      try {
+        const fetchedId = await fetchGoogleClientId();
+        return fetchedId;
+      } catch (error) {
+        console.error("❌ Google Client ID를 불러오지 못했습니다.", error);
+        if (!disposed) {
+          const message =
+            error instanceof Error &&
+            (error.message === "GOOGLE_AUTH_NOT_CONFIGURED" || error.message === "GOOGLE_CLIENT_ID_MISSING")
+              ? "현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요."
+              : "Google 로그인 구성을 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.";
+          alert(message);
+          setStatus("error");
+        }
+        return undefined;
       }
     };
 
-    const existingScript =
-      document.querySelector<HTMLScriptElement>("script[data-role='google-sdk']") ||
-      document.getElementById(GOOGLE_SDK_ID);
+    let cleanupScript: HTMLScriptElement | null = null;
+    let loadHandler: (() => void) | null = null;
+    let errorHandler: ((event: Event) => void) | null = null;
 
-    if (window.google?.accounts?.id) {
-      initializeButton(clientId);
-    } else if (existingScript instanceof HTMLScriptElement) {
-      existingScript.addEventListener("load", handleLoad);
-      existingScript.addEventListener("error", handleError);
-    } else {
+    const start = async () => {
+      const clientId = await prepareClientId();
+      if (!clientId || disposed) {
+        return;
+      }
+
+      const handleLoad = () => {
+        initializeButton(clientId);
+      };
+
+      const handleError = (event: Event) => {
+        if (!disposed) {
+          console.error("❌ Google SDK 로드에 실패했습니다.", event);
+          setStatus("error");
+        }
+      };
+
+      const existingScript =
+        document.querySelector<HTMLScriptElement>("script[data-role='google-sdk']") ||
+        document.getElementById(GOOGLE_SDK_ID);
+
+      loadHandler = handleLoad;
+      errorHandler = handleError;
+
+      if (window.google?.accounts?.id) {
+        initializeButton(clientId);
+        return;
+      }
+
+      if (existingScript instanceof HTMLScriptElement) {
+        existingScript.addEventListener("load", handleLoad);
+        existingScript.addEventListener("error", handleError);
+        cleanupScript = existingScript;
+        return;
+      }
+
       const script = document.createElement("script");
       script.id = GOOGLE_SDK_ID;
       script.src = GOOGLE_SDK_SRC;
@@ -179,16 +279,23 @@ export default function GoogleLoginButton() {
       script.addEventListener("load", handleLoad);
       script.addEventListener("error", handleError);
       document.head.appendChild(script);
-    }
+      cleanupScript = script;
+    };
+
+    start();
 
     return () => {
       disposed = true;
-      const script =
+      const script = cleanupScript ||
         document.querySelector<HTMLScriptElement>("script[data-role='google-sdk']") ||
         document.getElementById(GOOGLE_SDK_ID);
       if (script instanceof HTMLScriptElement) {
-        script.removeEventListener("load", handleLoad);
-        script.removeEventListener("error", handleError);
+        if (loadHandler) {
+          script.removeEventListener("load", loadHandler);
+        }
+        if (errorHandler) {
+          script.removeEventListener("error", errorHandler);
+        }
       }
     };
   }, []);
