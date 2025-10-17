@@ -3899,7 +3899,7 @@ app.get('/api/auth/callback/google', async (c) => {
       maxAge: 60 * 60 * 24 * 7,
     })
 
-    const response = c.redirect('/dashboard', 302)
+    const response = c.redirect('/', 302)
     return applyCorsHeaders(response)
   } catch (error) {
     console.error('Google OAuth callback handling failed', error)
