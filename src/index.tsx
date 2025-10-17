@@ -6,6 +6,8 @@ import { sign, verify } from 'hono/jwt'
 import { Google } from 'arctic'
 import { renderer } from './renderer'
 import { registerAuthRoutes } from '../routes/auth.js'
+import { ensureAuthTables } from '../db/init.js'
+import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
 import SignupPage from './Signup'
 
@@ -13,6 +15,10 @@ type D1Result<T = unknown> = {
   success: boolean
   error?: string
   results?: T[]
+  meta?: {
+    last_row_id?: number
+    changes?: number
+  }
 }
 
 type D1PreparedStatement = {
@@ -158,6 +164,47 @@ type MichinaChallengerRecord = {
   challengers: string[]
   updatedAt: string
   updatedBy?: string
+}
+
+function normalizeEmail(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return value.trim().toLowerCase()
+}
+
+function normalizeName(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return value.trim()
+}
+
+async function findUserByEmail(db: D1Database, email: string) {
+  return db
+    .prepare(
+      `SELECT id, email, name
+         FROM users
+        WHERE email = ?`
+    )
+    .bind(email)
+    .first<{ id: number; email: string; name?: string | null }>()
+}
+
+async function createUserCredentials(db: D1Database, userId: number, passwordHash: string) {
+  await db
+    .prepare(
+      `INSERT INTO user_credentials (user_id, password_hash)
+       VALUES (?, ?)`
+    )
+    .bind(userId, passwordHash)
+    .run()
+}
+
+async function grantInitialCredits(db: D1Database, userId: number) {
+  await db
+    .prepare(
+      `INSERT INTO credits (user_id, credits, last_reset)
+       VALUES (?, 30, DATE('now'))`
+    )
+    .bind(userId)
+    .run()
 }
 
 type MichinaPeriodHistoryItem = {
@@ -4707,7 +4754,123 @@ app.get('/admin-dashboard', async (c) => {
 })
 
 app.get('/signup', (c) => {
-  return c.render(<SignupPage />)
+  const url = new URL(c.req.url)
+  const statusParam = url.searchParams.get('status')
+  const status = statusParam === 'success' ? 'success' : undefined
+  const message =
+    status === 'success'
+      ? '회원가입이 완료되었습니다. 로그인 화면에서 가입한 계정으로 로그인해주세요.'
+      : undefined
+
+  return c.render(<SignupPage status={status} message={message} />)
+})
+
+app.post('/signup', async (c) => {
+  const { DB_MAIN: db } = c.env
+
+  if (!db) {
+    return c.render(
+      <SignupPage
+        status="error"
+        message="데이터베이스 구성이 완료되지 않아 회원가입을 진행할 수 없습니다. 잠시 후 다시 시도해주세요."
+      />,
+      500
+    )
+  }
+
+  await ensureAuthTables(db)
+
+  let formBody: Record<string, unknown>
+  try {
+    formBody = await c.req.parseBody()
+  } catch (error) {
+    console.warn('[signup] failed to parse form body', error)
+    return c.render(
+      <SignupPage status="error" message="잘못된 요청입니다. 새로고침 후 다시 시도해주세요." />,
+      400
+    )
+  }
+
+  const rawName = formBody?.name
+  const rawEmail = formBody?.email
+  const rawPassword = formBody?.password
+
+  const name = normalizeName(rawName)
+  const email = normalizeEmail(rawEmail)
+  const password = typeof rawPassword === 'string' ? rawPassword : ''
+
+  const issues: string[] = []
+  if (!name) {
+    issues.push('이름을 입력해주세요.')
+  } else if (name.length > 80) {
+    issues.push('이름은 80자 이내로 입력해주세요.')
+  }
+
+  if (!email) {
+    issues.push('이메일을 입력해주세요.')
+  }
+
+  if (!password) {
+    issues.push('비밀번호를 입력해주세요.')
+  } else if (password.length < 8) {
+    issues.push('비밀번호는 8자 이상 입력해주세요.')
+  }
+
+  if (issues.length > 0) {
+    return c.render(
+      <SignupPage status="error" message={issues.join(' ')} values={{ name, email }} />,
+      400
+    )
+  }
+
+  const existingUser = await findUserByEmail(db, email)
+  if (existingUser) {
+    return c.render(
+      <SignupPage status="error" message="이미 가입된 이메일입니다. 다른 이메일을 사용해주세요." values={{ name, email }} />,
+      400
+    )
+  }
+
+  const passwordHash = await hashCode(password)
+
+  let userId: number | null = null
+  try {
+    const insertUser = await db
+      .prepare(
+        `INSERT INTO users (name, email)
+         VALUES (?, ?)`
+      )
+      .bind(name, email)
+      .run()
+
+    const lastRowId = insertUser?.meta?.last_row_id
+    if (!Number.isFinite(lastRowId)) {
+      throw new Error('USER_INSERT_FAILED')
+    }
+
+    userId = Number(lastRowId)
+
+    await createUserCredentials(db, userId, passwordHash)
+    await grantInitialCredits(db, userId)
+  } catch (error) {
+    console.error('[signup] failed to create user', error)
+    if (userId) {
+      await db.prepare('DELETE FROM user_credentials WHERE user_id = ?').bind(userId).run().catch(() => {})
+      await db.prepare('DELETE FROM credits WHERE user_id = ?').bind(userId).run().catch(() => {})
+      await db.prepare('DELETE FROM users WHERE id = ?').bind(userId).run().catch(() => {})
+    }
+
+    return c.render(
+      <SignupPage
+        status="error"
+        message="회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        values={{ name, email }}
+      />,
+      500
+    )
+  }
+
+  return c.redirect('/signup?status=success', 303)
 })
 
 app.get('/', async (c) => {
