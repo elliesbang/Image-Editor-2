@@ -2189,7 +2189,8 @@ function setGoogleButtonState(state = 'idle', labelOverride) {
   button.setAttribute('aria-label', label)
 
   const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
-  const shouldDisable = isPending || state === 'disabled'
+  const allowInteractionWhilePrefetching = state === 'initializing' && !!runtime.google.prefetchPromise
+  const shouldDisable = (!allowInteractionWhilePrefetching && isPending) || state === 'disabled'
 
   button.disabled = shouldDisable
   if (shouldDisable) {
@@ -2307,16 +2308,31 @@ function updateGoogleProviderAvailability() {
 }
 
 async function prefetchGoogleClient() {
-  try {
-    setGoogleButtonState('initializing')
-    await ensureGoogleClient()
-    setGoogleButtonState('idle')
-    setGoogleLoginHelper('', 'muted')
-  } catch (error) {
-    console.warn('Google 로그인 초기화에 실패했습니다.', error)
-    setGoogleButtonState('error', 'Google 로그인')
-    setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  if (runtime.google.prefetchPromise) {
+    return runtime.google.prefetchPromise
   }
+
+  const pending = ensureGoogleClient()
+    .then((result) => {
+      setGoogleLoginHelper('', 'muted')
+      return result
+    })
+    .catch((error) => {
+      console.warn('Google 로그인 초기화에 실패했습니다.', error)
+      setGoogleButtonState('error', 'Google 로그인')
+      setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+      throw error
+    })
+    .finally(() => {
+      if (runtime.google.prefetchPromise === pending) {
+        runtime.google.prefetchPromise = null
+        updateGoogleProviderAvailability()
+      }
+    })
+
+  runtime.google.prefetchPromise = pending
+  updateGoogleProviderAvailability()
+  return pending
 }
 
 function clearGoogleAutoRetry() {
