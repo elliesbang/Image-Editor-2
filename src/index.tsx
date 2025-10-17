@@ -3810,7 +3810,7 @@ app.get('/api/auth/login/google', (c) => {
   setCookie(c, GOOGLE_OAUTH_STATE_COOKIE, state, {
     httpOnly: true,
     secure: true,
-    sameSite: 'lax',
+    sameSite: 'none',
     path: '/',
     maxAge: 10 * 60,
   })
@@ -3841,11 +3841,11 @@ app.get('/api/auth/callback/google', async (c) => {
   const stateParam = (c.req.query('state') || '').trim()
   const storedState = getCookie(c, GOOGLE_OAUTH_STATE_COOKIE) || ''
   if (!stateParam || !storedState || stateParam !== storedState) {
-    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/' })
+    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'none', secure: true })
     return applyCorsHeaders(c.text('Invalid login state.', 400))
   }
 
-  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/' })
+  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'none', secure: true })
 
   try {
     const tokenSet = await googleClient.validateAuthorizationCode(code)
@@ -3894,7 +3894,7 @@ app.get('/api/auth/callback/google', async (c) => {
     setCookie(c, SESSION_COOKIE_NAME, session, {
       httpOnly: true,
       secure: true,
-      sameSite: 'lax',
+      sameSite: 'none',
       path: '/',
       maxAge: 60 * 60 * 24 * 7,
     })
@@ -3908,12 +3908,12 @@ app.get('/api/auth/callback/google', async (c) => {
 })
 
 app.get('/api/auth/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', sameSite: 'none', secure: true })
   return c.redirect('/', 302)
 })
 
 app.post('/api/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', sameSite: 'none', secure: true })
   return c.json({ success: true })
 })
 
