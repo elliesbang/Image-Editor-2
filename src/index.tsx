@@ -3778,6 +3778,27 @@ app.get('/api/users', async (c) => {
   return c.json({ users })
 })
 
+app.get('/api/auth/google/config', (c) => {
+  const googleClientId = (c.env.VITE_GOOGLE_CLIENT_ID ?? c.env.GOOGLE_CLIENT_ID)?.trim() ?? ''
+  if (!googleClientId) {
+    const response = c.json({ error: 'GOOGLE_AUTH_NOT_CONFIGURED' }, 503)
+    response.headers.set('Cache-Control', 'no-store')
+    return applyCorsHeaders(response)
+  }
+
+  const redirectUri = resolveGoogleRedirectUri(c)
+  const response = c.json(
+    {
+      clientId: googleClientId,
+      redirectUri,
+      loginUrl: '/api/auth/login/google',
+    },
+    200,
+  )
+  response.headers.set('Cache-Control', 'no-store')
+  return applyCorsHeaders(response)
+})
+
 app.get('/api/auth/login/google', (c) => {
   const redirectUri = resolveGoogleRedirectUri(c)
   const googleClient = createGoogleClient(c.env, redirectUri)
@@ -3789,7 +3810,7 @@ app.get('/api/auth/login/google', (c) => {
   setCookie(c, GOOGLE_OAUTH_STATE_COOKIE, state, {
     httpOnly: true,
     secure: true,
-    sameSite: 'lax',
+    sameSite: 'none',
     path: '/',
     maxAge: 10 * 60,
   })
@@ -3820,11 +3841,11 @@ app.get('/api/auth/callback/google', async (c) => {
   const stateParam = (c.req.query('state') || '').trim()
   const storedState = getCookie(c, GOOGLE_OAUTH_STATE_COOKIE) || ''
   if (!stateParam || !storedState || stateParam !== storedState) {
-    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/' })
+    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'none', secure: true })
     return applyCorsHeaders(c.text('Invalid login state.', 400))
   }
 
-  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/' })
+  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'none', secure: true })
 
   try {
     const tokenSet = await googleClient.validateAuthorizationCode(code)
@@ -3873,12 +3894,12 @@ app.get('/api/auth/callback/google', async (c) => {
     setCookie(c, SESSION_COOKIE_NAME, session, {
       httpOnly: true,
       secure: true,
-      sameSite: 'lax',
+      sameSite: 'none',
       path: '/',
       maxAge: 60 * 60 * 24 * 7,
     })
 
-    const response = c.redirect('/dashboard', 302)
+    const response = c.redirect('/', 302)
     return applyCorsHeaders(response)
   } catch (error) {
     console.error('Google OAuth callback handling failed', error)
@@ -3887,12 +3908,12 @@ app.get('/api/auth/callback/google', async (c) => {
 })
 
 app.get('/api/auth/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', sameSite: 'none', secure: true })
   return c.redirect('/', 302)
 })
 
 app.post('/api/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', sameSite: 'none', secure: true })
   return c.json({ success: true })
 })
 

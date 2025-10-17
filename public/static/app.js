@@ -97,6 +97,7 @@ const GOOGLE_RECOVERABLE_ERRORS = new Set([
   'GOOGLE_TOKEN_EXCHANGE_FAILED',
   'GOOGLE_AUTH_UNEXPECTED_ERROR',
   'interaction_required',
+  'GOOGLE_CONFIG_FETCH_FAILED',
 ])
 
 const GOOGLE_POPUP_DISMISSED_ERRORS = new Set([
@@ -118,6 +119,7 @@ const GOOGLE_RETRY_REASON_HINTS = {
   GOOGLE_TOKEN_EXCHANGE_FAILED: 'Google 인증 서버 응답이 지연되고 있습니다.',
   GOOGLE_AUTH_UNEXPECTED_ERROR: 'Google 인증 서버에서 예기치 않은 응답을 받았습니다.',
   interaction_required: 'Google 계정 선택이 필요한 상태입니다.',
+  GOOGLE_CONFIG_FETCH_FAILED: 'Google 로그인 구성을 확인하는 중 문제가 발생했습니다.',
 }
 
 function describeGoogleRetry(reason) {
@@ -289,6 +291,8 @@ const runtime = {
     promptActive: false,
     latestCredential: '',
     prefetchPromise: null,
+    config: null,
+    configPromise: null,
     retryCount: 0,
     cooldownTimer: null,
     cooldownUntil: 0,
@@ -804,13 +808,98 @@ function loadGoogleSdk(timeout = 10000) {
   return googleSdkPromise
 }
 
+function fetchGoogleLoginConfig() {
+  if (runtime.google.config?.clientId) {
+    return Promise.resolve(runtime.google.config)
+  }
+
+  if (runtime.google.configPromise) {
+    return runtime.google.configPromise
+  }
+
+  runtime.google.configPromise = fetch('/api/auth/google/config', {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      Accept: 'application/json',
+    },
+  })
+    .then(async (response) => {
+      let payload = null
+      try {
+        payload = await response.json()
+      } catch (error) {
+        payload = null
+      }
+
+      if (!response.ok) {
+        const fallbackCode = response.status >= 500 ? 'GOOGLE_CONFIG_FETCH_FAILED' : 'GOOGLE_AUTH_NOT_CONFIGURED'
+        const errorCode =
+          payload && typeof payload.error === 'string' && payload.error.trim()
+            ? payload.error.trim()
+            : fallbackCode
+        throw new Error(errorCode)
+      }
+
+      const clientId =
+        payload && typeof payload.clientId === 'string' ? payload.clientId.trim() : ''
+      const redirectUri =
+        payload && typeof payload.redirectUri === 'string' ? payload.redirectUri.trim() : ''
+
+      if (!clientId) {
+        throw new Error('GOOGLE_CLIENT_ID_MISSING')
+      }
+
+      const config = getAppConfig()
+      config.googleClientId = clientId
+      if (redirectUri) {
+        config.googleRedirectUri = redirectUri
+      }
+      runtime.config = config
+
+      if (typeof window !== 'undefined') {
+        window.GOOGLE_CLIENT_ID = clientId
+      }
+
+      runtime.google.config = { clientId, redirectUri }
+      return runtime.google.config
+    })
+    .catch((error) => {
+      runtime.google.config = null
+      if (error instanceof Error) {
+        if (!error.message || error.message === 'Failed to fetch') {
+          return Promise.reject(new Error('GOOGLE_CONFIG_FETCH_FAILED'))
+        }
+        return Promise.reject(error)
+      }
+      return Promise.reject(new Error('GOOGLE_CONFIG_FETCH_FAILED'))
+    })
+    .finally(() => {
+      runtime.google.configPromise = null
+    })
+
+  return runtime.google.configPromise
+}
+
 async function ensureGoogleClient() {
   if (!ENABLE_GOOGLE_LOGIN) {
     throw new Error('GOOGLE_CLIENT_ID_MISSING')
   }
 
   const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+  let clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+
+  if (!clientId) {
+    const remoteConfig = await fetchGoogleLoginConfig().catch((error) => {
+      if (error instanceof Error) {
+        throw error
+      }
+      throw new Error('GOOGLE_CONFIG_FETCH_FAILED')
+    })
+
+    clientId = remoteConfig?.clientId || ''
+  }
+
   if (!clientId) {
     throw new Error('GOOGLE_CLIENT_ID_MISSING')
   }
@@ -2100,7 +2189,8 @@ function setGoogleButtonState(state = 'idle', labelOverride) {
   button.setAttribute('aria-label', label)
 
   const isPending = state === 'loading' || state === 'initializing' || state === 'retrying'
-  const shouldDisable = isPending || state === 'disabled'
+  const allowInteractionWhilePrefetching = state === 'initializing' && !!runtime.google.prefetchPromise
+  const shouldDisable = (!allowInteractionWhilePrefetching && isPending) || state === 'disabled'
 
   button.disabled = shouldDisable
   if (shouldDisable) {
@@ -2218,16 +2308,31 @@ function updateGoogleProviderAvailability() {
 }
 
 async function prefetchGoogleClient() {
-  try {
-    setGoogleButtonState('initializing')
-    await ensureGoogleClient()
-    setGoogleButtonState('idle')
-    setGoogleLoginHelper('', 'muted')
-  } catch (error) {
-    console.warn('Google 로그인 초기화에 실패했습니다.', error)
-    setGoogleButtonState('error', 'Google 로그인')
-    setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+  if (runtime.google.prefetchPromise) {
+    return runtime.google.prefetchPromise
   }
+
+  const pending = ensureGoogleClient()
+    .then((result) => {
+      setGoogleLoginHelper('', 'muted')
+      return result
+    })
+    .catch((error) => {
+      console.warn('Google 로그인 초기화에 실패했습니다.', error)
+      setGoogleButtonState('error', 'Google 로그인')
+      setGoogleLoginHelper('Google 로그인 초기화에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+      throw error
+    })
+    .finally(() => {
+      if (runtime.google.prefetchPromise === pending) {
+        runtime.google.prefetchPromise = null
+        updateGoogleProviderAvailability()
+      }
+    })
+
+  runtime.google.prefetchPromise = pending
+  updateGoogleProviderAvailability()
+  return pending
 }
 
 function clearGoogleAutoRetry() {
@@ -5310,10 +5415,36 @@ async function handleGoogleLogin(event) {
 
   console.log('🔍 Ellie Google 로그인 버튼 클릭')
 
-  const config = getAppConfig()
-  const clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+  if (!ENABLE_GOOGLE_LOGIN) {
+    setGoogleButtonState('disabled')
+    setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+    return
+  }
 
-  if (!ENABLE_GOOGLE_LOGIN || !clientId) {
+  const config = getAppConfig()
+  let clientId = typeof config.googleClientId === 'string' ? config.googleClientId.trim() : ''
+
+  if (!clientId) {
+    try {
+      const remoteConfig = await fetchGoogleLoginConfig()
+      clientId = remoteConfig?.clientId || ''
+    } catch (error) {
+      console.error('Google 로그인 초기화 중 오류', error)
+      if (error instanceof Error && GOOGLE_CONFIGURATION_ERRORS.has(error.message)) {
+        setGoogleButtonState('disabled')
+        setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+        setStatus('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
+        return
+      }
+
+      setGoogleLoginHelper('Google 로그인 준비 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+      setStatus('Google 로그인에 실패했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+      setGoogleButtonState('error', 'Google 로그인')
+      return
+    }
+  }
+
+  if (!clientId) {
     setGoogleButtonState('disabled')
     setGoogleLoginHelper('현재 Google 로그인을 사용할 수 없습니다. 이메일 로그인으로 계속 진행해주세요.', 'info')
     return
