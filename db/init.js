@@ -34,6 +34,17 @@ export async function ensureAuthTables(db) {
 
   await runStatement(
     db.prepare(`
+      CREATE TABLE IF NOT EXISTS user_credentials (
+        user_id INTEGER PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `)
+  )
+
+  await runStatement(
+    db.prepare(`
       CREATE TABLE IF NOT EXISTS credits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,

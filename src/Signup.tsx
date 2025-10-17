@@ -1,4 +1,16 @@
-export default function SignupPage() {
+type SignupPageProps = {
+  status?: 'success' | 'error'
+  message?: string
+  values?: {
+    name?: string
+    email?: string
+  }
+}
+
+export default function SignupPage({ status, message, values }: SignupPageProps = {}) {
+  const nameValue = values?.name ?? ''
+  const emailValue = values?.email ?? ''
+
   return (
     <main class="signup-page" aria-labelledby="signup-heading">
       <section class="signup-card">
@@ -7,7 +19,23 @@ export default function SignupPage() {
             회원가입
           </h1>
         </header>
-        <form class="signup-form" method="post" action="#">
+        {status && message ? (
+          <p
+            class={`signup-form__notice signup-form__notice--${status}`}
+            role={status === 'error' ? 'alert' : 'status'}
+          >
+            {message}
+            {status === 'success' ? (
+              <>
+                {' '}
+                <a class="signup-form__notice-link" href="/">
+                  로그인 화면으로 이동하기
+                </a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        <form class="signup-form" method="post" action="/signup">
           <label class="signup-form__field" for="signup-name">
             <span class="signup-form__label">이름</span>
             <input
@@ -17,6 +45,7 @@ export default function SignupPage() {
               type="text"
               placeholder="이름을 입력하세요"
               autocomplete="name"
+              value={nameValue}
               required
             />
           </label>
@@ -29,6 +58,7 @@ export default function SignupPage() {
               type="email"
               placeholder="you@example.com"
               autocomplete="email"
+              value={emailValue}
               required
             />
           </label>
