@@ -7091,7 +7091,7 @@ function applySegmentationMaskToImageData(imageData, maskInput, width, height) {
     mask.length,
   )
 
-  const featheredMask = createFeatheredSegmentationMask(mask, targetWidth, targetHeight, 2)
+  const featheredMask = createFeatheredSegmentationMask(mask, targetWidth, targetHeight, 1)
 
   for (let i = 0; i < pixelCount; i += 1) {
     const offset = i * 4
@@ -7103,7 +7103,7 @@ function applySegmentationMaskToImageData(imageData, maskInput, width, height) {
     const isProtected = Boolean(protectedMask && protectedMask.length > i && protectedMask[i])
     const clampedRatio = isProtected ? 1 : normalizedRatio
 
-    if (clampedRatio <= 0) {
+    if (clampedRatio < 0.25) {
       data[offset] = 0
       data[offset + 1] = 0
       data[offset + 2] = 0
@@ -7111,18 +7111,10 @@ function applySegmentationMaskToImageData(imageData, maskInput, width, height) {
       continue
     }
 
-    if (isProtected || clampedRatio >= 1) {
-      data[offset] = originalR
-      data[offset + 1] = originalG
-      data[offset + 2] = originalB
-      data[offset + 3] = 255
-      continue
-    }
-
-    data[offset] = Math.round(originalR * clampedRatio)
-    data[offset + 1] = Math.round(originalG * clampedRatio)
-    data[offset + 2] = Math.round(originalB * clampedRatio)
-    data[offset + 3] = Math.round(clampedRatio * 255)
+    data[offset] = originalR
+    data[offset + 1] = originalG
+    data[offset + 2] = originalB
+    data[offset + 3] = 255
   }
 
   return imageData
