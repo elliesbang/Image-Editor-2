@@ -426,7 +426,11 @@ function isSecureRequest(c: Context): boolean {
 
 function resolveCookieSecurity(c: Context) {
   const secure = isSecureRequest(c)
-  const sameSite: 'none' | 'lax' = secure ? 'none' : 'lax'
+  // Use Lax so the cookies participate in first-party navigations such as the
+  // Google OAuth redirect. Some mobile browsers block SameSite=None cookies in
+  // this flow which caused the state cookie to be dropped and the login to
+  // fail with “Invalid login state.”
+  const sameSite: 'lax' = 'lax'
   return { secure, sameSite }
 }
 
