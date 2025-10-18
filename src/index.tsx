@@ -11,20 +11,6 @@ import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
 import SignupPage from './Signup'
 
-const BACKGROUND_REMOVAL_PROMPT = `
-Remove the background from this image using AI segmentation.
-
-Precisely keep all light-colored or white objects, including white clothing, paper, and skin tones.
-
-Avoid removing edges or highlights around bright subjects.
-
-After removing the background, refine the edges to preserve thin details like hair, fabric, or object outlines.
-
-Do not make bright areas transparent if they are part of the subject.
-
-Output a clean transparent PNG with smooth edges and no halo artifacts.
-`
-
 type D1Result<T = unknown> = {
   success: boolean
   error?: string
@@ -51,6 +37,7 @@ type Bindings = {
   DB_MAIN: D1Database
   DB_MICHINA: D1Database
   OPENAI_API_KEY?: string
+  REMOVE_BG_API_KEY?: string
   ADMIN_EMAIL?: string
   SESSION_SECRET?: string
   ADMIN_SESSION_VERSION?: string
@@ -4500,98 +4487,107 @@ const decodeBase64ToUint8Array = (base64: string): Uint8Array => {
   return bytes
 }
 
-type BackgroundRemovalResponse = {
-  base64: string
+type RemoveBgResponse = {
+  bytes: Uint8Array
+  contentType: string
   requestId?: string
 }
 
-const callOpenAIBackgroundRemoval = async (
+const callRemoveBgBackgroundRemoval = async (
   apiKey: string,
   imageFile: File,
   options: { signal?: AbortSignal } = {},
-): Promise<BackgroundRemovalResponse> => {
+): Promise<RemoveBgResponse> => {
+  if (!apiKey) {
+    const error = new Error('REMOVE_BG_API_KEY_NOT_CONFIGURED')
+    ;(error as any).status = 500
+    throw error
+  }
+
   const normalizedName = imageFile.name && imageFile.name.trim() ? imageFile.name.trim() : 'image.png'
-
   const formData = new FormData()
-  formData.set('model', 'gpt-4o-mini')
-  formData.set('prompt', BACKGROUND_REMOVAL_PROMPT)
-  formData.set('size', '1024x1024')
-  formData.set('transparent_background', 'true')
-  formData.set('image', imageFile, normalizedName)
+  formData.set('image_file', imageFile, normalizedName)
+  formData.set('size', 'auto')
 
-  const requestInit: RequestInit = {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: formData,
-    signal: options.signal,
-  }
-
-  const response = await fetch('https://api.openai.com/v1/images/edits', requestInit)
-  const requestId = response.headers.get('x-request-id') ?? undefined
-  const rawBody = await response.text()
-  let payload: unknown = null
-
+  let response: Response
   try {
-    payload = rawBody ? JSON.parse(rawBody) : null
+    response = await fetch('https://api.remove.bg/v1.0/removebg', {
+      method: 'POST',
+      headers: {
+        'X-Api-Key': apiKey,
+      },
+      body: formData,
+      signal: options.signal,
+    })
   } catch (error) {
-    const parseError = new Error('OPENAI_INVALID_RESPONSE')
-    ;(parseError as any).status = response.status || 502
-    ;(parseError as any).details = rawBody.slice(0, 4000)
-    ;(parseError as any).requestId = requestId
-    throw parseError
+    const requestError = new Error('REMOVE_BG_NETWORK_ERROR')
+    ;(requestError as any).cause = error
+    ;(requestError as any).status = 502
+    throw requestError
   }
+
+  const requestId =
+    response.headers.get('x-request-id') ?? response.headers.get('x-removebg-request-id') ?? undefined
 
   if (!response.ok) {
-    const errorPayload = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
-    const responseError =
-      errorPayload && errorPayload.error && typeof errorPayload.error === 'object'
-        ? (errorPayload.error as Record<string, unknown>)
-        : null
-    const message =
-      (typeof responseError?.message === 'string' && responseError.message.trim()) || 'OPENAI_REQUEST_FAILED'
-    const error = new Error(message)
+    let detail: unknown = undefined
+    try {
+      const payload = await response.json()
+      detail = payload
+    } catch {
+      try {
+        detail = await response.text()
+      } catch {
+        detail = undefined
+      }
+    }
+
+    const error = new Error('REMOVE_BG_REQUEST_FAILED')
     ;(error as any).status = response.status || 502
-    ;(error as any).details = payload
     ;(error as any).requestId = requestId
-    ;(error as any).code = typeof responseError?.code === 'string' ? responseError.code : undefined
-    ;(error as any).type = typeof responseError?.type === 'string' ? responseError.type : undefined
+    if (detail !== undefined) {
+      ;(error as any).detail = detail
+    }
+    if (response.status === 402 || response.status === 429) {
+      ;(error as any).reason = 'REMOVE_BG_CREDIT_EXHAUSTED'
+    }
     throw error
   }
 
-  const dataArray = Array.isArray((payload as any)?.data) ? ((payload as any).data as unknown[]) : []
-  const firstImage = dataArray.length > 0 ? (dataArray[0] as Record<string, unknown>) : null
-  const base64 =
-    firstImage && typeof firstImage.b64_json === 'string' && firstImage.b64_json.trim()
-      ? firstImage.b64_json.trim()
-      : null
-
-  if (!base64) {
-    const error = new Error('OPENAI_IMAGE_MISSING')
-    ;(error as any).status = 502
-    ;(error as any).details = payload
-    ;(error as any).requestId = requestId
-    throw error
+  let arrayBuffer: ArrayBuffer
+  try {
+    arrayBuffer = await response.arrayBuffer()
+  } catch (error) {
+    const readError = new Error('REMOVE_BG_IMAGE_READ_FAILED')
+    ;(readError as any).status = 502
+    ;(readError as any).requestId = requestId
+    ;(readError as any).cause = error
+    throw readError
   }
 
-  return { base64, requestId }
+  const bytes = new Uint8Array(arrayBuffer)
+  const rawContentType = response.headers.get('content-type')?.toLowerCase().trim() ?? ''
+  const contentType = rawContentType.includes('png')
+    ? 'image/png'
+    : rawContentType || 'image/png'
+
+  return { bytes, contentType, requestId }
 }
 
-app.post('/api/image/remove-background', async (c) => {
+const handleRemoveBackgroundRequest = async (c: Context<{ Bindings: Bindings }>) => {
   const env = c.env
   const processEnv =
     typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env
       ? ((globalThis as any).process.env as Record<string, string | undefined>)
       : undefined
   const processApiKey =
-    typeof processEnv?.OPENAI_API_KEY === 'string' ? processEnv.OPENAI_API_KEY.trim() : ''
-  const bindingApiKey = typeof env.OPENAI_API_KEY === 'string' ? env.OPENAI_API_KEY.trim() : ''
+    typeof processEnv?.REMOVE_BG_API_KEY === 'string' ? processEnv.REMOVE_BG_API_KEY.trim() : ''
+  const bindingApiKey = typeof env.REMOVE_BG_API_KEY === 'string' ? env.REMOVE_BG_API_KEY.trim() : ''
   const apiKey = processApiKey || bindingApiKey
 
   if (!apiKey) {
     c.header('cache-control', 'no-store')
-    return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
+    return c.json({ error: 'REMOVE_BG_API_KEY_NOT_CONFIGURED' }, 503)
   }
 
   const contentType = c.req.header('content-type')?.toLowerCase() ?? ''
@@ -4661,9 +4657,9 @@ app.post('/api/image/remove-background', async (c) => {
       ? ((AbortSignal as any).timeout(60000) as AbortSignal)
       : undefined
 
-  let backgroundRemoval: BackgroundRemovalResponse
+  let backgroundRemoval: RemoveBgResponse
   try {
-    backgroundRemoval = await callOpenAIBackgroundRemoval(apiKey, imageFile, {
+    backgroundRemoval = await callRemoveBgBackgroundRemoval(apiKey, imageFile, {
       signal: timeoutSignal,
     })
   } catch (error) {
@@ -4672,54 +4668,37 @@ app.post('/api/image/remove-background', async (c) => {
     const message =
       (error instanceof Error && error.message) ||
       (typeof (error as any)?.message === 'string' && (error as any).message) ||
-      'OPENAI_REQUEST_FAILED'
+      'REMOVE_BG_REQUEST_FAILED'
     c.header('cache-control', 'no-store')
     if (requestId) {
-      c.header('x-openai-request-id', requestId)
+      c.header('x-removebg-request-id', requestId)
     }
     const responsePayload: Record<string, unknown> = {
-      error: 'OPENAI_REQUEST_FAILED',
+      error: 'REMOVE_BG_REQUEST_FAILED',
       message,
     }
-    if ((error as any)?.code) {
-      responsePayload.code = (error as any).code
+    if ((error as any)?.reason) {
+      responsePayload.reason = (error as any).reason
     }
-    if ((error as any)?.type) {
-      responsePayload.type = (error as any).type
-    }
-    if ((error as any)?.details) {
-      responsePayload.details = (error as any).details
+    if ((error as any)?.detail) {
+      responsePayload.detail = (error as any).detail
     }
     return c.json(responsePayload, status)
   }
 
-  let imageBytes: Uint8Array
-  try {
-    imageBytes = decodeBase64ToUint8Array(backgroundRemoval.base64)
-  } catch (error) {
-    c.header('cache-control', 'no-store')
-    if (backgroundRemoval.requestId) {
-      c.header('x-openai-request-id', backgroundRemoval.requestId)
-    }
-    return c.json(
-      {
-        error: 'OPENAI_IMAGE_DECODE_FAILED',
-        message: error instanceof Error ? error.message : String(error ?? ''),
-      },
-      502,
-    )
-  }
-
   const headers = new Headers({
-    'Content-Type': 'image/png',
+    'Content-Type': backgroundRemoval.contentType || 'image/png',
     'Cache-Control': 'no-store',
   })
   if (backgroundRemoval.requestId) {
-    headers.set('x-openai-request-id', backgroundRemoval.requestId)
+    headers.set('x-removebg-request-id', backgroundRemoval.requestId)
   }
 
-  return new Response(imageBytes, { headers })
-})
+  return new Response(backgroundRemoval.bytes, { headers })
+}
+
+app.post('/api/image/remove-background', handleRemoveBackgroundRequest)
+app.post('/api/remove-background', handleRemoveBackgroundRequest)
 
 app.post('/api/analyze', async (c) => {
   const env = c.env

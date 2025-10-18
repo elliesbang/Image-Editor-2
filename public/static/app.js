@@ -6869,10 +6869,6 @@ async function callRemoveBgAPI(imageBlob, options = {}) {
 
   if (contentType.includes('application/json')) {
     const payload = await response.json()
-    if (payload && typeof payload.base64 === 'string' && payload.base64) {
-      return payload.base64
-    }
-
     if (payload && payload.fallback) {
       const error = new Error(payload.reason || 'REMOVE_BG_FALLBACK_TRIGGERED')
       error.code = payload.reason || 'REMOVE_BG_FALLBACK_TRIGGERED'
@@ -6880,6 +6876,10 @@ async function callRemoveBgAPI(imageBlob, options = {}) {
         error.detail = payload.detail
       }
       throw error
+    }
+
+    if (payload && typeof payload.base64 === 'string' && payload.base64) {
+      return payload.base64
     }
 
     throw new Error('REMOVE_BG_RESPONSE_INVALID')
@@ -7767,71 +7767,200 @@ function applyBackgroundRemovalFallback(imageData, width, height) {
     return imageData
   }
 
-  const colorThreshold = 240
-  const edgeThreshold = 15
-  const brightness = new Uint16Array(pixelCount)
-  const brightMask = new Uint8Array(pixelCount)
-  const edgeMask = new Uint8Array(pixelCount)
-  const backgroundMask = new Uint8Array(pixelCount)
+  const brightness = new Float32Array(pixelCount)
+  for (let index = 0; index < pixelCount; index += 1) {
+    const offset = index * 4
+    brightness[index] = (data[offset] + data[offset + 1] + data[offset + 2]) / 3
+  }
 
-  for (let i = 0; i < pixelCount; i += 1) {
-    const offset = i * 4
+  const sampleStepX = Math.max(1, Math.floor(width / 50))
+  const sampleStepY = Math.max(1, Math.floor(height / 50))
+  let sumR = 0
+  let sumG = 0
+  let sumB = 0
+  let sumRSq = 0
+  let sumGSq = 0
+  let sumBSq = 0
+  let sumBrightness = 0
+  let sumBrightnessSq = 0
+  let sampleCount = 0
+
+  const samplePixel = (x, y) => {
+    const clampedX = Math.min(width - 1, Math.max(0, x))
+    const clampedY = Math.min(height - 1, Math.max(0, y))
+    const index = clampedY * width + clampedX
+    const offset = index * 4
     const r = data[offset]
     const g = data[offset + 1]
     const b = data[offset + 2]
-    brightness[i] = Math.round((r + g + b) / 3)
+    const value = brightness[index]
+    sumR += r
+    sumG += g
+    sumB += b
+    sumRSq += r * r
+    sumGSq += g * g
+    sumBSq += b * b
+    sumBrightness += value
+    sumBrightnessSq += value * value
+    sampleCount += 1
   }
 
-  const neighborOffsets = [
-    [-1, 0],
-    [1, 0],
-    [0, -1],
-    [0, 1],
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1],
-  ]
+  for (let x = 0; x < width; x += sampleStepX) {
+    samplePixel(x, 0)
+    if (height > 1) {
+      samplePixel(x, height - 1)
+    }
+  }
+
+  for (let y = 0; y < height; y += sampleStepY) {
+    samplePixel(0, y)
+    if (width > 1) {
+      samplePixel(width - 1, y)
+    }
+  }
+
+  if (sampleCount === 0) {
+    samplePixel(0, 0)
+  }
+
+  const meanR = sumR / sampleCount
+  const meanG = sumG / sampleCount
+  const meanB = sumB / sampleCount
+  const meanBrightness = sumBrightness / sampleCount
+
+  const colorVariance = Math.max(
+    0,
+    (sumRSq / sampleCount - meanR * meanR + sumGSq / sampleCount - meanG * meanG + sumBSq / sampleCount - meanB * meanB) /
+      3,
+  )
+  const brightnessVariance = Math.max(0, sumBrightnessSq / sampleCount - meanBrightness * meanBrightness)
+
+  const colorStd = Math.sqrt(colorVariance)
+  const brightnessStd = Math.sqrt(brightnessVariance)
+
+  const colorSoftThreshold = Math.max(12, colorStd * 2.1 + 6)
+  const colorHardThreshold = colorSoftThreshold + 24
+  const brightnessSoftThreshold = Math.max(8, brightnessStd * 1.5 + 4)
+  const brightnessHardThreshold = brightnessSoftThreshold + 26
+  const gradientReference = Math.max(10, brightnessStd * 1.2 + 8)
+
+  const mask = new Float32Array(pixelCount)
+  const gradients = new Float32Array(pixelCount)
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x
-      const currentBrightness = brightness[index]
+      const current = brightness[index]
       let maxDiff = 0
 
-      for (const [dx, dy] of neighborOffsets) {
-        const nx = x + dx
-        const ny = y + dy
-        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
-        const neighborIndex = ny * width + nx
-        const diff = Math.abs(currentBrightness - brightness[neighborIndex])
-        if (diff > maxDiff) maxDiff = diff
+      if (x + 1 < width) {
+        maxDiff = Math.max(maxDiff, Math.abs(current - brightness[index + 1]))
       }
-
-      if (maxDiff >= edgeThreshold) {
-        edgeMask[index] = 1
+      if (x > 0) {
+        maxDiff = Math.max(maxDiff, Math.abs(current - brightness[index - 1]))
       }
+      if (y + 1 < height) {
+        maxDiff = Math.max(maxDiff, Math.abs(current - brightness[index + width]))
+      }
+      if (y > 0) {
+        maxDiff = Math.max(maxDiff, Math.abs(current - brightness[index - width]))
+      }
+      gradients[index] = maxDiff
     }
   }
 
-  for (let i = 0; i < pixelCount; i += 1) {
-    const offset = i * 4
-    const alpha = data[offset + 3]
-    if (alpha <= 12) {
-      backgroundMask[i] = 1
-      continue
-    }
+  const clamp01 = (value) => Math.max(0, Math.min(1, value))
 
-    if (brightness[i] >= colorThreshold) {
-      brightMask[i] = 1
-      if (!edgeMask[i]) {
-        backgroundMask[i] = 1
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x
+      const offset = index * 4
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      const alpha = data[offset + 3] / 255
+      const luminance = brightness[index]
+
+      const colorDiff = Math.sqrt(
+        (r - meanR) * (r - meanR) + (g - meanG) * (g - meanG) + (b - meanB) * (b - meanB),
+      )
+      const brightnessDiff = Math.abs(luminance - meanBrightness)
+      const gradientStrength = gradients[index]
+
+      const colorScore = clamp01(
+        (colorDiff - colorSoftThreshold * 0.75) /
+          Math.max(1, colorHardThreshold - colorSoftThreshold * 0.75),
+      )
+      const brightnessScore = clamp01(
+        (brightnessDiff - brightnessSoftThreshold * 0.7) /
+          Math.max(1, brightnessHardThreshold - brightnessSoftThreshold * 0.7),
+      )
+      const edgeScore = clamp01(gradientStrength / (gradientReference * 1.5 + 1))
+
+      let confidence = Math.max(colorScore, brightnessScore * 0.9)
+      confidence = Math.max(confidence, colorScore * 0.6 + edgeScore * 0.5)
+      confidence = Math.max(confidence, Math.pow(alpha, 0.75) * 0.6)
+
+      if (colorDiff > colorHardThreshold * 1.35 || brightnessDiff > brightnessHardThreshold * 1.5) {
+        confidence = 1
+      } else if (colorDiff < colorSoftThreshold * 0.6 && brightnessDiff < brightnessSoftThreshold * 0.7 && edgeScore < 0.3) {
+        confidence *= 0.25
       }
+
+      mask[index] = clamp01(confidence)
     }
   }
 
-  removeInnerWhiteAreas(backgroundMask, brightMask, edgeMask, width, height)
-  applyFeatheredAlpha(imageData, backgroundMask, edgeMask, width, height)
+  const tempMask = new Float32Array(pixelCount)
+  const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1]
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        let sum = 0
+        let weight = 0
+        let k = 0
+
+        for (let ky = -1; ky <= 1; ky += 1) {
+          const ny = Math.min(height - 1, Math.max(0, y + ky))
+          for (let kx = -1; kx <= 1; kx += 1) {
+            const nx = Math.min(width - 1, Math.max(0, x + kx))
+            const kernelWeight = kernel[k]
+            sum += mask[ny * width + nx] * kernelWeight
+            weight += kernelWeight
+            k += 1
+          }
+        }
+
+        const index = y * width + x
+        tempMask[index] = weight > 0 ? sum / weight : mask[index]
+      }
+    }
+    mask.set(tempMask)
+  }
+
+  for (let index = 0; index < pixelCount; index += 1) {
+    const offset = index * 4
+    const originalAlpha = data[offset + 3] / 255
+    let confidence = mask[index]
+
+    if (confidence <= 0.02) {
+      confidence = 0
+    } else if (confidence >= 0.98) {
+      confidence = 1
+    } else {
+      confidence = Math.pow(confidence, 0.85)
+    }
+
+    const finalAlpha = Math.max(0, Math.min(1, confidence * originalAlpha))
+    data[offset + 3] = Math.round(finalAlpha * 255)
+
+    if (finalAlpha === 0) {
+      data[offset] = 0
+      data[offset + 1] = 0
+      data[offset + 2] = 0
+    }
+  }
 
   return imageData
 }
