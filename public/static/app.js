@@ -7296,18 +7296,55 @@ async function restoreWhiteObjects(base64Image) {
 
   const imageData = ctx.getImageData(0, 0, width, height)
   const data = imageData.data
+  const rowStride = width * 4
+  const searchRadius = Math.max(2, Math.min(4, Math.floor(Math.min(width, height) / 80)))
 
-  // 흰색 피사체 복원용 후처리 로직
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i]
-    const g = data[i + 1]
-    const b = data[i + 2]
-    const alpha = data[i + 3]
+  const hasOpaqueInDirection = (x, y, dx, dy) => {
+    for (let step = 1; step <= searchRadius; step += 1) {
+      const nx = x + dx * step
+      const ny = y + dy * step
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+        break
+      }
+      const neighborIndex = ny * rowStride + nx * 4
+      const neighborAlpha = data[neighborIndex + 3]
+      if (neighborAlpha >= 235) {
+        return true
+      }
+    }
+    return false
+  }
 
-    const brightness = (r + g + b) / 3
-    if (brightness > 230 && alpha >= 64 && alpha < 200) {
-      // Only restore semi-transparent bright pixels so fully transparent backgrounds stay transparent
-      data[i + 3] = 255
+  // 흰색 피사체 복원용 후처리 로직 (경계 보존 강화)
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * rowStride
+    for (let x = 0; x < width; x += 1) {
+      const index = rowOffset + x * 4
+      const r = data[index]
+      const g = data[index + 1]
+      const b = data[index + 2]
+      const alpha = data[index + 3]
+
+      if (alpha >= 235) {
+        continue
+      }
+
+      const brightness = (r + g + b) / 3
+      if (brightness <= 234) {
+        continue
+      }
+
+      const horizontalEnclosed = hasOpaqueInDirection(x, y, -1, 0) && hasOpaqueInDirection(x, y, 1, 0)
+      if (!horizontalEnclosed) {
+        continue
+      }
+
+      const verticalEnclosed = hasOpaqueInDirection(x, y, 0, -1) && hasOpaqueInDirection(x, y, 0, 1)
+      if (!verticalEnclosed) {
+        continue
+      }
+
+      data[index + 3] = 255
     }
   }
 
