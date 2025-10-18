@@ -7305,7 +7305,8 @@ async function restoreWhiteObjects(base64Image) {
     const alpha = data[i + 3]
 
     const brightness = (r + g + b) / 3
-    if (brightness > 230 && alpha < 200) {
+    if (brightness > 230 && alpha > 0 && alpha < 200) {
+      // Only restore semi-transparent bright pixels so fully transparent backgrounds stay transparent
       data[i + 3] = 255
     }
   }
