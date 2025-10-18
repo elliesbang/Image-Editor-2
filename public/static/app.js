@@ -5568,12 +5568,129 @@ function handleEmailResend(event) {
   setStatus(`${currentEmail} 주소로 새로운 인증 코드를 전송했습니다.`, 'success')
 }
 
-function handleMichinaLoginClick(event) {
+async function handleMichinaLoginClick(event) {
   if (event && typeof event.preventDefault === 'function') {
     event.preventDefault()
   }
-  console.log('🌟 Ellie 미치나 로그인 버튼 클릭')
-  setStatus('미치나 로그인은 관리자 승인 후 이용할 수 있어요.', 'info')
+
+  if (!(elements.michinaLoginButton instanceof HTMLButtonElement)) {
+    return
+  }
+
+  const button = elements.michinaLoginButton
+  if (button.dataset.loading === 'true') {
+    return
+  }
+
+  const rawEmail =
+    state.auth.step === 'code' && state.auth.pendingEmail
+      ? state.auth.pendingEmail
+      : elements.loginEmailInput instanceof HTMLInputElement
+        ? elements.loginEmailInput.value.trim()
+        : ''
+
+  const normalizedEmail = normalizeEmail(rawEmail)
+
+  console.log('🌟 Ellie 미치나 로그인 버튼 클릭', normalizedEmail || '(이메일 미입력)')
+
+  if (!normalizedEmail) {
+    setStatus('미치나 로그인을 이용하려면 이메일을 먼저 입력해주세요.', 'danger')
+    setLoginHelper('이메일 주소를 입력한 후 미치나 로그인을 진행해주세요.')
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+    return
+  }
+
+  if (!isValidEmail(normalizedEmail)) {
+    setStatus('유효한 이메일 주소인지 확인해주세요.', 'danger')
+    setLoginHelper('이메일 주소 형식을 다시 확인해주세요.')
+    if (elements.loginEmailInput instanceof HTMLInputElement) {
+      elements.loginEmailInput.focus()
+    }
+    return
+  }
+
+  if (elements.loginEmailInput instanceof HTMLInputElement) {
+    elements.loginEmailInput.value = normalizedEmail
+  }
+
+  const originalLabel = (button.textContent || '').trim() || '미치나로 로그인'
+  let encounteredError = false
+
+  button.dataset.loading = 'true'
+  button.disabled = true
+  button.textContent = '확인 중…'
+  if (button.dataset.state) {
+    delete button.dataset.state
+  }
+
+  try {
+    setStatus('미치나 결제 내역을 확인하는 중입니다. 잠시만 기다려주세요.', 'info')
+
+    const response = await fetch('/api/michina-login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ email: normalizedEmail }),
+    })
+
+    const payload = await response.json().catch(() => ({}))
+
+    if (!response.ok || !payload || payload.success !== true) {
+      encounteredError = true
+      const fallbackMessage = '미치나 결제 내역이 확인되지 않았습니다. 관리자에게 문의해주세요.'
+      const message =
+        typeof payload?.message === 'string' && payload.message.trim().length > 0
+          ? payload.message.trim()
+          : fallbackMessage
+      setLoginHelper(message)
+      setStatus(message, 'danger')
+      button.dataset.state = 'error'
+      return
+    }
+
+    const baseName =
+      typeof payload.name === 'string' && payload.name.trim().length > 0
+        ? payload.name.trim()
+        : normalizedEmail.split('@')[0] || '미치나 챌린저'
+
+    applyLoginProfile({
+      name: baseName,
+      email: normalizedEmail,
+      plan: 'michina',
+      credits: MICHINA_INITIAL_CREDITS,
+    })
+
+    await fetchMichinaConfig({ force: true }).catch((error) => {
+      console.warn('미치나 설정 동기화 중 경고', error)
+    })
+
+    closeLoginModal()
+
+    setStatus(
+      `${baseName}님, 미치나 플랜이 활성화되었습니다! 전체 기능을 자유롭게 이용할 수 있어요.`,
+      'success',
+      4200,
+    )
+  } catch (error) {
+    encounteredError = true
+    console.error('미치나 로그인 중 오류', error)
+    setStatus('미치나 로그인 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', 'danger')
+    setLoginHelper('미치나 로그인에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해주세요.')
+    button.dataset.state = 'error'
+  } finally {
+    if (button.dataset.loading) {
+      delete button.dataset.loading
+    }
+    button.disabled = false
+    button.textContent = originalLabel
+    if (!encounteredError && button.dataset.state) {
+      delete button.dataset.state
+    }
+  }
 }
 
 function handleEmailLogin(event) {
