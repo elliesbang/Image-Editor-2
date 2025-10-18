@@ -6700,30 +6700,108 @@ function buildForegroundMask(imageData, width, height, stats) {
   return mask
 }
 
-async function applyBackgroundRemoval(imageData, width, height, canvas) {
+async function requestOpenAIBackgroundRemoval(canvas, options = {}) {
+  if (!canvas) {
+    return null
+  }
+
+  const { name } = options || {}
+
+  const response = await fetch('/api/image/remove-background', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'image/png,application/json',
+    },
+    body: JSON.stringify({
+      image: canvas.toDataURL('image/png'),
+      name: typeof name === 'string' ? name : '',
+      width: canvas.width,
+      height: canvas.height,
+    }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    throw new Error(errorText || `OPENAI_BACKGROUND_REMOVAL_FAILED_${response.status}`)
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    const data = await response.json().catch(() => ({}))
+    const message =
+      (data && typeof data.error === 'string' && data.error) ||
+      (data && data.error && typeof data.error.message === 'string' && data.error.message) ||
+      'OPENAI_BACKGROUND_REMOVAL_FAILED'
+    throw new Error(message)
+  }
+
+  const blob = await response.blob()
+
+  let source = null
+  if (typeof createImageBitmap === 'function') {
+    try {
+      source = await createImageBitmap(blob)
+    } catch (error) {
+      source = null
+    }
+  }
+
+  if (!source) {
+    source = await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob)
+      const image = new Image()
+      image.onload = () => {
+        URL.revokeObjectURL(url)
+        resolve(image)
+      }
+      image.onerror = (event) => {
+        URL.revokeObjectURL(url)
+        reject(event instanceof Error ? event : new Error('OPENAI_BACKGROUND_REMOVAL_IMAGE_LOAD_FAILED'))
+      }
+      image.crossOrigin = 'anonymous'
+      image.decoding = 'async'
+      image.src = url
+    })
+  }
+
+  const width =
+    typeof source.width === 'number' && source.width
+      ? source.width
+      : typeof source.naturalWidth === 'number' && source.naturalWidth
+        ? source.naturalWidth
+        : canvas.width
+  const height =
+    typeof source.height === 'number' && source.height
+      ? source.height
+      : typeof source.naturalHeight === 'number' && source.naturalHeight
+        ? source.naturalHeight
+        : canvas.height
+
+  return { type: 'openai', source, width, height, blob }
+}
+
+async function applyBackgroundRemoval(imageData, width, height, canvas, options = {}) {
   if (!imageData || width <= 0 || height <= 0) {
-    return imageData
+    return { type: 'none', imageData, width, height, blob: null }
   }
 
   if (canvas) {
     try {
-      const maskResult = await generateSegmentationMask(canvas, width, height)
-      if (maskResult) {
-        applySegmentationMaskToImageData(imageData, maskResult, width, height)
-        return imageData
+      const openaiResult = await requestOpenAIBackgroundRemoval(canvas, options)
+      if (openaiResult) {
+        return openaiResult
       }
     } catch (error) {
       if (!segmentationModelWarningShown) {
-        console.warn(
-          '[remove-bg] AI 세그멘테이션 모델을 불러오는 중 문제가 발생했습니다. 기본 방식으로 전환합니다.',
-          error,
-        )
+        console.warn('[remove-bg] OpenAI 배경 제거 호출 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
         segmentationModelWarningShown = true
       }
     }
   }
 
-  return applyBackgroundRemovalFallback(imageData, width, height)
+  const fallbackData = applyBackgroundRemovalFallback(imageData, width, height)
+  return { type: 'fallback', imageData: fallbackData, width, height, blob: null }
 }
 
 async function generateSegmentationMask(canvas, targetWidth, targetHeight) {
@@ -9717,14 +9795,59 @@ function deleteResults(ids) {
 
 async function processRemoveBackground(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
-  let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  imageData = await applyBackgroundRemoval(imageData, canvas.width, canvas.height, canvas)
-  const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
-  if (refined && refined.mask) {
-    imageData = applyMaskToImageData(imageData, refined.mask)
+  const baseImageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas, { name })
+
+  let targetWidth = canvas.width
+  let targetHeight = canvas.height
+  let workingContext = ctx
+  let imageData = baseImageData
+  let blob = null
+
+  if (removal?.type === 'openai' && removal.source) {
+    targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
+    targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+    }
+    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    if (!workingContext) {
+      throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
+    workingContext.clearRect(0, 0, targetWidth, targetHeight)
+    workingContext.drawImage(removal.source, 0, 0, targetWidth, targetHeight)
+    if (typeof removal.source.close === 'function') {
+      removal.source.close()
+    }
+    imageData = workingContext.getImageData(0, 0, targetWidth, targetHeight)
+    blob = removal.blob ?? (await canvasToBlob(canvas, 'image/png', 0.95))
+  } else if (removal?.type === 'fallback' && removal.imageData) {
+    targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
+    targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+    }
+    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    if (!workingContext) {
+      throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
+    workingContext.putImageData(removal.imageData, 0, 0)
+    imageData = removal.imageData
+    blob = await canvasToBlob(canvas, 'image/png', 0.95)
+  } else {
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+    }
+    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    if (!workingContext) {
+      throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
+    workingContext.putImageData(imageData, 0, 0)
+    blob = await canvasToBlob(canvas, 'image/png', 0.95)
   }
-  ctx.putImageData(imageData, 0, 0)
-  const blob = await canvasToBlob(canvas, 'image/png', 0.95)
   const operations = mergeOperations(previousOperations, '배경 제거')
   const result = {
     blob,
@@ -9763,14 +9886,51 @@ async function processAutoCrop(source, previousOperations = []) {
 
 async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
-  let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  imageData = await applyBackgroundRemoval(imageData, canvas.width, canvas.height, canvas)
-  const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
-  if (refined && refined.mask) {
-    imageData = applyMaskToImageData(imageData, refined.mask)
+  const baseImageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas, { name })
+
+  let workingContext = ctx
+  let imageData = baseImageData
+
+  if (removal?.type === 'openai' && removal.source) {
+    const targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
+    const targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+    }
+    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    if (!workingContext) {
+      throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
+    workingContext.clearRect(0, 0, targetWidth, targetHeight)
+    workingContext.drawImage(removal.source, 0, 0, targetWidth, targetHeight)
+    if (typeof removal.source.close === 'function') {
+      removal.source.close()
+    }
+    imageData = workingContext.getImageData(0, 0, targetWidth, targetHeight)
+  } else if (removal?.type === 'fallback' && removal.imageData) {
+    const targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
+    const targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+    }
+    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    if (!workingContext) {
+      throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
+    workingContext.putImageData(removal.imageData, 0, 0)
+    imageData = removal.imageData
+  } else {
+    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    if (!workingContext) {
+      throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
+    workingContext.putImageData(imageData, 0, 0)
   }
-  ctx.putImageData(imageData, 0, 0)
-  const { canvas: cropped } = cropTransparentArea(canvas, ctx, imageData)
+
+  const { canvas: cropped } = cropTransparentArea(canvas, workingContext, imageData)
   const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   const operations = mergeOperations(previousOperations, '배경 제거', '피사체 크롭')
@@ -9993,7 +10153,7 @@ async function runOperation(operation) {
   toggleProcessing(true)
   const processingMessage =
     operation === 'remove-bg' || operation === 'remove-bg-crop'
-      ? 'AI가 배경을 분석 중입니다...'
+      ? 'AI가 배경을 제거하고 피사체 중심으로 정렬 중입니다...'
       : '이미지를 처리하는 중입니다…'
   setStatus(processingMessage, 'info', 0)
 
