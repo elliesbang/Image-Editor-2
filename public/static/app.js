@@ -130,6 +130,66 @@ const SEGMENTATION_MODEL_CONFIG = Object.freeze({ base: 'pascal', quantizationBy
 const SEGMENTATION_SCRIPT_LOADERS = new Map()
 let segmentationModelPromise = null
 let segmentationModelWarningShown = false
+const PROTECTED_SEGMENTATION_LABEL_KEYWORDS = Object.freeze([
+  'person',
+  'people',
+  'human',
+  'man',
+  'woman',
+  'boy',
+  'girl',
+  '사람',
+  '인물',
+  'thing',
+  'object',
+  'item',
+  'stuff',
+  '사물',
+  '물체',
+])
+const SEGMENTATION_LEGEND_NAME_KEYS = Object.freeze([
+  'name',
+  'displayName',
+  'display_name',
+  'label',
+  'className',
+  'class_name',
+  'title',
+  'category',
+  'description',
+  'text',
+  'ko',
+  'koName',
+  'krName',
+  'koreanName',
+  'korean',
+])
+const SEGMENTATION_LEGEND_ID_KEYS = Object.freeze([
+  'id',
+  'index',
+  'value',
+  'label',
+  'labelId',
+  'label_id',
+  'classId',
+  'class_id',
+  'categoryId',
+  'category_id',
+  'classIndex',
+  'class_index',
+  'segmentationId',
+  'segmentation_id',
+  'key',
+  'code',
+])
+const SEGMENTATION_LEGEND_SOURCES = Object.freeze([
+  'legend',
+  'classLegend',
+  'classes',
+  'classLegendMap',
+  'labels',
+  'categories',
+])
 
 function describeGoogleRetry(reason) {
   if (!reason) {
@@ -6647,9 +6707,9 @@ async function applyBackgroundRemoval(imageData, width, height, canvas) {
 
   if (canvas) {
     try {
-      const mask = await generateSegmentationMask(canvas, width, height)
-      if (mask) {
-        applySegmentationMaskToImageData(imageData, mask, width, height)
+      const maskResult = await generateSegmentationMask(canvas, width, height)
+      if (maskResult) {
+        applySegmentationMaskToImageData(imageData, maskResult, width, height)
         return imageData
       }
     } catch (error) {
@@ -6706,24 +6766,58 @@ async function generateSegmentationMask(canvas, targetWidth, targetHeight) {
     return null
   }
 
-  return normalizeSegmentationMask(segmentationMap, mapWidth, mapHeight, width, height)
+  const protectedLabelIds = extractProtectedSegmentationLabelIds(segmentation)
+  return normalizeSegmentationMask(segmentationMap, mapWidth, mapHeight, width, height, {
+    protectedLabelIds,
+  })
 }
 
-function normalizeSegmentationMask(map, mapWidth, mapHeight, targetWidth, targetHeight) {
+function normalizeSegmentationMask(
+  map,
+  mapWidth,
+  mapHeight,
+  targetWidth,
+  targetHeight,
+  options = {},
+) {
   const width = Math.max(1, targetWidth)
   const height = Math.max(1, targetHeight)
+  const totalPixels = width * height
+  const mask = new Uint8Array(totalPixels)
+  let protectedMask = null
 
-  if (mapWidth === width && mapHeight === height) {
-    const mask = new Uint8Array(map.length)
-    for (let i = 0; i < map.length; i += 1) {
-      if (isSegmentationForeground(map[i])) {
-        mask[i] = 1
-      }
+  const ensureProtectedMask = () => {
+    if (!protectedMask) {
+      protectedMask = new Uint8Array(totalPixels)
     }
-    return mask
+    return protectedMask
   }
 
-  const mask = new Uint8Array(width * height)
+  const markPixel = (targetIndex, label) => {
+    const normalizedLabel = normalizeSegmentationLabelValue(label)
+    if (!Number.isFinite(normalizedLabel)) {
+      return
+    }
+
+    if (isSegmentationProtectedLabel(normalizedLabel, options)) {
+      mask[targetIndex] = 1
+      ensureProtectedMask()[targetIndex] = 1
+      return
+    }
+
+    if (isSegmentationForeground(normalizedLabel, options)) {
+      mask[targetIndex] = 1
+    }
+  }
+
+  if (mapWidth === width && mapHeight === height) {
+    const limit = Math.min(map.length, mask.length)
+    for (let i = 0; i < limit; i += 1) {
+      markPixel(i, map[i])
+    }
+    return { mask, protectedMask }
+  }
+
   const widthRatio = mapWidth / width
   const heightRatio = mapHeight / height
 
@@ -6732,44 +6826,283 @@ function normalizeSegmentationMask(map, mapWidth, mapHeight, targetWidth, target
     for (let x = 0; x < width; x += 1) {
       const sourceX = Math.min(mapWidth - 1, Math.floor(x * widthRatio))
       const sourceIndex = sourceY * mapWidth + sourceX
-      if (isSegmentationForeground(map[sourceIndex])) {
-        mask[y * width + x] = 1
+      markPixel(y * width + x, map[sourceIndex])
+    }
+  }
+
+  return { mask, protectedMask }
+}
+
+function matchesProtectedSegmentationName(name) {
+  if (typeof name !== 'string') {
+    return false
+  }
+  const normalized = name.trim().toLowerCase()
+  if (!normalized) {
+    return false
+  }
+  return PROTECTED_SEGMENTATION_LABEL_KEYWORDS.some((keyword) => normalized.includes(keyword))
+}
+
+function normalizeSegmentationLabelValue(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.round(value) : Number.NaN
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Math.round(parsed) : Number.NaN
+  }
+  return Number.NaN
+}
+
+function extractProtectedSegmentationLabelIds(segmentation) {
+  const protectedIds = new Set()
+
+  if (!segmentation || typeof segmentation !== 'object') {
+    if (SEGMENTATION_MODEL_CONFIG && SEGMENTATION_MODEL_CONFIG.base === 'pascal') {
+      protectedIds.add(15)
+    }
+    return protectedIds
+  }
+
+  const considerLegendItem = (entry, fallbackName, fallbackId) => {
+    const normalizedFallbackId = normalizeSegmentationLabelValue(fallbackId)
+    const nameCandidates = []
+    const idCandidates = []
+
+    if (typeof fallbackName === 'string') {
+      nameCandidates.push(fallbackName)
+    }
+    if (Number.isFinite(normalizedFallbackId) && normalizedFallbackId > 0) {
+      idCandidates.push(normalizedFallbackId)
+    }
+
+    if (typeof entry === 'string') {
+      nameCandidates.push(entry)
+    } else if (typeof entry === 'number') {
+      const normalized = normalizeSegmentationLabelValue(entry)
+      if (Number.isFinite(normalized) && normalized > 0) {
+        idCandidates.push(normalized)
+      }
+    } else if (entry && typeof entry === 'object' && !ArrayBuffer.isView(entry)) {
+      for (const key of SEGMENTATION_LEGEND_NAME_KEYS) {
+        const value = entry[key]
+        if (typeof value === 'string') {
+          nameCandidates.push(value)
+        }
+      }
+      for (const key of SEGMENTATION_LEGEND_ID_KEYS) {
+        const value = entry[key]
+        const normalized = normalizeSegmentationLabelValue(value)
+        if (Number.isFinite(normalized) && normalized > 0) {
+          idCandidates.push(normalized)
+        }
+      }
+    }
+
+    if (nameCandidates.length === 0 && typeof fallbackName === 'string') {
+      nameCandidates.push(fallbackName)
+    }
+
+    const uniqueNames = Array.from(
+      new Set(nameCandidates.filter((candidate) => typeof candidate === 'string' && candidate)),
+    )
+    const uniqueIds = Array.from(new Set(idCandidates.filter((candidate) => candidate > 0)))
+
+    let matched = false
+    for (const name of uniqueNames) {
+      if (!matchesProtectedSegmentationName(name)) {
+        continue
+      }
+      matched = true
+      if (uniqueIds.length === 0) {
+        if (Number.isFinite(normalizedFallbackId) && normalizedFallbackId > 0) {
+          protectedIds.add(normalizedFallbackId)
+        }
+      } else {
+        for (const id of uniqueIds) {
+          protectedIds.add(id)
+        }
+      }
+    }
+
+    if (!matched && typeof fallbackName === 'string' && matchesProtectedSegmentationName(fallbackName)) {
+      if (Number.isFinite(normalizedFallbackId) && normalizedFallbackId > 0) {
+        protectedIds.add(normalizedFallbackId)
       }
     }
   }
 
-  return mask
+  const inspectLegendLike = (legendLike) => {
+    if (!legendLike || ArrayBuffer.isView(legendLike)) {
+      return
+    }
+    if (typeof legendLike === 'string' || typeof legendLike === 'number') {
+      considerLegendItem(legendLike)
+      return
+    }
+    if (legendLike instanceof Map) {
+      legendLike.forEach((value, key) => {
+        const fallbackName = typeof key === 'string' ? key : undefined
+        const fallbackId = typeof key === 'number' || typeof key === 'string' ? key : undefined
+        considerLegendItem(value, fallbackName, fallbackId)
+      })
+      return
+    }
+    if (Array.isArray(legendLike)) {
+      legendLike.forEach((entry, index) => {
+        let fallbackId = index
+        if (entry && typeof entry === 'object' && !ArrayBuffer.isView(entry)) {
+          for (const key of SEGMENTATION_LEGEND_ID_KEYS) {
+            const value = entry[key]
+            if (typeof value === 'number' || typeof value === 'string') {
+              const normalized = normalizeSegmentationLabelValue(value)
+              if (Number.isFinite(normalized) && normalized > 0) {
+                fallbackId = normalized
+                break
+              }
+            }
+          }
+        }
+        considerLegendItem(entry, undefined, fallbackId)
+      })
+      return
+    }
+    if (typeof legendLike === 'object') {
+      for (const [key, value] of Object.entries(legendLike)) {
+        if (key === 'length') {
+          continue
+        }
+        const fallbackName = typeof key === 'string' ? key : undefined
+        let fallbackId
+        if (typeof value === 'number' || typeof value === 'string') {
+          fallbackId = value
+        } else if (typeof key === 'number' || typeof key === 'string') {
+          fallbackId = key
+        }
+        considerLegendItem(value, fallbackName, fallbackId)
+      }
+    }
+  }
+
+  for (const sourceKey of SEGMENTATION_LEGEND_SOURCES) {
+    if (Object.prototype.hasOwnProperty.call(segmentation, sourceKey)) {
+      inspectLegendLike(segmentation[sourceKey])
+    }
+  }
+
+  if (protectedIds.size === 0) {
+    const fallbackKeys = ['person', 'people', '사람', 'thing', 'object', '사물', '물체', '인물']
+    for (const key of fallbackKeys) {
+      if (!Object.prototype.hasOwnProperty.call(segmentation, key)) {
+        continue
+      }
+      const normalized = normalizeSegmentationLabelValue(segmentation[key])
+      if (Number.isFinite(normalized) && normalized > 0) {
+        protectedIds.add(normalized)
+      }
+    }
+  }
+
+  if (protectedIds.size === 0 && SEGMENTATION_MODEL_CONFIG && SEGMENTATION_MODEL_CONFIG.base === 'pascal') {
+    protectedIds.add(15)
+  }
+
+  return protectedIds
 }
 
-function isSegmentationForeground(label) {
-  if (typeof label !== 'number' || !Number.isFinite(label)) {
+function isSegmentationForeground(label, options = {}) {
+  if (!Number.isFinite(label)) {
+    label = normalizeSegmentationLabelValue(label)
+  }
+  if (!Number.isFinite(label)) {
     return false
   }
-  if (label <= 0) {
+  if (label <= 0 || label === 255) {
     return false
   }
-  if (label === 255) {
-    return false
+
+  const { backgroundLabelIds } = options || {}
+  if (backgroundLabelIds instanceof Set) {
+    return !backgroundLabelIds.has(label)
+  }
+  if (Array.isArray(backgroundLabelIds)) {
+    return !backgroundLabelIds.includes(label)
+  }
+  if (backgroundLabelIds && typeof backgroundLabelIds === 'object') {
+    return !backgroundLabelIds[label]
   }
   return true
 }
 
-function applySegmentationMaskToImageData(imageData, mask, width, height) {
-  if (!imageData || !mask) {
+function isSegmentationProtectedLabel(label, options = {}) {
+  if (!Number.isFinite(label)) {
+    label = normalizeSegmentationLabelValue(label)
+  }
+  if (!Number.isFinite(label)) {
+    return false
+  }
+
+  const { protectedLabelIds } = options || {}
+  if (!protectedLabelIds) {
+    return false
+  }
+
+  if (protectedLabelIds instanceof Set) {
+    return protectedLabelIds.has(label)
+  }
+  if (Array.isArray(protectedLabelIds)) {
+    return protectedLabelIds.includes(label)
+  }
+  if (typeof protectedLabelIds === 'object') {
+    return Boolean(protectedLabelIds[label])
+  }
+  return false
+}
+
+function applySegmentationMaskToImageData(imageData, maskInput, width, height) {
+  if (!imageData || !maskInput) {
     return imageData
   }
+
+  const mask =
+    maskInput instanceof Uint8Array
+      ? maskInput
+      : maskInput && maskInput.mask instanceof Uint8Array
+      ? maskInput.mask
+      : null
+  if (!mask) {
+    return imageData
+  }
+
+  const protectedMask =
+    maskInput instanceof Uint8Array
+      ? null
+      : maskInput && maskInput.protectedMask instanceof Uint8Array
+      ? maskInput.protectedMask
+      : null
 
   const { data } = imageData
   const targetWidth = Math.max(1, Math.round(width || imageData.width || 0))
   const targetHeight = Math.max(1, Math.round(height || imageData.height || 0))
-  const pixelCount = Math.min(targetWidth * targetHeight, Math.floor(data.length / 4))
+  const pixelCount = Math.min(
+    targetWidth * targetHeight,
+    Math.floor(data.length / 4),
+    mask.length,
+  )
 
   const featheredMask = createFeatheredSegmentationMask(mask, targetWidth, targetHeight, 2)
 
   for (let i = 0; i < pixelCount; i += 1) {
     const offset = i * 4
+    const originalR = data[offset]
+    const originalG = data[offset + 1]
+    const originalB = data[offset + 2]
     const ratio = featheredMask ? featheredMask[i] : mask[i] ? 1 : 0
-    const clampedRatio = ratio >= 1 ? 1 : ratio <= 0 ? 0 : ratio
+    const normalizedRatio = ratio >= 1 ? 1 : ratio <= 0 ? 0 : ratio
+    const isProtected = Boolean(protectedMask && protectedMask.length > i && protectedMask[i])
+    const clampedRatio = isProtected ? 1 : normalizedRatio
+
     if (clampedRatio <= 0) {
       data[offset] = 0
       data[offset + 1] = 0
@@ -6778,10 +7111,18 @@ function applySegmentationMaskToImageData(imageData, mask, width, height) {
       continue
     }
 
-    data[offset] = Math.round(data[offset] * clampedRatio)
-    data[offset + 1] = Math.round(data[offset + 1] * clampedRatio)
-    data[offset + 2] = Math.round(data[offset + 2] * clampedRatio)
-    data[offset + 3] = Math.round(Math.min(1, clampedRatio) * 255)
+    if (isProtected || clampedRatio >= 1) {
+      data[offset] = originalR
+      data[offset + 1] = originalG
+      data[offset + 2] = originalB
+      data[offset + 3] = 255
+      continue
+    }
+
+    data[offset] = Math.round(originalR * clampedRatio)
+    data[offset + 1] = Math.round(originalG * clampedRatio)
+    data[offset + 2] = Math.round(originalB * clampedRatio)
+    data[offset + 3] = Math.round(clampedRatio * 255)
   }
 
   return imageData
