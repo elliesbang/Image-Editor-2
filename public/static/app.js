@@ -7305,7 +7305,7 @@ async function restoreWhiteObjects(base64Image) {
     const alpha = data[i + 3]
 
     const brightness = (r + g + b) / 3
-    if (brightness > 230 && alpha > 0 && alpha < 200) {
+    if (brightness > 230 && alpha >= 64 && alpha < 200) {
       // Only restore semi-transparent bright pixels so fully transparent backgrounds stay transparent
       data[i + 3] = 255
     }
@@ -10718,6 +10718,7 @@ async function processRemoveBackground(source, previousOperations = []) {
     width: canvas.width,
     height: canvas.height,
     operations,
+    type: 'image/png',
     name: `${baseName(name)}__bg-removed.png`,
   }
   setResult(result)
@@ -10739,6 +10740,7 @@ async function processAutoCrop(source, previousOperations = []) {
     width: cropped.width,
     height: cropped.height,
     operations,
+    type: 'image/png',
     name: `${baseName(name)}__cropped.png`,
     previewDataUrl,
   }
@@ -10808,6 +10810,7 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
     width: cropped.width,
     height: cropped.height,
     operations,
+    type: 'image/png',
     name: `${baseName(name)}__bg-cropped.png`,
     previewDataUrl,
   }
@@ -10829,6 +10832,7 @@ async function processDenoise(source, previousOperations = []) {
     width: canvas.width,
     height: canvas.height,
     operations,
+    type: 'image/png',
     name: `${baseName(name)}__denoised.png`,
   }
   setResult(result)
@@ -10910,6 +10914,7 @@ async function processResize(upload, targetWidth, previousOperations = []) {
     width: workingCanvas.width,
     height: workingCanvas.height,
     operations: history,
+    type: 'image/png',
     name: `${baseName(upload.name)}__resized-${workingCanvas.width}px.png`,
   }
 }
@@ -10921,7 +10926,16 @@ function findLatestResultForSource(sourceId) {
 
 function appendResult(upload, result, options = {}) {
   const { transferSelection = true, selectResult = true } = options
-  const objectUrl = URL.createObjectURL(result.blob)
+  const baseBlob = result?.blob instanceof Blob ? result.blob : new Blob()
+  const resolvedType =
+    typeof result?.type === 'string' && result.type
+      ? result.type
+      : baseBlob.type && baseBlob.type !== 'application/octet-stream'
+        ? baseBlob.type
+        : 'image/png'
+  const normalizedBlob =
+    baseBlob.type === resolvedType ? baseBlob : new Blob([baseBlob], { type: resolvedType })
+  const objectUrl = URL.createObjectURL(normalizedBlob)
   const previewDataUrl = typeof result.previewDataUrl === 'string' && result.previewDataUrl ? result.previewDataUrl : ''
   const record = {
     id: uuid(),
@@ -10929,8 +10943,9 @@ function appendResult(upload, result, options = {}) {
     name: result.name,
     width: result.width,
     height: result.height,
-    size: result.blob.size,
-    blob: result.blob,
+    size: normalizedBlob.size,
+    blob: normalizedBlob,
+    type: resolvedType,
     objectUrl,
     previewDataUrl,
     operations: result.operations,
@@ -10971,14 +10986,24 @@ function replaceResult(existingResult, updatedPayload) {
     }
   }
 
-  const objectUrl = URL.createObjectURL(updatedPayload.blob)
+  const baseBlob = updatedPayload?.blob instanceof Blob ? updatedPayload.blob : new Blob()
+  const resolvedType =
+    typeof updatedPayload?.type === 'string' && updatedPayload.type
+      ? updatedPayload.type
+      : baseBlob.type && baseBlob.type !== 'application/octet-stream'
+        ? baseBlob.type
+        : previous.type || 'image/png'
+  const normalizedBlob =
+    baseBlob.type === resolvedType ? baseBlob : new Blob([baseBlob], { type: resolvedType })
+  const objectUrl = URL.createObjectURL(normalizedBlob)
   const updated = {
     ...previous,
     name: updatedPayload.name,
     width: updatedPayload.width,
     height: updatedPayload.height,
-    size: updatedPayload.blob.size,
-    blob: updatedPayload.blob,
+    size: normalizedBlob.size,
+    blob: normalizedBlob,
+    type: resolvedType,
     objectUrl,
     previewDataUrl:
       typeof updatedPayload.previewDataUrl === 'string' && updatedPayload.previewDataUrl
