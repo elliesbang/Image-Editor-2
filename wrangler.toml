@@ -1,24 +1,6 @@
-[project]
 name = "image-editor-2"
 compatibility_date = "2025-10-18"
 
 [build]
-# Cloudflare Pages가 실제 배포 시 참고할 빌드 결과물 경로
-pages_build_output_dir = "./dist"
-
-[site]
-bucket = "./dist"
-
-[dev]
-# 로컬 미리보기 시 Vite 개발 서버와 동일하게 동작하도록 설정
-ip = "0.0.0.0"
-port = 8787
-
-[vars]
-# 환경변수 섹션 — 필요 시 실제 값 입력
-# OPENAI_API_KEY = "your-api-key"
-# DATABASE_URL = "your-d1-db-url"
-
-# 선택: Worker 런타임 설정 (이미 _worker.js가 있는 경우)
-[observability]
-enabled = true
+command = "npm run build"
+pages_build_output_dir = "dist"
