@@ -6632,158 +6632,29 @@ function buildForegroundMask(imageData, width, height, stats) {
 }
 
 function applyBackgroundRemoval(imageData, width, height) {
+  if (!imageData || width <= 0 || height <= 0) {
+    return imageData
+  }
+
   const { data } = imageData
-  const stats = analyzeBackground(imageData, width, height)
-  const foregroundMask = buildForegroundMask(imageData, width, height, stats)
   const pixelCount = width * height
-  const visited = new Uint8Array(pixelCount)
+  if (pixelCount === 0) {
+    return imageData
+  }
+
+  const colorThreshold = 240
+  const edgeThreshold = 15
+  const brightness = new Uint16Array(pixelCount)
+  const brightMask = new Uint8Array(pixelCount)
+  const edgeMask = new Uint8Array(pixelCount)
   const backgroundMask = new Uint8Array(pixelCount)
-  const queue = []
-
-  const shouldBeBackground = (index) => {
-    const offset = index * 4
-    const alpha = data[offset + 3]
-    if (alpha <= 18) return true
-    const distanceSq = colorDistanceSq(data[offset], data[offset + 1], data[offset + 2], stats.meanColor)
-    if (distanceSq <= stats.toleranceSq) return true
-    return distanceSq <= stats.relaxedToleranceSq && alpha <= 235
-  }
-
-  const trySeed = (x, y) => {
-    if (x < 0 || x >= width || y < 0 || y >= height) return
-    const index = y * width + x
-    if (visited[index]) return
-    visited[index] = 1
-    if (shouldBeBackground(index)) {
-      backgroundMask[index] = 1
-      queue.push(index)
-    }
-  }
-
-  for (let x = 0; x < width; x += 1) {
-    trySeed(x, 0)
-    trySeed(x, height - 1)
-  }
-  for (let y = 0; y < height; y += 1) {
-    trySeed(0, y)
-    trySeed(width - 1, y)
-  }
-
-  let head = 0
-  while (head < queue.length) {
-    const index = queue[head]
-    head += 1
-    const x = index % width
-    const y = Math.floor(index / width)
-
-    trySeed(x - 1, y)
-    trySeed(x + 1, y)
-    trySeed(x, y - 1)
-    trySeed(x, y + 1)
-  }
-
-  const holeVisited = new Uint8Array(pixelCount)
-  for (let i = 0; i < pixelCount; i += 1) {
-    if (backgroundMask[i] || holeVisited[i]) continue
-    if (!shouldBeBackground(i)) continue
-
-    const stack = [i]
-    const holePixels = []
-    let holeForeground = 0
-    let holeOpaque = 0
-    let touchesForegroundBoundary = false
-    holeVisited[i] = 1
-
-    while (stack.length > 0) {
-      const current = stack.pop()
-      holePixels.push(current)
-
-      if (foregroundMask[current]) {
-        holeForeground += 1
-      }
-
-      const alpha = data[current * 4 + 3]
-      if (alpha > 210) {
-        holeOpaque += 1
-      }
-
-      const cx = current % width
-      const cy = Math.floor(current / width)
-
-      if (cx > 0) {
-        const leftIndex = current - 1
-        if (!backgroundMask[leftIndex] && !holeVisited[leftIndex]) {
-          if (shouldBeBackground(leftIndex)) {
-            holeVisited[leftIndex] = 1
-            stack.push(leftIndex)
-          } else if (foregroundMask[leftIndex]) {
-            touchesForegroundBoundary = true
-          }
-        } else if (!backgroundMask[leftIndex] && foregroundMask[leftIndex]) {
-          touchesForegroundBoundary = true
-        }
-      }
-
-      if (cx + 1 < width) {
-        const rightIndex = current + 1
-        if (!backgroundMask[rightIndex] && !holeVisited[rightIndex]) {
-          if (shouldBeBackground(rightIndex)) {
-            holeVisited[rightIndex] = 1
-            stack.push(rightIndex)
-          } else if (foregroundMask[rightIndex]) {
-            touchesForegroundBoundary = true
-          }
-        } else if (!backgroundMask[rightIndex] && foregroundMask[rightIndex]) {
-          touchesForegroundBoundary = true
-        }
-      }
-
-      if (cy > 0) {
-        const topIndex = current - width
-        if (!backgroundMask[topIndex] && !holeVisited[topIndex]) {
-          if (shouldBeBackground(topIndex)) {
-            holeVisited[topIndex] = 1
-            stack.push(topIndex)
-          } else if (foregroundMask[topIndex]) {
-            touchesForegroundBoundary = true
-          }
-        } else if (!backgroundMask[topIndex] && foregroundMask[topIndex]) {
-          touchesForegroundBoundary = true
-        }
-      }
-
-      if (cy + 1 < height) {
-        const bottomIndex = current + width
-        if (!backgroundMask[bottomIndex] && !holeVisited[bottomIndex]) {
-          if (shouldBeBackground(bottomIndex)) {
-            holeVisited[bottomIndex] = 1
-            stack.push(bottomIndex)
-          } else if (foregroundMask[bottomIndex]) {
-            touchesForegroundBoundary = true
-          }
-        } else if (!backgroundMask[bottomIndex] && foregroundMask[bottomIndex]) {
-          touchesForegroundBoundary = true
-        }
-      }
-    }
-
-    const holeSize = holePixels.length
-    if (holeSize > 0) {
-      const foregroundRatio = holeForeground / holeSize
-      const opaqueRatio = holeOpaque / holeSize
-      if (touchesForegroundBoundary || foregroundRatio > 0.08 || opaqueRatio > 0.55) {
-        continue
-      }
-      for (const index of holePixels) {
-        backgroundMask[index] = 1
-      }
-    }
-  }
 
   for (let i = 0; i < pixelCount; i += 1) {
-    if (backgroundMask[i]) {
-      data[i * 4 + 3] = 0
-    }
+    const offset = i * 4
+    const r = data[offset]
+    const g = data[offset + 1]
+    const b = data[offset + 2]
+    brightness[i] = Math.round((r + g + b) / 3)
   }
 
   const neighborOffsets = [
@@ -6800,30 +6671,150 @@ function applyBackgroundRemoval(imageData, width, height) {
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x
-      if (backgroundMask[index]) continue
-      let backgroundNeighbors = 0
+      const currentBrightness = brightness[index]
+      let maxDiff = 0
+
       for (const [dx, dy] of neighborOffsets) {
         const nx = x + dx
         const ny = y + dy
         if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
-        if (backgroundMask[ny * width + nx]) backgroundNeighbors += 1
+        const neighborIndex = ny * width + nx
+        const diff = Math.abs(currentBrightness - brightness[neighborIndex])
+        if (diff > maxDiff) maxDiff = diff
       }
-      if (backgroundNeighbors > 0) {
-        const alphaIndex = index * 4 + 3
-        const reduction = Math.min(0.65, backgroundNeighbors * 0.12)
-        data[alphaIndex] = Math.max(0, Math.round(data[alphaIndex] * (1 - reduction)))
+
+      if (maxDiff >= edgeThreshold) {
+        edgeMask[index] = 1
       }
     }
   }
 
   for (let i = 0; i < pixelCount; i += 1) {
-    const alphaIndex = i * 4 + 3
-    if (data[alphaIndex] <= 12) {
-      data[alphaIndex] = 0
+    const offset = i * 4
+    const alpha = data[offset + 3]
+    if (alpha <= 12) {
+      backgroundMask[i] = 1
+      continue
+    }
+
+    if (brightness[i] >= colorThreshold) {
+      brightMask[i] = 1
+      if (!edgeMask[i]) {
+        backgroundMask[i] = 1
+      }
     }
   }
 
+  removeInnerWhiteAreas(backgroundMask, brightMask, edgeMask, width, height)
+  applyFeatheredAlpha(imageData, backgroundMask, edgeMask, width, height)
+
   return imageData
+}
+
+function removeInnerWhiteAreas(backgroundMask, brightMask, edgeMask, width, height) {
+  if (!backgroundMask || !brightMask || width <= 0 || height <= 0) {
+    return
+  }
+
+  const pixelCount = width * height
+  const visited = new Uint8Array(pixelCount)
+  const queue = []
+
+  const tryEnqueue = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return
+    const index = y * width + x
+    if (visited[index]) return
+    if (!brightMask[index]) return
+    visited[index] = 1
+    queue.push(index)
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    tryEnqueue(x, 0)
+    tryEnqueue(x, height - 1)
+  }
+  for (let y = 0; y < height; y += 1) {
+    tryEnqueue(0, y)
+    tryEnqueue(width - 1, y)
+  }
+
+  let head = 0
+  while (head < queue.length) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    const y = Math.floor(index / width)
+
+    if (x > 0) tryEnqueue(x - 1, y)
+    if (x + 1 < width) tryEnqueue(x + 1, y)
+    if (y > 0) tryEnqueue(x, y - 1)
+    if (y + 1 < height) tryEnqueue(x, y + 1)
+  }
+
+  for (let i = 0; i < pixelCount; i += 1) {
+    if (!brightMask[i] || visited[i] || (edgeMask && edgeMask[i])) continue
+    backgroundMask[i] = 1
+  }
+}
+
+function applyFeatheredAlpha(imageData, backgroundMask, edgeMask, width, height) {
+  if (!imageData || !backgroundMask || width <= 0 || height <= 0) {
+    return
+  }
+
+  const { data } = imageData
+  const pixelCount = width * height
+  const featherRadius = 2
+  const radiusSq = featherRadius * featherRadius
+  const minEdgeAlpha = 0.7
+  const maxEdgeAlpha = 0.9
+
+  for (let i = 0; i < pixelCount; i += 1) {
+    const offset = i * 4
+
+    if (backgroundMask[i]) {
+      data[offset] = 0
+      data[offset + 1] = 0
+      data[offset + 2] = 0
+      data[offset + 3] = 0
+      continue
+    }
+
+    const originalAlpha = Math.max(0, Math.min(1, data[offset + 3] / 255))
+    const x = i % width
+    const y = Math.floor(i / width)
+    let minDistSq = Infinity
+
+    for (let dy = -featherRadius; dy <= featherRadius; dy += 1) {
+      const ny = y + dy
+      if (ny < 0 || ny >= height) continue
+      for (let dx = -featherRadius; dx <= featherRadius; dx += 1) {
+        const nx = x + dx
+        if (nx < 0 || nx >= width) continue
+        const distSq = dx * dx + dy * dy
+        if (distSq === 0 || distSq > radiusSq) continue
+        const neighborIndex = ny * width + nx
+        if (backgroundMask[neighborIndex]) {
+          if (distSq < minDistSq) {
+            minDistSq = distSq
+          }
+        }
+      }
+    }
+
+    if (minDistSq !== Infinity) {
+      const dist = Math.sqrt(minDistSq)
+      const ratio = Math.max(0, Math.min(1, dist / featherRadius))
+      const targetAlpha = minEdgeAlpha + (maxEdgeAlpha - minEdgeAlpha) * ratio
+      const finalAlpha = Math.min(originalAlpha, targetAlpha)
+      data[offset + 3] = Math.round(Math.max(0, Math.min(1, finalAlpha)) * 255)
+    } else if (edgeMask && edgeMask[i]) {
+      const finalAlpha = Math.min(originalAlpha, maxEdgeAlpha)
+      data[offset + 3] = Math.round(finalAlpha * 255)
+    } else {
+      data[offset + 3] = Math.round(originalAlpha * 255)
+    }
+  }
 }
 
 function findBoundingBox(imageData, width, height, alphaThreshold = 12, tolerance = 75) {
