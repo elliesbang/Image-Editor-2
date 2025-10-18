@@ -8523,7 +8523,8 @@ function detectSubjectBounds(imageData, width, height) {
 
   const refined = refineBoundsFromMask(workingMask, width, height, initialBounds)
   const tightened = tightenBoundsWithBackgroundSimilarity(workingMask, width, height, refined, stats, data)
-  return expandBounds(tightened, width, height, 0)
+  const contentBounds = trimBoundsToVisibleContent(tightened, workingMask, imageData, width, height)
+  return expandBounds(contentBounds, width, height, 0)
 }
 
 function cropCanvas(canvas, ctx, bounds) {
@@ -8539,6 +8540,88 @@ function cropCanvas(canvas, ctx, bounds) {
   const imageData = ctx.getImageData(left, top, cropWidth, cropHeight)
   croppedCtx.putImageData(imageData, 0, 0)
   return { canvas: cropped, ctx: croppedCtx }
+}
+
+function trimBoundsToVisibleContent(bounds, mask, imageData, width, height, alphaThreshold = 6) {
+  if (!bounds) {
+    return { top: 0, left: 0, right: Math.max(0, width - 1), bottom: Math.max(0, height - 1) }
+  }
+
+  let { top, left, right, bottom } = bounds
+  const validWidth = Math.max(1, width)
+  const validHeight = Math.max(1, height)
+  top = Math.max(0, Math.min(validHeight - 1, Math.round(top)))
+  bottom = Math.max(top, Math.min(validHeight - 1, Math.round(bottom)))
+  left = Math.max(0, Math.min(validWidth - 1, Math.round(left)))
+  right = Math.max(left, Math.min(validWidth - 1, Math.round(right)))
+  const totalPixels = validWidth * validHeight
+  const hasMask = mask instanceof Uint8Array && mask.length === totalPixels
+  const data = imageData?.data
+  const hasImageData = Boolean(data) && data.length >= totalPixels * 4
+
+  if (!hasMask && !hasImageData) {
+    return {
+      top,
+      left,
+      right,
+      bottom,
+    }
+  }
+
+  const rowHasContent = (y) => {
+    for (let x = left; x <= right; x += 1) {
+      const index = y * validWidth + x
+      if (hasMask && mask[index]) {
+        return true
+      }
+      if (hasImageData) {
+        const alpha = data[index * 4 + 3]
+        if (alpha > alphaThreshold) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  const columnHasContent = (x) => {
+    for (let y = top; y <= bottom; y += 1) {
+      const index = y * validWidth + x
+      if (hasMask && mask[index]) {
+        return true
+      }
+      if (hasImageData) {
+        const alpha = data[index * 4 + 3]
+        if (alpha > alphaThreshold) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  while (top < bottom && !rowHasContent(top)) {
+    top += 1
+  }
+
+  while (bottom > top && !rowHasContent(bottom)) {
+    bottom -= 1
+  }
+
+  while (left < right && !columnHasContent(left)) {
+    left += 1
+  }
+
+  while (right > left && !columnHasContent(right)) {
+    right -= 1
+  }
+
+  return {
+    top: Math.max(0, Math.min(validHeight - 1, top)),
+    left: Math.max(0, Math.min(validWidth - 1, left)),
+    right: Math.max(0, Math.min(validWidth - 1, right)),
+    bottom: Math.max(0, Math.min(validHeight - 1, bottom)),
+  }
 }
 
 function createMaskFromAlpha(imageData, width, height, alphaThreshold = 4) {
@@ -10355,7 +10438,7 @@ async function processRemoveBackground(source, previousOperations = []) {
       canvas.width = targetWidth
       canvas.height = targetHeight
     }
-    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    workingContext = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!workingContext) {
       throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
     }
@@ -10373,10 +10456,11 @@ async function processRemoveBackground(source, previousOperations = []) {
       canvas.width = targetWidth
       canvas.height = targetHeight
     }
-    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    workingContext = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!workingContext) {
       throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
     }
+    workingContext.clearRect(0, 0, targetWidth, targetHeight)
     workingContext.putImageData(removal.imageData, 0, 0)
     imageData = removal.imageData
     blob = await canvasToBlob(canvas, 'image/png', 0.95)
@@ -10385,10 +10469,11 @@ async function processRemoveBackground(source, previousOperations = []) {
       canvas.width = targetWidth
       canvas.height = targetHeight
     }
-    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    workingContext = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!workingContext) {
       throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
     }
+    workingContext.clearRect(0, 0, targetWidth, targetHeight)
     workingContext.putImageData(imageData, 0, 0)
     blob = await canvasToBlob(canvas, 'image/png', 0.95)
   }
@@ -10445,7 +10530,7 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
       canvas.width = targetWidth
       canvas.height = targetHeight
     }
-    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    workingContext = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!workingContext) {
       throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
     }
@@ -10462,17 +10547,19 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
       canvas.width = targetWidth
       canvas.height = targetHeight
     }
-    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    workingContext = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!workingContext) {
       throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
     }
+    workingContext.clearRect(0, 0, targetWidth, targetHeight)
     workingContext.putImageData(removal.imageData, 0, 0)
     imageData = removal.imageData
   } else {
-    workingContext = canvas.getContext('2d', { willReadFrequently: true })
+    workingContext = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!workingContext) {
       throw new Error('CANVAS_CONTEXT_NOT_AVAILABLE')
     }
+    workingContext.clearRect(0, 0, targetWidth, targetHeight)
     workingContext.putImageData(imageData, 0, 0)
   }
 
