@@ -30,7 +30,6 @@ export async function onRequestPost(context) {
         const formData = new FormData()
         formData.append('image_file', uploadBlob, requestedFileName)
         formData.append('size', 'auto')
-        formData.append('bg_color', 'transparent')
 
         const response = await fetch('https://api.remove.bg/v1.0/removebg', {
           method: 'POST',
@@ -74,9 +73,9 @@ export async function onRequestPost(context) {
       console.warn('⚠️ REMOVE_BG_API_KEY is not configured. Falling back to canvas background removal.')
     }
 
-    const base64 = arrayBufferToBase64(arrayBuffer)
+    const reason = apiKey ? 'REMOVE_BG_REQUEST_FAILED' : 'REMOVE_BG_API_KEY_MISSING'
     return new Response(
-      JSON.stringify({ fallback: true, reason: apiKey ? 'REMOVE_BG_REQUEST_FAILED' : 'REMOVE_BG_API_KEY_MISSING', base64 }),
+      JSON.stringify({ fallback: true, reason }),
       { headers },
     )
   } catch (error) {
