@@ -6754,11 +6754,35 @@ async function callOpenAIBackgroundRemoval(imageBlob, options = {}) {
   }
 
   const blob = await response.blob()
+  const originalDataUrl = await blobToDataUrl(blob).catch(() => null)
+  if (typeof originalDataUrl !== 'string' || !originalDataUrl) {
+    throw new Error('OPENAI_BACKGROUND_REMOVAL_DATA_URL_FAILED')
+  }
+
+  const originalBase64 = originalDataUrl.replace(/^data:[^;]+;base64,/, '')
+  let restoredBase64 = originalBase64
+  try {
+    restoredBase64 = await restoreWhiteObjects(originalBase64)
+  } catch (error) {
+    console.warn('restoreWhiteObjects failed; falling back to original mask', error)
+    restoredBase64 = originalBase64
+  }
+
+  const sanitizedBase64 = typeof restoredBase64 === 'string' && restoredBase64 ? restoredBase64.replace(/\s+/g, '') : originalBase64
+  let processedBlob = blob
+  let processedDataUrl = `data:image/png;base64,${sanitizedBase64}`
+  try {
+    processedBlob = base64ToPngBlob(sanitizedBase64)
+  } catch (error) {
+    console.warn('Failed to convert restored PNG. Using original blob instead.', error)
+    processedBlob = blob
+    processedDataUrl = originalDataUrl
+  }
 
   let source = null
   if (typeof createImageBitmap === 'function') {
     try {
-      source = await createImageBitmap(blob)
+      source = await createImageBitmap(processedBlob)
     } catch (error) {
       source = null
     }
@@ -6766,19 +6790,13 @@ async function callOpenAIBackgroundRemoval(imageBlob, options = {}) {
 
   if (!source) {
     source = await new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(blob)
       const image = new Image()
-      image.onload = () => {
-        URL.revokeObjectURL(url)
-        resolve(image)
-      }
-      image.onerror = (event) => {
-        URL.revokeObjectURL(url)
+      image.onload = () => resolve(image)
+      image.onerror = (event) =>
         reject(event instanceof Error ? event : new Error('OPENAI_BACKGROUND_REMOVAL_IMAGE_LOAD_FAILED'))
-      }
       image.crossOrigin = 'anonymous'
       image.decoding = 'async'
-      image.src = url
+      image.src = processedDataUrl
     })
   }
 
@@ -6804,8 +6822,85 @@ async function callOpenAIBackgroundRemoval(imageBlob, options = {}) {
     source,
     width: typeof resolvedWidth === 'number' && resolvedWidth > 0 ? resolvedWidth : undefined,
     height: typeof resolvedHeight === 'number' && resolvedHeight > 0 ? resolvedHeight : undefined,
-    blob,
+    blob: processedBlob,
   }
+}
+
+async function restoreWhiteObjects(base64Image) {
+  if (typeof base64Image !== 'string' || !base64Image) {
+    return base64Image
+  }
+
+  const normalizedBase64 = base64Image.replace(/\s+/g, '')
+  const img = new Image()
+  img.crossOrigin = 'anonymous'
+  img.decoding = 'async'
+  img.src = `data:image/png;base64,${normalizedBase64}`
+
+  if (typeof img.decode === 'function') {
+    try {
+      await img.decode()
+    } catch (error) {
+      await new Promise((resolve, reject) => {
+        img.addEventListener('load', resolve, { once: true })
+        img.addEventListener('error', (event) => {
+          reject(event instanceof Error ? event : new Error('RESTORE_WHITE_OBJECTS_IMAGE_DECODE_FAILED'))
+        })
+      })
+    }
+  } else {
+    await new Promise((resolve, reject) => {
+      img.addEventListener('load', resolve, { once: true })
+      img.addEventListener('error', (event) => {
+        reject(event instanceof Error ? event : new Error('RESTORE_WHITE_OBJECTS_IMAGE_LOAD_FAILED'))
+      })
+    })
+  }
+
+  const width = Math.max(1, img.naturalWidth || img.width || 1)
+  const height = Math.max(1, img.naturalHeight || img.height || 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
+  if (!ctx) {
+    return normalizedBase64
+  }
+
+  ctx.clearRect(0, 0, width, height)
+  ctx.drawImage(img, 0, 0, width, height)
+
+  const imageData = ctx.getImageData(0, 0, width, height)
+  const data = imageData.data
+
+  // 흰색 피사체 복원용 후처리 로직
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    const alpha = data[i + 3]
+
+    const brightness = (r + g + b) / 3
+    if (brightness > 230 && alpha < 200) {
+      data[i + 3] = 255
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+  const restoredDataUrl = canvas.toDataURL('image/png')
+  const parts = restoredDataUrl.split(',')
+  return parts.length > 1 ? parts[1] : normalizedBase64
+}
+
+function base64ToPngBlob(base64) {
+  const normalized = (base64 || '').replace(/\s+/g, '')
+  const binary = atob(normalized)
+  const length = binary.length
+  const bytes = new Uint8Array(length)
+  for (let index = 0; index < length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return new Blob([bytes], { type: 'image/png' })
 }
 
 async function applyBackgroundRemoval(imageData, width, height, canvas, options = {}) {
