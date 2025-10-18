@@ -11,6 +11,15 @@ import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
 import SignupPage from './Signup'
 
+const BACKGROUND_REMOVAL_PROMPT = `
+Remove the background from this image using AI segmentation. 
+Precisely keep all light-colored or white objects, including white clothing, paper, and skin tones. 
+Avoid removing edges or highlights around bright subjects. 
+After removing the background, refine the edges to preserve thin details like hair, fabric, or object outlines. 
+Do not make bright areas transparent if they are part of the subject. 
+Output a clean transparent PNG with smooth edges and no halo artifacts.
+`.trim()
+
 type D1Result<T = unknown> = {
   success: boolean
   error?: string
@@ -4486,61 +4495,82 @@ const decodeBase64ToUint8Array = (base64: string): Uint8Array => {
   return bytes
 }
 
-const extractOpenAIImageBase64 = (payload: unknown): string | null => {
-  if (!payload || typeof payload !== 'object') {
-    return null
+type BackgroundRemovalResponse = {
+  base64: string
+  requestId?: string
+}
+
+const callOpenAIBackgroundRemoval = async (
+  apiKey: string,
+  imageFile: File,
+  options: { signal?: AbortSignal } = {},
+): Promise<BackgroundRemovalResponse> => {
+  const normalizedName = imageFile.name && imageFile.name.trim() ? imageFile.name.trim() : 'image.png'
+
+  const formData = new FormData()
+  formData.set('model', 'gpt-4o-mini')
+  formData.set('prompt', BACKGROUND_REMOVAL_PROMPT)
+  formData.set('size', '1024x1024')
+  formData.set('transparent_background', 'true')
+  formData.set('image', imageFile, normalizedName)
+
+  const requestInit: RequestInit = {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: formData,
+    signal: options.signal,
   }
 
-  const containers: unknown[] = []
-  const root = payload as Record<string, unknown>
+  const response = await fetch('https://api.openai.com/v1/images/edits', requestInit)
+  const requestId = response.headers.get('x-request-id') ?? undefined
+  const rawBody = await response.text()
+  let payload: unknown = null
 
-  const maybePush = (value: unknown) => {
-    if (Array.isArray(value)) {
-      containers.push(...value)
-    } else if (value && typeof value === 'object') {
-      containers.push(value)
-    }
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : null
+  } catch (error) {
+    const parseError = new Error('OPENAI_INVALID_RESPONSE')
+    ;(parseError as any).status = response.status || 502
+    ;(parseError as any).details = rawBody.slice(0, 4000)
+    ;(parseError as any).requestId = requestId
+    throw parseError
   }
 
-  maybePush(root.output)
-  maybePush(root.outputs)
-  maybePush(root.data)
-  if (root.result && typeof root.result === 'object') {
-    const result = root.result as Record<string, unknown>
-    maybePush(result.output)
-    maybePush(result.outputs)
+  if (!response.ok) {
+    const errorPayload = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+    const responseError =
+      errorPayload && errorPayload.error && typeof errorPayload.error === 'object'
+        ? (errorPayload.error as Record<string, unknown>)
+        : null
+    const message =
+      (typeof responseError?.message === 'string' && responseError.message.trim()) || 'OPENAI_REQUEST_FAILED'
+    const error = new Error(message)
+    ;(error as any).status = response.status || 502
+    ;(error as any).details = payload
+    ;(error as any).requestId = requestId
+    ;(error as any).code = typeof responseError?.code === 'string' ? responseError.code : undefined
+    ;(error as any).type = typeof responseError?.type === 'string' ? responseError.type : undefined
+    throw error
   }
 
-  for (const container of containers) {
-    if (!container || typeof container !== 'object') continue
-    const content = (container as Record<string, unknown>).content
-    if (!Array.isArray(content)) continue
-    for (const item of content) {
-      if (!item || typeof item !== 'object') continue
-      const record = item as Record<string, unknown>
-      const direct = record.image_base64 || record.b64_json
-      if (typeof direct === 'string' && direct.trim()) {
-        return direct.trim()
-      }
-      if (record.image && typeof record.image === 'object') {
-        const imageRecord = record.image as Record<string, unknown>
-        const base64Candidate =
-          (typeof imageRecord.base64 === 'string' && imageRecord.base64.trim()) ||
-          (typeof imageRecord.data === 'string' && imageRecord.data.trim())
-        if (base64Candidate) {
-          return base64Candidate
-        }
-      }
-    }
+  const dataArray = Array.isArray((payload as any)?.data) ? ((payload as any).data as unknown[]) : []
+  const firstImage = dataArray.length > 0 ? (dataArray[0] as Record<string, unknown>) : null
+  const base64 =
+    firstImage && typeof firstImage.b64_json === 'string' && firstImage.b64_json.trim()
+      ? firstImage.b64_json.trim()
+      : null
+
+  if (!base64) {
+    const error = new Error('OPENAI_IMAGE_MISSING')
+    ;(error as any).status = 502
+    ;(error as any).details = payload
+    ;(error as any).requestId = requestId
+    throw error
   }
 
-  const directBase64 =
-    (typeof (root as Record<string, unknown>).image_base64 === 'string' &&
-      (root as Record<string, unknown>).image_base64.trim()) ||
-    (typeof (root as Record<string, unknown>).b64_json === 'string' &&
-      (root as Record<string, unknown>).b64_json.trim())
-
-  return directBase64 ? directBase64.trim() : null
+  return { base64, requestId }
 }
 
 app.post('/api/image/remove-background', async (c) => {
@@ -4559,170 +4589,112 @@ app.post('/api/image/remove-background', async (c) => {
     return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
   }
 
-  let body: BackgroundRemovalRequestBody | null = null
-  try {
-    body = await c.req.json<BackgroundRemovalRequestBody>()
-  } catch (error) {
+  const contentType = c.req.header('content-type')?.toLowerCase() ?? ''
+  let imageFile: File | null = null
+  let imageName = ''
+
+  if (contentType.includes('multipart/form-data')) {
+    const formData = await c.req.formData()
+    const imageValue = formData.get('image')
+    if (imageValue instanceof File) {
+      imageFile = imageValue
+      imageName = imageValue.name ?? ''
+    } else if (typeof imageValue === 'string' && imageValue.trim()) {
+      const parsed = parseImageDataUrl(imageValue.trim())
+      if (!parsed) {
+        c.header('cache-control', 'no-store')
+        return c.json({ error: 'INVALID_IMAGE_DATA_URL' }, 400)
+      }
+      const bytes = decodeBase64ToUint8Array(parsed.base64)
+      imageFile = new File([bytes], 'image.png', { type: parsed.mimeType || 'image/png' })
+    }
+
+    const nameValue = formData.get('name')
+    if (typeof nameValue === 'string' && nameValue.trim()) {
+      imageName = nameValue.trim()
+    }
+
+  } else {
+    let body: BackgroundRemovalRequestBody | null = null
+    try {
+      body = await c.req.json<BackgroundRemovalRequestBody>()
+    } catch (error) {
+      c.header('cache-control', 'no-store')
+      return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    }
+
+    const imageDataUrl = typeof body?.image === 'string' ? body.image.trim() : ''
+    if (!imageDataUrl) {
+      c.header('cache-control', 'no-store')
+      return c.json({ error: 'IMAGE_DATA_URL_REQUIRED' }, 400)
+    }
+
+    const parsedImage = parseImageDataUrl(imageDataUrl)
+    if (!parsedImage) {
+      c.header('cache-control', 'no-store')
+      return c.json({ error: 'INVALID_IMAGE_DATA_URL' }, 400)
+    }
+
+    imageName = typeof body?.name === 'string' ? body.name.trim() : ''
+
+    const bytes = decodeBase64ToUint8Array(parsedImage.base64)
+    const normalizedName = imageName || 'image.png'
+    imageFile = new File([bytes], normalizedName, { type: parsedImage.mimeType || 'image/png' })
+  }
+
+  if (!imageFile) {
     c.header('cache-control', 'no-store')
-    return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+    return c.json({ error: 'IMAGE_PAYLOAD_REQUIRED' }, 400)
   }
 
-  const imageDataUrl = typeof body?.image === 'string' ? body.image.trim() : ''
-  if (!imageDataUrl) {
-    c.header('cache-control', 'no-store')
-    return c.json({ error: 'IMAGE_DATA_URL_REQUIRED' }, 400)
-  }
-
-  const parsedImage = parseImageDataUrl(imageDataUrl)
-  if (!parsedImage) {
-    c.header('cache-control', 'no-store')
-    return c.json({ error: 'INVALID_IMAGE_DATA_URL' }, 400)
-  }
-
-  const imageName = typeof body?.name === 'string' ? body.name.trim() : ''
-  const widthValue =
-    typeof body?.width === 'number'
-      ? body.width
-      : body?.width !== undefined
-        ? Number(body.width)
-        : null
-  const heightValue =
-    typeof body?.height === 'number'
-      ? body.height
-      : body?.height !== undefined
-        ? Number(body.height)
-        : null
-  const width = Number.isFinite(widthValue) ? Math.max(1, Math.round(Number(widthValue))) : null
-  const height = Number.isFinite(heightValue) ? Math.max(1, Math.round(Number(heightValue))) : null
-
-  const systemPrompt =
-    'You are an expert image editor specializing in precise background removal and subject-centric composition. Preserve fine contours, natural edges, and realistic transparency at all times.'
-
-  const instructions = [
-    '이미지의 피사체를 기준으로 배경을 완전히 제거하고, 사물의 경계에 맞게 사방 여백을 최소화하도록 자동 크롭해주세요.',
-    '리사이즈는 하지 말고, 투명 배경의 PNG로 결과를 반환하세요.',
-    '피사체가 캔버스 중앙에 오도록 정렬하고, 원본 디테일을 손상시키지 마세요.',
-    '밝거나 흰색 피사체는 절대 투명 처리하지 말고, 모든 디테일이 온전히 남도록 유지하세요.',
-    '피사체의 윤곽선과 자연스러운 그림자를 그대로 보존하면서 배경만 완전히 투명하게 처리하세요.',
-    width && height ? `원본 해상도는 ${width}x${height}px입니다. 해상도를 유지하세요.` : null,
-    imageName ? `이미지 파일명: ${imageName}` : null,
-  ]
-    .filter((line): line is string => typeof line === 'string' && line.trim().length > 0)
-    .join('\n')
-
-  const requestPayload = {
-    model: 'gpt-4o-mini',
-    input: [
-      {
-        role: 'system' as const,
-        content: [{ type: 'input_text' as const, text: systemPrompt }],
-      },
-      {
-        role: 'user' as const,
-        content: [
-          { type: 'input_text' as const, text: instructions },
-          { type: 'input_image' as const, image_base64: parsedImage.base64 },
-        ],
-      },
-    ],
-    output: [{ type: 'output_image' as const, format: 'png' as const }],
-  }
-
-  const requestInit: RequestInit = {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestPayload),
+  if (imageName && !imageFile.name) {
+    imageFile = new File([imageFile], imageName, { type: imageFile.type || 'image/png' })
   }
 
   const timeoutSignal =
     typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout === 'function'
       ? ((AbortSignal as any).timeout(60000) as AbortSignal)
-      : null
-  if (timeoutSignal) {
-    requestInit.signal = timeoutSignal
-  }
+      : undefined
 
-  let openaiResponse: Response
+  let backgroundRemoval: BackgroundRemovalResponse
   try {
-    openaiResponse = await fetch('https://api.openai.com/v1/responses', requestInit)
+    backgroundRemoval = await callOpenAIBackgroundRemoval(apiKey, imageFile, {
+      signal: timeoutSignal,
+    })
   } catch (error) {
-    c.header('cache-control', 'no-store')
-    return c.json(
-      {
-        error: 'OPENAI_REQUEST_FAILED',
-        message: error instanceof Error ? error.message : String(error ?? ''),
-      },
-      502,
-    )
-  }
-
-  const requestId = openaiResponse.headers.get('x-request-id') ?? undefined
-  const rawBody = await openaiResponse.text()
-  let payload: unknown = null
-  try {
-    payload = rawBody ? JSON.parse(rawBody) : null
-  } catch (error) {
-    c.header('cache-control', 'no-store')
-    if (requestId) {
-      c.header('x-openai-request-id', requestId)
-    }
-    return c.json(
-      {
-        error: 'OPENAI_INVALID_RESPONSE',
-        detail: rawBody.slice(0, 4000),
-      },
-      502,
-    )
-  }
-
-  if (!openaiResponse.ok) {
-    const responseError =
-      payload && typeof payload === 'object' && (payload as Record<string, unknown>).error
-        ? ((payload as Record<string, unknown>).error as Record<string, unknown>)
-        : null
+    const requestId = (error as any)?.requestId
+    const status = Number.isFinite((error as any)?.status) ? Number((error as any).status) : 502
     const message =
-      typeof responseError?.message === 'string' && responseError.message
-        ? responseError.message
-        : 'OPENAI_REQUEST_FAILED'
-    const code = typeof responseError?.code === 'string' ? responseError.code : undefined
-    const type = typeof responseError?.type === 'string' ? responseError.type : undefined
-
+      (error instanceof Error && error.message) ||
+      (typeof (error as any)?.message === 'string' && (error as any).message) ||
+      'OPENAI_REQUEST_FAILED'
     c.header('cache-control', 'no-store')
     if (requestId) {
       c.header('x-openai-request-id', requestId)
     }
-
-    return c.json(
-      {
-        error: 'OPENAI_REQUEST_FAILED',
-        message,
-        code,
-        type,
-      },
-      openaiResponse.status || 502,
-    )
-  }
-
-  const base64Image = extractOpenAIImageBase64(payload)
-  if (!base64Image) {
-    c.header('cache-control', 'no-store')
-    if (requestId) {
-      c.header('x-openai-request-id', requestId)
+    const responsePayload: Record<string, unknown> = {
+      error: 'OPENAI_REQUEST_FAILED',
+      message,
     }
-    return c.json({ error: 'OPENAI_IMAGE_MISSING' }, 502)
+    if ((error as any)?.code) {
+      responsePayload.code = (error as any).code
+    }
+    if ((error as any)?.type) {
+      responsePayload.type = (error as any).type
+    }
+    if ((error as any)?.details) {
+      responsePayload.details = (error as any).details
+    }
+    return c.json(responsePayload, status)
   }
 
   let imageBytes: Uint8Array
   try {
-    imageBytes = decodeBase64ToUint8Array(base64Image)
+    imageBytes = decodeBase64ToUint8Array(backgroundRemoval.base64)
   } catch (error) {
     c.header('cache-control', 'no-store')
-    if (requestId) {
-      c.header('x-openai-request-id', requestId)
+    if (backgroundRemoval.requestId) {
+      c.header('x-openai-request-id', backgroundRemoval.requestId)
     }
     return c.json(
       {
@@ -4737,8 +4709,8 @@ app.post('/api/image/remove-background', async (c) => {
     'Content-Type': 'image/png',
     'Cache-Control': 'no-store',
   })
-  if (requestId) {
-    headers.set('x-openai-request-id', requestId)
+  if (backgroundRemoval.requestId) {
+    headers.set('x-openai-request-id', backgroundRemoval.requestId)
   }
 
   return new Response(imageBytes, { headers })
@@ -5528,7 +5500,12 @@ app.get('/', async (c) => {
               </div>
             </div>
             <div class="operations-grid">
-              <button class="btn btn--primary" type="button" data-operation="remove-bg">
+              <button
+                id="remove-bg-btn"
+                class="btn btn--primary"
+                type="button"
+                data-operation="remove-bg"
+              >
                 <i class="ri-brush-3-line" aria-hidden="true"></i>
                 배경 제거
               </button>
@@ -5536,7 +5513,12 @@ app.get('/', async (c) => {
                 <i class="ri-crop-line" aria-hidden="true"></i>
                 피사체 크롭
               </button>
-              <button class="btn btn--primary" type="button" data-operation="remove-bg-crop">
+              <button
+                id="remove-bg-crop-btn"
+                class="btn btn--primary"
+                type="button"
+                data-operation="remove-bg-crop"
+              >
                 <i class="ri-magic-line" aria-hidden="true"></i>
                 배경 제거 + 크롭
               </button>

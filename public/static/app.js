@@ -6700,30 +6700,46 @@ function buildForegroundMask(imageData, width, height, stats) {
   return mask
 }
 
-async function requestOpenAIBackgroundRemoval(canvas, options = {}) {
-  if (!canvas) {
-    return null
+async function callOpenAIBackgroundRemoval(imageBlob, options = {}) {
+  if (!(imageBlob instanceof Blob)) {
+    throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
   }
 
-  const { name } = options || {}
+  const { name, width, height } = options || {}
+  const formData = new FormData()
+  const normalizedName = typeof name === 'string' && name.trim() ? name.trim() : 'image.png'
+  formData.append('image', imageBlob, normalizedName)
+  if (typeof name === 'string' && name.trim()) {
+    formData.append('name', name.trim())
+  }
+  if (Number.isFinite(width)) {
+    formData.append('width', String(Math.max(1, Math.round(Number(width)))))
+  }
+  if (Number.isFinite(height)) {
+    formData.append('height', String(Math.max(1, Math.round(Number(height)))))
+  }
 
   const response = await fetch('/api/image/remove-background', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
       Accept: 'image/png,application/json',
     },
-    body: JSON.stringify({
-      image: canvas.toDataURL('image/png'),
-      name: typeof name === 'string' ? name : '',
-      width: canvas.width,
-      height: canvas.height,
-    }),
+    body: formData,
   })
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => '')
-    throw new Error(errorText || `OPENAI_BACKGROUND_REMOVAL_FAILED_${response.status}`)
+    let message = ''
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const payload = await response.json().catch(() => ({}))
+      message =
+        (typeof payload?.message === 'string' && payload.message) ||
+        (typeof payload?.error === 'string' && payload.error) ||
+        ''
+    } else {
+      message = await response.text().catch(() => '')
+    }
+    throw new Error(message || `OPENAI_BACKGROUND_REMOVAL_FAILED_${response.status}`)
   }
 
   const contentType = response.headers.get('content-type') || ''
@@ -6732,6 +6748,7 @@ async function requestOpenAIBackgroundRemoval(canvas, options = {}) {
     const message =
       (data && typeof data.error === 'string' && data.error) ||
       (data && data.error && typeof data.error.message === 'string' && data.error.message) ||
+      (typeof data?.message === 'string' && data.message) ||
       'OPENAI_BACKGROUND_REMOVAL_FAILED'
     throw new Error(message)
   }
@@ -6765,20 +6782,30 @@ async function requestOpenAIBackgroundRemoval(canvas, options = {}) {
     })
   }
 
-  const width =
+  const resolvedWidth =
     typeof source.width === 'number' && source.width
       ? source.width
       : typeof source.naturalWidth === 'number' && source.naturalWidth
         ? source.naturalWidth
-        : canvas.width
-  const height =
+        : Number.isFinite(width)
+          ? Math.max(1, Math.round(Number(width)))
+          : undefined
+  const resolvedHeight =
     typeof source.height === 'number' && source.height
       ? source.height
       : typeof source.naturalHeight === 'number' && source.naturalHeight
         ? source.naturalHeight
-        : canvas.height
+        : Number.isFinite(height)
+          ? Math.max(1, Math.round(Number(height)))
+          : undefined
 
-  return { type: 'openai', source, width, height, blob }
+  return {
+    type: 'openai',
+    source,
+    width: typeof resolvedWidth === 'number' && resolvedWidth > 0 ? resolvedWidth : undefined,
+    height: typeof resolvedHeight === 'number' && resolvedHeight > 0 ? resolvedHeight : undefined,
+    blob,
+  }
 }
 
 async function applyBackgroundRemoval(imageData, width, height, canvas, options = {}) {
@@ -6788,8 +6815,19 @@ async function applyBackgroundRemoval(imageData, width, height, canvas, options 
 
   if (canvas) {
     try {
-      const openaiResult = await requestOpenAIBackgroundRemoval(canvas, options)
+      const inputBlob = await canvasToBlob(canvas, 'image/png', 0.95)
+      const openaiResult = await callOpenAIBackgroundRemoval(inputBlob, {
+        ...options,
+        width,
+        height,
+      })
       if (openaiResult) {
+        if (!Number.isFinite(openaiResult.width)) {
+          openaiResult.width = canvas.width
+        }
+        if (!Number.isFinite(openaiResult.height)) {
+          openaiResult.height = canvas.height
+        }
         return openaiResult
       }
     } catch (error) {
@@ -11240,8 +11278,21 @@ function attachEventListeners() {
     if (!(button instanceof HTMLButtonElement)) return
     const operation = button.dataset.operation
     if (!operation) return
+    if (button.id === 'remove-bg-btn' || button.id === 'remove-bg-crop-btn') {
+      return
+    }
     button.addEventListener('click', () => runOperation(operation))
   })
+
+  const removeBgButton = document.getElementById('remove-bg-btn')
+  if (removeBgButton instanceof HTMLButtonElement) {
+    removeBgButton.addEventListener('click', () => runOperation('remove-bg'))
+  }
+
+  const removeBgCropButton = document.getElementById('remove-bg-crop-btn')
+  if (removeBgCropButton instanceof HTMLButtonElement) {
+    removeBgCropButton.addEventListener('click', () => runOperation('remove-bg-crop'))
+  }
 
   if (elements.svgButton instanceof HTMLButtonElement) {
     elements.svgButton.addEventListener('click', convertSelectionsToSvg)
