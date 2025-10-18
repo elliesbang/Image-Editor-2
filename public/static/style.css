@@ -1741,7 +1741,7 @@ main.page {
   border-radius: var(--radius-sm);
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.1);
-  background: rgba(8, 13, 28, 0.6);
+  background: transparent;
   display: grid;
   place-items: center;
 }
