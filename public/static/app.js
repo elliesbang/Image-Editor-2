@@ -5701,7 +5701,7 @@ function disableStandardLoginForm(disabled) {
   }
 }
 
-async function attemptMichinaLogin(normalizedEmail) {
+async function attemptMichinaLogin(normalizedName) {
   if (!(elements.michinaLoginButton instanceof HTMLButtonElement)) {
     return { success: false, message: '미치나 로그인 버튼을 찾을 수 없습니다.' }
   }
@@ -5732,14 +5732,14 @@ async function attemptMichinaLogin(normalizedEmail) {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify({ email: normalizedEmail }),
+      body: JSON.stringify({ name: normalizedName }),
     })
 
     const payload = await response.json().catch(() => ({}))
 
     if (!response.ok || !payload || payload.success !== true) {
       encounteredError = true
-      const fallbackMessage = '미치나 결제 내역이 확인되지 않았습니다. 관리자에게 문의해주세요.'
+      const fallbackMessage = '미치나 결제 내역이 확인되지 않았습니다. 구매자 성함을 다시 확인하거나 관리자에게 문의해주세요.'
       const message =
         typeof payload?.message === 'string' && payload.message.trim().length > 0
           ? payload.message.trim()
@@ -5752,11 +5752,11 @@ async function attemptMichinaLogin(normalizedEmail) {
       const baseName =
         typeof payload.name === 'string' && payload.name.trim().length > 0
           ? payload.name.trim()
-          : normalizedEmail.split('@')[0] || '미치나 챌린저'
+          : normalizedName || '미치나 챌린저'
 
       applyLoginProfile({
         name: baseName,
-        email: normalizedEmail,
+        email: typeof payload.email === 'string' ? payload.email.trim() : state.user.email,
         plan: 'michina',
         credits: MICHINA_INITIAL_CREDITS,
       })
@@ -5802,6 +5802,7 @@ async function handleMichinaLoginClick(event) {
   }
 
   disableStandardLoginForm(true)
+  setLoginHelper('구매자 성함을 넣어주세요.')
   ensureMichinaModalStyles()
 
   const existingModal = document.querySelector('.michina-modal')
@@ -5814,8 +5815,8 @@ async function handleMichinaLoginClick(event) {
   modal.innerHTML = `
     <div class="michina-modal__dialog">
       <h3>미치나 인증 로그인</h3>
-      <p>엘리의방에서 미치나 결제 시 사용한 이메일 주소를 입력해주세요.</p>
-      <input type="email" class="michina-modal__input" data-role="michina-email-input" placeholder="이메일 주소 입력" autocomplete="email" />
+      <p>엘리의방에서 미치나 결제 시 사용한 구매자 성함을 입력해주세요.</p>
+      <input type="text" class="michina-modal__input" data-role="michina-name-input" placeholder="구매자 성함 입력" autocomplete="name" />
       <div class="michina-modal__error" data-role="michina-modal-error"></div>
       <div class="michina-modal__actions">
         <button type="button" class="michina-modal__button michina-modal__button--confirm" data-role="michina-confirm">인증하기</button>
@@ -5824,7 +5825,7 @@ async function handleMichinaLoginClick(event) {
     </div>
   `
 
-  const emailInput = modal.querySelector('[data-role="michina-email-input"]')
+  const nameInput = modal.querySelector('[data-role="michina-name-input"]')
   const confirmButton = modal.querySelector('[data-role="michina-confirm"]')
   const cancelButton = modal.querySelector('[data-role="michina-cancel"]')
   const errorText = modal.querySelector('[data-role="michina-modal-error"]')
@@ -5860,26 +5861,13 @@ async function handleMichinaLoginClick(event) {
         return
       }
 
-      const rawEmail =
-        emailInput instanceof HTMLInputElement
-          ? emailInput.value.trim()
-          : ''
+      const rawName = nameInput instanceof HTMLInputElement ? nameInput.value.trim() : ''
+      const normalizedName = typeof rawName === 'string' ? rawName.trim() : ''
 
-      const normalizedEmail = normalizeEmail(rawEmail)
-
-      if (!normalizedEmail) {
-        showModalError('이메일을 입력해주세요.')
-        if (emailInput instanceof HTMLInputElement) {
-          emailInput.focus()
-        }
-        return
-      }
-
-      if (!isValidEmail(normalizedEmail)) {
-        showModalError('유효한 이메일 주소인지 확인해주세요.')
-        if (emailInput instanceof HTMLInputElement) {
-          emailInput.focus()
-          emailInput.select()
+      if (!normalizedName) {
+        showModalError('이름을 입력해주세요.')
+        if (nameInput instanceof HTMLInputElement) {
+          nameInput.focus()
         }
         return
       }
@@ -5890,7 +5878,7 @@ async function handleMichinaLoginClick(event) {
       confirmButton.textContent = '확인 중…'
 
       try {
-        const result = await attemptMichinaLogin(normalizedEmail)
+        const result = await attemptMichinaLogin(normalizedName)
 
         if (result.success) {
           closeModal()
@@ -5898,7 +5886,7 @@ async function handleMichinaLoginClick(event) {
           const message =
             typeof result.message === 'string' && result.message.trim().length > 0
               ? result.message.trim()
-              : '미치나 결제 내역이 확인되지 않았습니다. 관리자에게 문의해주세요.'
+              : '미치나 결제 내역이 확인되지 않았습니다. 구매자 성함을 다시 확인하거나 관리자에게 문의해주세요.'
 
           showModalError(message)
           confirmButton.disabled = false
@@ -5915,8 +5903,8 @@ async function handleMichinaLoginClick(event) {
     })
   }
 
-  if (emailInput instanceof HTMLInputElement) {
-    emailInput.addEventListener('keydown', (event) => {
+  if (nameInput instanceof HTMLInputElement) {
+    nameInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault()
         if (confirmButton instanceof HTMLButtonElement) {
@@ -5937,10 +5925,10 @@ async function handleMichinaLoginClick(event) {
 
   document.body.appendChild(modal)
 
-  if (emailInput instanceof HTMLInputElement) {
+  if (nameInput instanceof HTMLInputElement) {
     window.requestAnimationFrame(() => {
-      emailInput.focus()
-      emailInput.select()
+      nameInput.focus()
+      nameInput.select()
     })
   }
 }

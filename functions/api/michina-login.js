@@ -1,7 +1,11 @@
 export async function onRequestPost(context) {
   try {
-    const { email } = await context.request.json();
-    if (!email) return new Response("Missing email", { status: 400 });
+    const { name } = await context.request.json();
+    if (!name || typeof name !== "string" || name.trim().length === 0) {
+      return new Response("Missing name", { status: 400 });
+    }
+
+    const normalizedName = name.trim().replace(/\s+/g, " ");
 
     const tokenRes = await fetch("https://api.imweb.me/v2/auth/access_token", {
       method: "POST",
@@ -37,29 +41,45 @@ export async function onRequestPost(context) {
     const data = await orderRes.json();
     const orders = data.data || data.orders || [];
 
-    const matchedOrder = orders.find(order =>
-      order.buyer?.email?.trim().toLowerCase() === email.trim().toLowerCase() &&
-      order.order_name?.includes("미치나")
-    );
+    const matchedOrder = orders.find(order => {
+      const buyerName = order.buyer?.name ? order.buyer.name.trim().replace(/\s+/g, " ") : "";
+      return (
+        buyerName &&
+        buyerName.toLowerCase() === normalizedName.toLowerCase() &&
+        order.order_name?.includes("미치나")
+      );
+    });
 
     if (!matchedOrder) {
-      console.log(`🚫 ${email} 미치나 결제내역 없음`);
+      console.log(`🚫 ${normalizedName} 미치나 결제내역 없음`);
       return new Response(JSON.stringify({ success: false, message: "미치나 결제 내역이 없습니다." }), { status: 403 });
     }
 
-    await context.env.elliesbang_main.prepare(`
-      INSERT INTO users (email, grade, order_id, order_date)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(email) DO UPDATE SET grade = excluded.grade, order_id = excluded.order_id, order_date = excluded.order_date
-    `).bind(
-      email,
-      "michina",
-      matchedOrder.order_id,
-      matchedOrder.order_date
-    ).run();
+    const buyerEmail = matchedOrder.buyer?.email ? matchedOrder.buyer.email.trim().toLowerCase() : "";
 
-    console.log(`✅ ${email} → 미치나 로그인 성공`);
-    return new Response(JSON.stringify({ success: true, grade: "michina" }), { status: 200 });
+    if (buyerEmail) {
+      await context.env.elliesbang_main.prepare(`
+        INSERT INTO users (email, grade, order_id, order_date)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET grade = excluded.grade, order_id = excluded.order_id, order_date = excluded.order_date
+      `).bind(
+        buyerEmail,
+        "michina",
+        matchedOrder.order_id,
+        matchedOrder.order_date
+      ).run();
+    }
+
+    console.log(`✅ ${normalizedName} → 미치나 로그인 성공`);
+    return new Response(
+      JSON.stringify({
+        success: true,
+        grade: "michina",
+        name: matchedOrder.buyer?.name || normalizedName,
+        email: buyerEmail,
+      }),
+      { status: 200 }
+    );
 
   } catch (err) {
     console.error("🔥 Michina login error:", err);
