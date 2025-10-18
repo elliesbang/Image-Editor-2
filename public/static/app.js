@@ -6563,9 +6563,78 @@ function analyzeBackground(imageData, width, height) {
   }
 }
 
+function buildForegroundMask(imageData, width, height, stats) {
+  const { data } = imageData
+  const pixelCount = width * height
+  const mask = new Uint8Array(pixelCount)
+  const rowStride = width * 4
+  const backgroundLuma = 0.2126 * stats.meanColor.r + 0.7152 * stats.meanColor.g + 0.0722 * stats.meanColor.b
+  const baseColorThresholdSq = Math.max(stats.toleranceSq * 0.55, 900)
+  const relaxedColorThresholdSq = Math.max(stats.relaxedToleranceSq * 0.38, baseColorThresholdSq * 0.8)
+  const luminanceThreshold = Math.max(10, stats.tolerance * 0.28)
+  const gradientThreshold = Math.max(16, stats.tolerance * 0.35)
+
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * rowStride
+    for (let x = 0; x < width; x += 1) {
+      const index = rowOffset + x * 4
+      const r = data[index]
+      const g = data[index + 1]
+      const b = data[index + 2]
+      const alpha = data[index + 3]
+      const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      const colorDiffSq = colorDistanceSq(r, g, b, stats.meanColor)
+      const luminanceDiff = Math.abs(luminance - backgroundLuma)
+
+      let maxGradient = 0
+
+      const updateGradient = (neighborIndex, weight = 1) => {
+        const nr = data[neighborIndex]
+        const ng = data[neighborIndex + 1]
+        const nb = data[neighborIndex + 2]
+        const neighborLuma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
+        const gradient = Math.abs(luminance - neighborLuma) * weight
+        if (gradient > maxGradient) maxGradient = gradient
+      }
+
+      if (x + 1 < width) updateGradient(index + 4)
+      if (x > 0) updateGradient(index - 4)
+      if (y + 1 < height) updateGradient(index + rowStride)
+      if (y > 0) updateGradient(index - rowStride)
+      if (x > 0 && y > 0) updateGradient(index - rowStride - 4, 0.85)
+      if (x + 1 < width && y > 0) updateGradient(index - rowStride + 4, 0.85)
+      if (x > 0 && y + 1 < height) updateGradient(index + rowStride - 4, 0.85)
+      if (x + 1 < width && y + 1 < height) updateGradient(index + rowStride + 4, 0.85)
+
+      let isForeground = false
+
+      if (alpha > 250) {
+        isForeground = true
+      } else if (colorDiffSq > baseColorThresholdSq) {
+        isForeground = true
+      } else if (colorDiffSq > relaxedColorThresholdSq && maxGradient > gradientThreshold * 0.9) {
+        isForeground = true
+      } else if (luminanceDiff > luminanceThreshold && maxGradient > gradientThreshold * 0.85) {
+        isForeground = true
+      } else if (maxGradient > gradientThreshold * 1.15 && alpha > 24) {
+        isForeground = true
+      } else if (alpha > 210 && (colorDiffSq > relaxedColorThresholdSq * 0.65 || luminanceDiff > luminanceThreshold * 0.9)) {
+        isForeground = true
+      }
+
+      if (isForeground) {
+        mask[y * width + x] = 1
+      }
+    }
+  }
+
+  return mask
+}
+
 function applyBackgroundRemoval(imageData, width, height) {
   const { data } = imageData
   const stats = analyzeBackground(imageData, width, height)
+  const foregroundMask = buildForegroundMask(imageData, width, height, stats)
   const pixelCount = width * height
   const visited = new Uint8Array(pixelCount)
   const backgroundMask = new Uint8Array(pixelCount)
@@ -6620,49 +6689,91 @@ function applyBackgroundRemoval(imageData, width, height) {
 
     const stack = [i]
     const holePixels = []
+    let holeForeground = 0
+    let holeOpaque = 0
+    let touchesForegroundBoundary = false
     holeVisited[i] = 1
 
     while (stack.length > 0) {
       const current = stack.pop()
       holePixels.push(current)
 
+      if (foregroundMask[current]) {
+        holeForeground += 1
+      }
+
+      const alpha = data[current * 4 + 3]
+      if (alpha > 210) {
+        holeOpaque += 1
+      }
+
       const cx = current % width
       const cy = Math.floor(current / width)
 
       if (cx > 0) {
         const leftIndex = current - 1
-        if (!backgroundMask[leftIndex] && !holeVisited[leftIndex] && shouldBeBackground(leftIndex)) {
-          holeVisited[leftIndex] = 1
-          stack.push(leftIndex)
+        if (!backgroundMask[leftIndex] && !holeVisited[leftIndex]) {
+          if (shouldBeBackground(leftIndex)) {
+            holeVisited[leftIndex] = 1
+            stack.push(leftIndex)
+          } else if (foregroundMask[leftIndex]) {
+            touchesForegroundBoundary = true
+          }
+        } else if (!backgroundMask[leftIndex] && foregroundMask[leftIndex]) {
+          touchesForegroundBoundary = true
         }
       }
 
       if (cx + 1 < width) {
         const rightIndex = current + 1
-        if (!backgroundMask[rightIndex] && !holeVisited[rightIndex] && shouldBeBackground(rightIndex)) {
-          holeVisited[rightIndex] = 1
-          stack.push(rightIndex)
+        if (!backgroundMask[rightIndex] && !holeVisited[rightIndex]) {
+          if (shouldBeBackground(rightIndex)) {
+            holeVisited[rightIndex] = 1
+            stack.push(rightIndex)
+          } else if (foregroundMask[rightIndex]) {
+            touchesForegroundBoundary = true
+          }
+        } else if (!backgroundMask[rightIndex] && foregroundMask[rightIndex]) {
+          touchesForegroundBoundary = true
         }
       }
 
       if (cy > 0) {
         const topIndex = current - width
-        if (!backgroundMask[topIndex] && !holeVisited[topIndex] && shouldBeBackground(topIndex)) {
-          holeVisited[topIndex] = 1
-          stack.push(topIndex)
+        if (!backgroundMask[topIndex] && !holeVisited[topIndex]) {
+          if (shouldBeBackground(topIndex)) {
+            holeVisited[topIndex] = 1
+            stack.push(topIndex)
+          } else if (foregroundMask[topIndex]) {
+            touchesForegroundBoundary = true
+          }
+        } else if (!backgroundMask[topIndex] && foregroundMask[topIndex]) {
+          touchesForegroundBoundary = true
         }
       }
 
       if (cy + 1 < height) {
         const bottomIndex = current + width
-        if (!backgroundMask[bottomIndex] && !holeVisited[bottomIndex] && shouldBeBackground(bottomIndex)) {
-          holeVisited[bottomIndex] = 1
-          stack.push(bottomIndex)
+        if (!backgroundMask[bottomIndex] && !holeVisited[bottomIndex]) {
+          if (shouldBeBackground(bottomIndex)) {
+            holeVisited[bottomIndex] = 1
+            stack.push(bottomIndex)
+          } else if (foregroundMask[bottomIndex]) {
+            touchesForegroundBoundary = true
+          }
+        } else if (!backgroundMask[bottomIndex] && foregroundMask[bottomIndex]) {
+          touchesForegroundBoundary = true
         }
       }
     }
 
-    if (holePixels.length > 0) {
+    const holeSize = holePixels.length
+    if (holeSize > 0) {
+      const foregroundRatio = holeForeground / holeSize
+      const opaqueRatio = holeOpaque / holeSize
+      if (touchesForegroundBoundary || foregroundRatio > 0.08 || opaqueRatio > 0.55) {
+        continue
+      }
       for (const index of holePixels) {
         backgroundMask[index] = 1
       }
