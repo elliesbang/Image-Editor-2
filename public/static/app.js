@@ -6613,6 +6613,62 @@ function applyBackgroundRemoval(imageData, width, height) {
     trySeed(x, y + 1)
   }
 
+  const holeVisited = new Uint8Array(pixelCount)
+  for (let i = 0; i < pixelCount; i += 1) {
+    if (backgroundMask[i] || holeVisited[i]) continue
+    if (!shouldBeBackground(i)) continue
+
+    const stack = [i]
+    const holePixels = []
+    holeVisited[i] = 1
+
+    while (stack.length > 0) {
+      const current = stack.pop()
+      holePixels.push(current)
+
+      const cx = current % width
+      const cy = Math.floor(current / width)
+
+      if (cx > 0) {
+        const leftIndex = current - 1
+        if (!backgroundMask[leftIndex] && !holeVisited[leftIndex] && shouldBeBackground(leftIndex)) {
+          holeVisited[leftIndex] = 1
+          stack.push(leftIndex)
+        }
+      }
+
+      if (cx + 1 < width) {
+        const rightIndex = current + 1
+        if (!backgroundMask[rightIndex] && !holeVisited[rightIndex] && shouldBeBackground(rightIndex)) {
+          holeVisited[rightIndex] = 1
+          stack.push(rightIndex)
+        }
+      }
+
+      if (cy > 0) {
+        const topIndex = current - width
+        if (!backgroundMask[topIndex] && !holeVisited[topIndex] && shouldBeBackground(topIndex)) {
+          holeVisited[topIndex] = 1
+          stack.push(topIndex)
+        }
+      }
+
+      if (cy + 1 < height) {
+        const bottomIndex = current + width
+        if (!backgroundMask[bottomIndex] && !holeVisited[bottomIndex] && shouldBeBackground(bottomIndex)) {
+          holeVisited[bottomIndex] = 1
+          stack.push(bottomIndex)
+        }
+      }
+    }
+
+    if (holePixels.length > 0) {
+      for (const index of holePixels) {
+        backgroundMask[index] = 1
+      }
+    }
+  }
+
   for (let i = 0; i < pixelCount; i += 1) {
     if (backgroundMask[i]) {
       data[i * 4 + 3] = 0
@@ -6832,6 +6888,84 @@ function refineBoundsFromMask(mask, width, height, bounds) {
   }
 }
 
+function tightenBoundsWithBackgroundSimilarity(mask, width, height, bounds, stats, data) {
+  if (!bounds) {
+    return { top: 0, left: 0, right: width - 1, bottom: height - 1 }
+  }
+
+  let { top, left, right, bottom } = bounds
+
+  if (top > bottom || left > right) {
+    return { top: 0, left: 0, right: width - 1, bottom: height - 1 }
+  }
+
+  const isLikelyBackground = (index) => {
+    const offset = index * 4
+    const alpha = data[offset + 3]
+    if (alpha <= 8) return true
+    const distanceSq = colorDistanceSq(data[offset], data[offset + 1], data[offset + 2], stats.meanColor)
+    if (distanceSq <= stats.toleranceSq) return true
+    return alpha <= 235 && distanceSq <= stats.relaxedToleranceSq
+  }
+
+  const trimRow = (y) => {
+    let foregroundCount = 0
+    let backgroundCount = 0
+    for (let x = left; x <= right; x += 1) {
+      const idx = y * width + x
+      if (mask[idx]) {
+        foregroundCount += 1
+      } else if (isLikelyBackground(idx)) {
+        backgroundCount += 1
+      }
+    }
+    const total = Math.max(1, right - left + 1)
+    const allowedForeground = Math.max(2, Math.floor(total * 0.015))
+    const requiredBackground = Math.max(0.9, 1 - allowedForeground / total)
+    return foregroundCount <= allowedForeground && backgroundCount / total >= requiredBackground
+  }
+
+  const trimColumn = (x) => {
+    let foregroundCount = 0
+    let backgroundCount = 0
+    for (let y = top; y <= bottom; y += 1) {
+      const idx = y * width + x
+      if (mask[idx]) {
+        foregroundCount += 1
+      } else if (isLikelyBackground(idx)) {
+        backgroundCount += 1
+      }
+    }
+    const total = Math.max(1, bottom - top + 1)
+    const allowedForeground = Math.max(2, Math.floor(total * 0.015))
+    const requiredBackground = Math.max(0.9, 1 - allowedForeground / total)
+    return foregroundCount <= allowedForeground && backgroundCount / total >= requiredBackground
+  }
+
+  while (top < bottom && trimRow(top)) {
+    top += 1
+  }
+
+  while (bottom > top && trimRow(bottom)) {
+    bottom -= 1
+  }
+
+  while (left < right && trimColumn(left)) {
+    left += 1
+  }
+
+  while (right > left && trimColumn(right)) {
+    right -= 1
+  }
+
+  return {
+    top: Math.max(0, Math.min(height - 1, top)),
+    left: Math.max(0, Math.min(width - 1, left)),
+    right: Math.max(0, Math.min(width - 1, right)),
+    bottom: Math.max(0, Math.min(height - 1, bottom)),
+  }
+}
+
 function detectSubjectBounds(imageData, width, height) {
   if (!imageData || width <= 0 || height <= 0) {
     return {
@@ -7016,7 +7150,8 @@ function detectSubjectBounds(imageData, width, height) {
   }
 
   const refined = refineBoundsFromMask(workingMask, width, height, initialBounds)
-  return expandBounds(refined, width, height, 0)
+  const tightened = tightenBoundsWithBackgroundSimilarity(workingMask, width, height, refined, stats, data)
+  return expandBounds(tightened, width, height, 0)
 }
 
 function cropCanvas(canvas, ctx, bounds) {
