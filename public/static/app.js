@@ -1491,39 +1491,55 @@ function ensureMichinaRoleFor(email, options = {}) {
     return
   }
 
-  const evaluate = () => {
+  const evaluateRole = (enforce = false) => {
+    const challengers = runtime.michina.challengers instanceof Set ? runtime.michina.challengers : null
     const period = runtime.michina.period
-    const challengers = runtime.michina.challengers
+    const hasPeriod = period && typeof period.start === 'string' && typeof period.end === 'string'
     const today = getTodayDateString()
-    const eligible =
-      !!period &&
-      challengers instanceof Set &&
-      challengers.has(normalizedEmail) &&
-      isDateWithinMichinaPeriod(period, today)
+    const withinPeriod = !hasPeriod || isDateWithinMichinaPeriod(period, today)
+    const isChallenger = Boolean(challengers && challengers.has(normalizedEmail))
 
-    if (eligible) {
+    if (isChallenger && withinPeriod) {
       assignMichinaRole(normalizedEmail, options)
-    } else {
-      revokeMichinaRole(normalizedEmail)
+      return
+    }
+
+    if (enforce && runtime.michina.lastSyncedAt > 0) {
+      const hasChallengers = challengers instanceof Set && challengers.size > 0
+      const outsidePeriod = hasPeriod && !withinPeriod
+      const definitelyNotChallenger = hasChallengers && !isChallenger
+      if (outsidePeriod || definitelyNotChallenger) {
+        revokeMichinaRole(normalizedEmail)
+      }
     }
   }
 
+  const hasSyncedData = runtime.michina.lastSyncedAt > 0
+  evaluateRole(hasSyncedData)
+
+  const scheduleEvaluation = (promise, enforceOnSuccess = true) => {
+    promise
+      .then(() => {
+        evaluateRole(enforceOnSuccess)
+      })
+      .catch(() => {
+        evaluateRole(false)
+      })
+  }
+
   if (runtime.michina.loading && runtime.michina.loadPromise) {
-    runtime.michina.loadPromise.then(evaluate).catch(evaluate)
+    scheduleEvaluation(runtime.michina.loadPromise)
     return
   }
 
-  if (!runtime.michina.period || !(runtime.michina.challengers instanceof Set)) {
-    fetchMichinaConfig().then(evaluate).catch(evaluate)
-    return
-  }
+  const challengersMissing = !(runtime.michina.challengers instanceof Set)
+  const noChallengers =
+    runtime.michina.challengers instanceof Set && runtime.michina.challengers.size === 0 && !hasSyncedData
+  const periodMissing = !runtime.michina.period && !hasSyncedData
 
-  if (runtime.michina.challengers.size === 0) {
-    fetchMichinaConfig().then(evaluate).catch(evaluate)
-    return
+  if (!hasSyncedData || challengersMissing || noChallengers || periodMissing) {
+    scheduleEvaluation(fetchMichinaConfig(), true)
   }
-
-  evaluate()
 }
 
 function loadApprovedMichinaEmails() {
