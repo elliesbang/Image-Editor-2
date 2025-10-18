@@ -12,13 +12,18 @@ import AnalyzePanel from './features/keywords/AnalyzePanel'
 import SignupPage from './Signup'
 
 const BACKGROUND_REMOVAL_PROMPT = `
-Remove the background from this image using AI segmentation. 
-Precisely keep all light-colored or white objects, including white clothing, paper, and skin tones. 
-Avoid removing edges or highlights around bright subjects. 
-After removing the background, refine the edges to preserve thin details like hair, fabric, or object outlines. 
-Do not make bright areas transparent if they are part of the subject. 
+Remove the background from this image using AI segmentation.
+
+Precisely keep all light-colored or white objects, including white clothing, paper, and skin tones.
+
+Avoid removing edges or highlights around bright subjects.
+
+After removing the background, refine the edges to preserve thin details like hair, fabric, or object outlines.
+
+Do not make bright areas transparent if they are part of the subject.
+
 Output a clean transparent PNG with smooth edges and no halo artifacts.
-`.trim()
+`
 
 type D1Result<T = unknown> = {
   success: boolean
