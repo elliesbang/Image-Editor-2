@@ -6649,7 +6649,7 @@ async function applyBackgroundRemoval(imageData, width, height, canvas) {
     try {
       const mask = await generateSegmentationMask(canvas, width, height)
       if (mask) {
-        applySegmentationMaskToImageData(imageData, mask)
+        applySegmentationMaskToImageData(imageData, mask, width, height)
         return imageData
       }
     } catch (error) {
@@ -6754,29 +6754,102 @@ function isSegmentationForeground(label) {
   return true
 }
 
-function applySegmentationMaskToImageData(imageData, mask) {
+function applySegmentationMaskToImageData(imageData, mask, width, height) {
   if (!imageData || !mask) {
     return imageData
   }
 
   const { data } = imageData
-  const length = Math.min(mask.length, data.length / 4)
+  const targetWidth = Math.max(1, Math.round(width || imageData.width || 0))
+  const targetHeight = Math.max(1, Math.round(height || imageData.height || 0))
+  const pixelCount = Math.min(targetWidth * targetHeight, Math.floor(data.length / 4))
 
-  for (let i = 0; i < length; i += 1) {
+  const featheredMask = createFeatheredSegmentationMask(mask, targetWidth, targetHeight, 2)
+
+  for (let i = 0; i < pixelCount; i += 1) {
     const offset = i * 4
-    if (mask[i]) {
-      if (data[offset + 3] === 0) {
-        data[offset + 3] = 255
-      }
-    } else {
+    const ratio = featheredMask ? featheredMask[i] : mask[i] ? 1 : 0
+    const clampedRatio = ratio >= 1 ? 1 : ratio <= 0 ? 0 : ratio
+    if (clampedRatio <= 0) {
       data[offset] = 0
       data[offset + 1] = 0
       data[offset + 2] = 0
       data[offset + 3] = 0
+      continue
     }
+
+    data[offset] = Math.round(data[offset] * clampedRatio)
+    data[offset + 1] = Math.round(data[offset + 1] * clampedRatio)
+    data[offset + 2] = Math.round(data[offset + 2] * clampedRatio)
+    data[offset + 3] = Math.round(Math.min(1, clampedRatio) * 255)
   }
 
   return imageData
+}
+
+function createFeatheredSegmentationMask(mask, width, height, radius = 2) {
+  if (!mask || width <= 0 || height <= 0) {
+    return null
+  }
+
+  const pixelCount = width * height
+  if (!pixelCount) {
+    return null
+  }
+
+  const length = Math.min(mask.length, pixelCount)
+  const normalizedMask = new Uint8Array(pixelCount)
+  for (let i = 0; i < length; i += 1) {
+    normalizedMask[i] = mask[i] ? 1 : 0
+  }
+
+  if (radius <= 0) {
+    const directMask = new Float32Array(pixelCount)
+    for (let i = 0; i < pixelCount; i += 1) {
+      directMask[i] = normalizedMask[i]
+    }
+    return directMask
+  }
+
+  const integralWidth = width + 1
+  const integral = new Uint32Array((height + 1) * integralWidth)
+
+  for (let y = 0; y < height; y += 1) {
+    let rowSum = 0
+    const rowOffset = y * width
+    for (let x = 0; x < width; x += 1) {
+      rowSum += normalizedMask[rowOffset + x]
+      const idx = (y + 1) * integralWidth + (x + 1)
+      integral[idx] = integral[idx - integralWidth] + rowSum
+    }
+  }
+
+  const result = new Float32Array(pixelCount)
+
+  for (let y = 0; y < height; y += 1) {
+    const minY = Math.max(0, y - radius)
+    const maxY = Math.min(height - 1, y + radius)
+    const topIndex = minY
+    const bottomIndex = maxY + 1
+    for (let x = 0; x < width; x += 1) {
+      const minX = Math.max(0, x - radius)
+      const maxX = Math.min(width - 1, x + radius)
+      const leftIndex = minX
+      const rightIndex = maxX + 1
+
+      const bottomRight = integral[bottomIndex * integralWidth + rightIndex]
+      const topRight = integral[topIndex * integralWidth + rightIndex]
+      const bottomLeft = integral[bottomIndex * integralWidth + leftIndex]
+      const topLeft = integral[topIndex * integralWidth + leftIndex]
+
+      const area = (maxX - minX + 1) * (maxY - minY + 1)
+      const sum = bottomRight - topRight - bottomLeft + topLeft
+      const value = area > 0 ? sum / area : 0
+      result[y * width + x] = value > 1 ? 1 : value < 0 ? 0 : value
+    }
+  }
+
+  return result
 }
 
 async function ensureSegmentationModel() {
@@ -9585,7 +9658,11 @@ async function runOperation(operation) {
   setStage('refine')
 
   toggleProcessing(true)
-  setStatus('이미지를 처리하는 중입니다…', 'info', 0)
+  const processingMessage =
+    operation === 'remove-bg' || operation === 'remove-bg-crop'
+      ? 'AI가 배경을 분석 중입니다...'
+      : '이미지를 처리하는 중입니다…'
+  setStatus(processingMessage, 'info', 0)
 
   const handlerMap = {
     'remove-bg': processRemoveBackground,
