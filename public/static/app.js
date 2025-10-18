@@ -122,13 +122,25 @@ const GOOGLE_RETRY_REASON_HINTS = {
   GOOGLE_CONFIG_FETCH_FAILED: 'Google 로그인 구성을 확인하는 중 문제가 발생했습니다.',
 }
 
+const REMOVE_BG_API_KEY =
+  typeof process !== 'undefined' &&
+  process &&
+  typeof process.env === 'object' &&
+  process.env &&
+  typeof process.env.REMOVE_BG_API_KEY === 'string'
+    ? process.env.REMOVE_BG_API_KEY
+    : ''
+
 const TENSORFLOW_JS_SRC = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js'
 const DEEPLAB_MODEL_SRC =
   'https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@3.0.0/dist/deeplab.min.js'
+const BODYPIX_MODEL_SRC =
+  'https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js'
 const SEGMENTATION_MODEL_CONFIG = Object.freeze({ base: 'pascal', quantizationBytes: 2 })
 
 const SEGMENTATION_SCRIPT_LOADERS = new Map()
 let segmentationModelPromise = null
+let bodyPixModelPromise = null
 let segmentationModelWarningShown = false
 const PROTECTED_SEGMENTATION_LABEL_KEYWORDS = Object.freeze([
   'person',
@@ -6700,130 +6712,156 @@ function buildForegroundMask(imageData, width, height, stats) {
   return mask
 }
 
-async function callOpenAIBackgroundRemoval(imageBlob, options = {}) {
+async function callSmartBackgroundRemoval(imageBlob) {
+  try {
+    const result = await callRemoveBgAPI(imageBlob)
+    console.log('✅ remove.bg background removal successful')
+    return result
+  } catch (error) {
+    console.warn('⚠️ remove.bg failed, switching to local segmentation:', error?.message || error)
+    const fallback = await localAIBgRemoval(imageBlob)
+    console.log('✅ local AI background removal executed')
+    return fallback
+  }
+}
+
+async function callRemoveBgAPI(imageBlob) {
   if (!(imageBlob instanceof Blob)) {
     throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
   }
 
-  const { name, width, height } = options || {}
-  const formData = new FormData()
-  const normalizedName = typeof name === 'string' && name.trim() ? name.trim() : 'image.png'
-  formData.append('image', imageBlob, normalizedName)
-  if (typeof name === 'string' && name.trim()) {
-    formData.append('name', name.trim())
-  }
-  if (Number.isFinite(width)) {
-    formData.append('width', String(Math.max(1, Math.round(Number(width)))))
-  }
-  if (Number.isFinite(height)) {
-    formData.append('height', String(Math.max(1, Math.round(Number(height)))))
+  if (!REMOVE_BG_API_KEY) {
+    throw new Error('REMOVE_BG_API_KEY_MISSING')
   }
 
-  const response = await fetch('/api/image/remove-background', {
+  const formData = new FormData()
+  formData.append('image_file', imageBlob)
+  formData.append('size', 'auto')
+  formData.append('bg_color', 'transparent')
+
+  const response = await fetch('https://api.remove.bg/v1.0/removebg', {
     method: 'POST',
-    headers: {
-      Accept: 'image/png,application/json',
-    },
+    headers: { 'X-Api-Key': REMOVE_BG_API_KEY },
     body: formData,
   })
 
   if (!response.ok) {
-    let message = ''
-    const contentType = response.headers.get('content-type') || ''
-    if (contentType.includes('application/json')) {
-      const payload = await response.json().catch(() => ({}))
-      message =
-        (typeof payload?.message === 'string' && payload.message) ||
-        (typeof payload?.error === 'string' && payload.error) ||
-        ''
-    } else {
-      message = await response.text().catch(() => '')
-    }
-    throw new Error(message || `OPENAI_BACKGROUND_REMOVAL_FAILED_${response.status}`)
-  }
-
-  const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    const data = await response.json().catch(() => ({}))
-    const message =
-      (data && typeof data.error === 'string' && data.error) ||
-      (data && data.error && typeof data.error.message === 'string' && data.error.message) ||
-      (typeof data?.message === 'string' && data.message) ||
-      'OPENAI_BACKGROUND_REMOVAL_FAILED'
-    throw new Error(message)
+    throw new Error(`remove.bg API failed (${response.status})`)
   }
 
   const blob = await response.blob()
-  const originalDataUrl = await blobToDataUrl(blob).catch(() => null)
-  if (typeof originalDataUrl !== 'string' || !originalDataUrl) {
-    throw new Error('OPENAI_BACKGROUND_REMOVAL_DATA_URL_FAILED')
+  return blobToBase64(blob)
+}
+
+async function localAIBgRemoval(imageBlob) {
+  if (!(imageBlob instanceof Blob)) {
+    throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
   }
 
-  const originalBase64 = originalDataUrl.replace(/^data:[^;]+;base64,/, '')
-  let restoredBase64 = originalBase64
+  const net = await ensureBodyPixModel()
+  const objectUrl = URL.createObjectURL(imageBlob)
+
   try {
-    restoredBase64 = await restoreWhiteObjects(originalBase64)
-  } catch (error) {
-    console.warn('restoreWhiteObjects failed; falling back to original mask', error)
-    restoredBase64 = originalBase64
-  }
+    const img = new Image()
+    img.src = objectUrl
+    img.crossOrigin = 'anonymous'
+    img.decoding = 'async'
 
-  const sanitizedBase64 = typeof restoredBase64 === 'string' && restoredBase64 ? restoredBase64.replace(/\s+/g, '') : originalBase64
-  let processedBlob = blob
-  let processedDataUrl = `data:image/png;base64,${sanitizedBase64}`
-  try {
-    processedBlob = base64ToPngBlob(sanitizedBase64)
-  } catch (error) {
-    console.warn('Failed to convert restored PNG. Using original blob instead.', error)
-    processedBlob = blob
-    processedDataUrl = originalDataUrl
-  }
-
-  let source = null
-  if (typeof createImageBitmap === 'function') {
-    try {
-      source = await createImageBitmap(processedBlob)
-    } catch (error) {
-      source = null
+    if (typeof img.decode === 'function') {
+      try {
+        await img.decode()
+      } catch (error) {
+        await new Promise((resolve, reject) => {
+          img.addEventListener('load', resolve, { once: true })
+          img.addEventListener('error', (event) => {
+            reject(event instanceof Error ? event : new Error('LOCAL_AI_IMAGE_DECODE_FAILED'))
+          })
+        })
+      }
+    } else {
+      await new Promise((resolve, reject) => {
+        img.addEventListener('load', resolve, { once: true })
+        img.addEventListener('error', (event) => {
+          reject(event instanceof Error ? event : new Error('LOCAL_AI_IMAGE_LOAD_FAILED'))
+        })
+      })
     }
-  }
 
-  if (!source) {
-    source = await new Promise((resolve, reject) => {
-      const image = new Image()
-      image.onload = () => resolve(image)
-      image.onerror = (event) =>
-        reject(event instanceof Error ? event : new Error('OPENAI_BACKGROUND_REMOVAL_IMAGE_LOAD_FAILED'))
-      image.crossOrigin = 'anonymous'
-      image.decoding = 'async'
-      image.src = processedDataUrl
-    })
-  }
+    const width = Math.max(1, img.naturalWidth || img.width || 1)
+    const height = Math.max(1, img.naturalHeight || img.height || 1)
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
+    if (!ctx) {
+      throw new Error('LOCAL_AI_CANVAS_CONTEXT_NOT_AVAILABLE')
+    }
 
-  const resolvedWidth =
-    typeof source.width === 'number' && source.width
-      ? source.width
-      : typeof source.naturalWidth === 'number' && source.naturalWidth
-        ? source.naturalWidth
-        : Number.isFinite(width)
-          ? Math.max(1, Math.round(Number(width)))
-          : undefined
-  const resolvedHeight =
-    typeof source.height === 'number' && source.height
-      ? source.height
-      : typeof source.naturalHeight === 'number' && source.naturalHeight
-        ? source.naturalHeight
-        : Number.isFinite(height)
-          ? Math.max(1, Math.round(Number(height)))
-          : undefined
+    ctx.clearRect(0, 0, width, height)
+    ctx.drawImage(img, 0, 0, width, height)
 
-  return {
-    type: 'openai',
-    source,
-    width: typeof resolvedWidth === 'number' && resolvedWidth > 0 ? resolvedWidth : undefined,
-    height: typeof resolvedHeight === 'number' && resolvedHeight > 0 ? resolvedHeight : undefined,
-    blob: processedBlob,
+    let imageData = ctx.getImageData(0, 0, width, height)
+    const segmentation = await net.segmentPerson(img)
+    if (!segmentation || !segmentation.data) {
+      throw new Error('LOCAL_AI_SEGMENTATION_FAILED')
+    }
+
+    const segWidth = Math.max(
+      1,
+      Number(segmentation.width) || Number(segmentation.segmentationMapWidth) || width,
+    )
+    const segHeight = Math.max(
+      1,
+      Number(segmentation.height) || Number(segmentation.segmentationMapHeight) || height,
+    )
+    const normalizedMask = normalizeSegmentationMask(
+      segmentation.data,
+      segWidth,
+      segHeight,
+      width,
+      height,
+    )
+
+    if (normalizedMask && normalizedMask.mask) {
+      imageData = applySegmentationMaskToImageData(imageData, normalizedMask, width, height)
+    } else {
+      const pixel = imageData.data
+      const mask = segmentation.data
+      const limit = Math.min(mask.length, Math.floor(pixel.length / 4))
+      for (let i = 0; i < limit; i += 1) {
+        if (!mask[i]) {
+          const offset = i * 4
+          pixel[offset + 3] = 0
+        }
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0)
+    const dataUrl = canvas.toDataURL('image/png')
+    const parts = dataUrl.split(',')
+    if (parts.length < 2 || !parts[1]) {
+      throw new Error('LOCAL_AI_DATA_URL_FAILED')
+    }
+    return parts[1]
+  } finally {
+    URL.revokeObjectURL(objectUrl)
   }
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        const parts = reader.result.split(',')
+        resolve(parts.length > 1 ? parts[1] : '')
+      } else {
+        resolve('')
+      }
+    }
+    reader.onerror = (event) => reject(event instanceof Error ? event : new Error('BLOB_TO_BASE64_FAILED'))
+    reader.readAsDataURL(blob)
+  })
 }
 
 async function restoreWhiteObjects(base64Image) {
@@ -6911,23 +6949,80 @@ async function applyBackgroundRemoval(imageData, width, height, canvas, options 
   if (canvas) {
     try {
       const inputBlob = await canvasToBlob(canvas, 'image/png', 0.95)
-      const openaiResult = await callOpenAIBackgroundRemoval(inputBlob, {
-        ...options,
-        width,
-        height,
-      })
-      if (openaiResult) {
-        if (!Number.isFinite(openaiResult.width)) {
-          openaiResult.width = canvas.width
+      const base64Result = await callSmartBackgroundRemoval(inputBlob)
+      if (typeof base64Result === 'string' && base64Result.trim()) {
+        const normalizedBase64 = base64Result.replace(/\s+/g, '')
+        let restoredBase64 = normalizedBase64
+        try {
+          restoredBase64 = await restoreWhiteObjects(normalizedBase64)
+        } catch (error) {
+          console.warn('restoreWhiteObjects failed; falling back to original mask', error)
+          restoredBase64 = normalizedBase64
         }
-        if (!Number.isFinite(openaiResult.height)) {
-          openaiResult.height = canvas.height
+
+        const sanitizedBase64 =
+          typeof restoredBase64 === 'string' && restoredBase64
+            ? restoredBase64.replace(/\s+/g, '')
+            : normalizedBase64
+        let processedBlob = null
+        let processedDataUrl = `data:image/png;base64,${sanitizedBase64}`
+        try {
+          processedBlob = base64ToPngBlob(sanitizedBase64)
+        } catch (error) {
+          console.warn('Failed to convert restored PNG. Using original canvas blob instead.', error)
+          processedBlob = inputBlob
+          processedDataUrl = await blobToDataUrl(inputBlob)
         }
-        return openaiResult
+
+        let source = null
+        if (processedBlob && typeof createImageBitmap === 'function') {
+          try {
+            source = await createImageBitmap(processedBlob)
+          } catch (error) {
+            source = null
+          }
+        }
+
+        if (!source) {
+          source = await new Promise((resolve, reject) => {
+            const image = new Image()
+            image.onload = () => resolve(image)
+            image.onerror = (event) =>
+              reject(event instanceof Error ? event : new Error('SMART_BACKGROUND_REMOVAL_IMAGE_LOAD_FAILED'))
+            image.crossOrigin = 'anonymous'
+            image.decoding = 'async'
+            image.src = processedDataUrl
+          })
+        }
+
+        const resolvedWidth =
+          typeof source.width === 'number' && source.width
+            ? source.width
+            : typeof source.naturalWidth === 'number' && source.naturalWidth
+              ? source.naturalWidth
+              : Number.isFinite(width)
+                ? Math.max(1, Math.round(Number(width)))
+                : undefined
+        const resolvedHeight =
+          typeof source.height === 'number' && source.height
+            ? source.height
+            : typeof source.naturalHeight === 'number' && source.naturalHeight
+              ? source.naturalHeight
+              : Number.isFinite(height)
+                ? Math.max(1, Math.round(Number(height)))
+                : undefined
+
+        return {
+          type: 'smart',
+          source,
+          width: typeof resolvedWidth === 'number' && resolvedWidth > 0 ? resolvedWidth : undefined,
+          height: typeof resolvedHeight === 'number' && resolvedHeight > 0 ? resolvedHeight : undefined,
+          blob: processedBlob,
+        }
       }
     } catch (error) {
       if (!segmentationModelWarningShown) {
-        console.warn('[remove-bg] OpenAI 배경 제거 호출 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
+        console.warn('[remove-bg] 스마트 배경 제거 호출 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
         segmentationModelWarningShown = true
       }
     }
@@ -7488,6 +7583,41 @@ function loadSegmentationScript(src) {
 
   SEGMENTATION_SCRIPT_LOADERS.set(src, trackedPromise)
   return trackedPromise
+}
+
+async function ensureBodyPixModel() {
+  if (bodyPixModelPromise) {
+    return bodyPixModelPromise
+  }
+
+  bodyPixModelPromise = (async () => {
+    if (!window.tf) {
+      await loadSegmentationScript(TENSORFLOW_JS_SRC)
+    }
+
+    if (!window.bodyPix) {
+      await loadSegmentationScript(BODYPIX_MODEL_SRC)
+    }
+
+    if (!window.bodyPix || typeof window.bodyPix.load !== 'function') {
+      throw new Error('bodyPix 모델을 초기화할 수 없습니다.')
+    }
+
+    return window.bodyPix.load({
+      architecture: 'MobileNetV1',
+      outputStride: 16,
+      multiplier: 0.75,
+      quantBytes: 2,
+    })
+  })()
+
+  try {
+    const model = await bodyPixModelPromise
+    return model
+  } catch (error) {
+    bodyPixModelPromise = null
+    throw error
+  }
 }
 
 function applyBackgroundRemovalFallback(imageData, width, height) {
@@ -9937,7 +10067,7 @@ async function processRemoveBackground(source, previousOperations = []) {
   let imageData = baseImageData
   let blob = null
 
-  if (removal?.type === 'openai' && removal.source) {
+  if (removal?.type === 'smart' && removal.source) {
     targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
     targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
     if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
@@ -10025,7 +10155,7 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   let workingContext = ctx
   let imageData = baseImageData
 
-  if (removal?.type === 'openai' && removal.source) {
+  if (removal?.type === 'smart' && removal.source) {
     const targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
     const targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
     if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
