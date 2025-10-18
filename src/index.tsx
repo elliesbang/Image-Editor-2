@@ -407,6 +407,29 @@ function isValidEmail(value: unknown): value is string {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
 }
 
+function isSecureRequest(c: Context): boolean {
+  const forwardedProto = c.req.header('x-forwarded-proto')
+  if (forwardedProto) {
+    const proto = forwardedProto.split(',')[0]?.trim().toLowerCase()
+    if (proto) {
+      return proto === 'https'
+    }
+  }
+
+  try {
+    const url = new URL(c.req.url)
+    return url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function resolveCookieSecurity(c: Context) {
+  const secure = isSecureRequest(c)
+  const sameSite: 'none' | 'lax' = secure ? 'none' : 'lax'
+  return { secure, sameSite }
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
   const trimmed = (value ?? '').trim()
   const parsed = Number.parseInt(trimmed, 10)
@@ -3854,10 +3877,11 @@ app.get('/api/auth/login/google', (c) => {
   }
 
   const state = generateRandomState()
+  const { secure, sameSite } = resolveCookieSecurity(c)
   setCookie(c, GOOGLE_OAUTH_STATE_COOKIE, state, {
     httpOnly: true,
-    secure: true,
-    sameSite: 'none',
+    secure,
+    sameSite,
     path: '/',
     maxAge: 10 * 60,
   })
@@ -3888,11 +3912,15 @@ app.get('/api/auth/callback/google', async (c) => {
   const stateParam = (c.req.query('state') || '').trim()
   const storedState = getCookie(c, GOOGLE_OAUTH_STATE_COOKIE) || ''
   if (!stateParam || !storedState || stateParam !== storedState) {
-    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'none', secure: true })
+    const { secure, sameSite } = resolveCookieSecurity(c)
+    deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite, secure })
     return applyCorsHeaders(c.text('Invalid login state.', 400))
   }
 
-  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, { path: '/', sameSite: 'none', secure: true })
+  deleteCookie(c, GOOGLE_OAUTH_STATE_COOKIE, {
+    path: '/',
+    ...resolveCookieSecurity(c),
+  })
 
   try {
     const tokenSet = await googleClient.validateAuthorizationCode(code)
@@ -3938,10 +3966,11 @@ app.get('/api/auth/callback/google', async (c) => {
       issuedAt: Date.now(),
     })
 
+    const { secure: sessionSecure, sameSite: sessionSameSite } = resolveCookieSecurity(c)
     setCookie(c, SESSION_COOKIE_NAME, session, {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none',
+      secure: sessionSecure,
+      sameSite: sessionSameSite,
       path: '/',
       maxAge: 60 * 60 * 24 * 7,
     })
@@ -3955,12 +3984,12 @@ app.get('/api/auth/callback/google', async (c) => {
 })
 
 app.get('/api/auth/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', sameSite: 'none', secure: true })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', ...resolveCookieSecurity(c) })
   return c.redirect('/', 302)
 })
 
 app.post('/api/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', sameSite: 'none', secure: true })
+  deleteCookie(c, SESSION_COOKIE_NAME, { path: '/', ...resolveCookieSecurity(c) })
   return c.json({ success: true })
 })
 
@@ -4766,9 +4795,11 @@ app.get('/signup', (c) => {
 })
 
 app.post('/signup', async (c) => {
-  const { DB_MAIN: db } = c.env
-
-  if (!db) {
+  let db: D1Database
+  try {
+    db = getMainDatabase(c.env)
+  } catch (error) {
+    console.error('[signup] database binding is missing', error)
     return c.render(
       <SignupPage
         status="error"

@@ -66,7 +66,8 @@ async function ensureUserExists(db, email) {
 
 export function registerAuthRoutes(app) {
   app.post('/auth/request-code', async (c) => {
-    const { DB_MAIN: db, SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_FROM } = c.env
+    const db = c.env.DB_MAIN ?? c.env.D1_MAIN
+    const { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_FROM } = c.env
 
     if (!db) {
       return jsonResponse(
@@ -116,7 +117,8 @@ export function registerAuthRoutes(app) {
   })
 
   app.post('/auth/verify-code', async (c) => {
-    const { DB_MAIN: db, JWT_SECRET } = c.env
+    const db = c.env.DB_MAIN ?? c.env.D1_MAIN
+    const { JWT_SECRET } = c.env
 
     if (!db || !JWT_SECRET) {
       return jsonResponse(
