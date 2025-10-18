@@ -6434,7 +6434,7 @@ async function convertTargetToSvg(target, desiredColors, progressHandlers = {}) 
       const bounds = detectNonTransparentBounds(baseImageData)
       if (bounds && (bounds.width !== workingWidth || bounds.height !== workingHeight)) {
         const croppedCanvas = createCanvas(bounds.width, bounds.height)
-        const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true })
+        const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
         if (!croppedCtx) {
           throw new Error('캔버스를 초기화할 수 없습니다.')
         }
@@ -6767,7 +6767,7 @@ function createCanvas(width, height) {
 async function canvasFromDataUrl(dataUrl) {
   const image = await loadImage(dataUrl)
   const canvas = createCanvas(image.naturalWidth || image.width, image.naturalHeight || image.height)
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
   if (!ctx) throw new Error('캔버스를 초기화할 수 없습니다.')
   const previousComposite = ctx.globalCompositeOperation
   ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -8781,7 +8781,7 @@ function cropCanvas(canvas, ctx, bounds) {
   const cropWidth = Math.max(1, right - left + 1)
   const cropHeight = Math.max(1, bottom - top + 1)
   const cropped = createCanvas(cropWidth, cropHeight)
-  const croppedCtx = cropped.getContext('2d')
+  const croppedCtx = cropped.getContext('2d', { willReadFrequently: true, alpha: true })
   if (!croppedCtx) throw new Error('크롭 캔버스를 초기화할 수 없습니다.')
   const imageData = ctx.getImageData(left, top, cropWidth, cropHeight)
   croppedCtx.putImageData(imageData, 0, 0)
@@ -9700,7 +9700,7 @@ function describeSaturation(value) {
 function prepareAnalysisSurface(sourceCanvas, sourceCtx) {
   const largestSide = Math.max(sourceCanvas.width, sourceCanvas.height)
   if (largestSide <= 512) {
-    const context = sourceCtx ?? sourceCanvas.getContext('2d', { willReadFrequently: true })
+    const context = sourceCtx ?? sourceCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
     if (!context) throw new Error('분석용 캔버스를 초기화할 수 없습니다.')
     return {
       canvas: sourceCanvas,
@@ -9712,7 +9712,7 @@ function prepareAnalysisSurface(sourceCanvas, sourceCtx) {
   const width = Math.max(1, Math.round(sourceCanvas.width * scale))
   const height = Math.max(1, Math.round(sourceCanvas.height * scale))
   const scaledCanvas = createCanvas(width, height)
-  const scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true })
+  const scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
   if (!scaledCtx) throw new Error('분석용 캔버스를 초기화할 수 없습니다.')
   scaledCtx.imageSmoothingEnabled = true
   scaledCtx.imageSmoothingQuality = 'high'
