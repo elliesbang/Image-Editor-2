@@ -122,6 +122,15 @@ const GOOGLE_RETRY_REASON_HINTS = {
   GOOGLE_CONFIG_FETCH_FAILED: 'Google 로그인 구성을 확인하는 중 문제가 발생했습니다.',
 }
 
+const TENSORFLOW_JS_SRC = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js'
+const DEEPLAB_MODEL_SRC =
+  'https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@3.0.0/dist/deeplab.min.js'
+const SEGMENTATION_MODEL_CONFIG = Object.freeze({ base: 'pascal', quantizationBytes: 2 })
+
+const SEGMENTATION_SCRIPT_LOADERS = new Map()
+let segmentationModelPromise = null
+let segmentationModelWarningShown = false
+
 function describeGoogleRetry(reason) {
   if (!reason) {
     return GOOGLE_RETRY_REASON_HINTS.default
@@ -6631,7 +6640,240 @@ function buildForegroundMask(imageData, width, height, stats) {
   return mask
 }
 
-function applyBackgroundRemoval(imageData, width, height) {
+async function applyBackgroundRemoval(imageData, width, height, canvas) {
+  if (!imageData || width <= 0 || height <= 0) {
+    return imageData
+  }
+
+  if (canvas) {
+    try {
+      const mask = await generateSegmentationMask(canvas, width, height)
+      if (mask) {
+        applySegmentationMaskToImageData(imageData, mask)
+        return imageData
+      }
+    } catch (error) {
+      if (!segmentationModelWarningShown) {
+        console.warn(
+          '[remove-bg] AI 세그멘테이션 모델을 불러오는 중 문제가 발생했습니다. 기본 방식으로 전환합니다.',
+          error,
+        )
+        segmentationModelWarningShown = true
+      }
+    }
+  }
+
+  return applyBackgroundRemovalFallback(imageData, width, height)
+}
+
+async function generateSegmentationMask(canvas, targetWidth, targetHeight) {
+  const width = Math.max(1, targetWidth)
+  const height = Math.max(1, targetHeight)
+
+  const model = await ensureSegmentationModel()
+  if (!model || typeof model.segment !== 'function') {
+    return null
+  }
+
+  const segmentation = await model.segment(canvas)
+  if (!segmentation) {
+    return null
+  }
+
+  const segmentationMap =
+    segmentation.segmentationMap || segmentation.data || segmentation.map || null
+  if (!segmentationMap) {
+    return null
+  }
+
+  let mapWidth = Number(segmentation.width) || Number(segmentation.segmentationMapWidth) || 0
+  let mapHeight = Number(segmentation.height) || Number(segmentation.segmentationMapHeight) || 0
+
+  if (!mapWidth || !mapHeight || mapWidth * mapHeight !== segmentationMap.length) {
+    if (segmentationMap.length === width * height) {
+      mapWidth = width
+      mapHeight = height
+    } else {
+      const approx = Math.round(Math.sqrt(segmentationMap.length))
+      if (approx * approx === segmentationMap.length) {
+        mapWidth = approx
+        mapHeight = approx
+      }
+    }
+  }
+
+  if (!mapWidth || !mapHeight || mapWidth * mapHeight !== segmentationMap.length) {
+    return null
+  }
+
+  return normalizeSegmentationMask(segmentationMap, mapWidth, mapHeight, width, height)
+}
+
+function normalizeSegmentationMask(map, mapWidth, mapHeight, targetWidth, targetHeight) {
+  const width = Math.max(1, targetWidth)
+  const height = Math.max(1, targetHeight)
+
+  if (mapWidth === width && mapHeight === height) {
+    const mask = new Uint8Array(map.length)
+    for (let i = 0; i < map.length; i += 1) {
+      if (isSegmentationForeground(map[i])) {
+        mask[i] = 1
+      }
+    }
+    return mask
+  }
+
+  const mask = new Uint8Array(width * height)
+  const widthRatio = mapWidth / width
+  const heightRatio = mapHeight / height
+
+  for (let y = 0; y < height; y += 1) {
+    const sourceY = Math.min(mapHeight - 1, Math.floor(y * heightRatio))
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = Math.min(mapWidth - 1, Math.floor(x * widthRatio))
+      const sourceIndex = sourceY * mapWidth + sourceX
+      if (isSegmentationForeground(map[sourceIndex])) {
+        mask[y * width + x] = 1
+      }
+    }
+  }
+
+  return mask
+}
+
+function isSegmentationForeground(label) {
+  if (typeof label !== 'number' || !Number.isFinite(label)) {
+    return false
+  }
+  if (label <= 0) {
+    return false
+  }
+  if (label === 255) {
+    return false
+  }
+  return true
+}
+
+function applySegmentationMaskToImageData(imageData, mask) {
+  if (!imageData || !mask) {
+    return imageData
+  }
+
+  const { data } = imageData
+  const length = Math.min(mask.length, data.length / 4)
+
+  for (let i = 0; i < length; i += 1) {
+    const offset = i * 4
+    if (mask[i]) {
+      if (data[offset + 3] === 0) {
+        data[offset + 3] = 255
+      }
+    } else {
+      data[offset] = 0
+      data[offset + 1] = 0
+      data[offset + 2] = 0
+      data[offset + 3] = 0
+    }
+  }
+
+  return imageData
+}
+
+async function ensureSegmentationModel() {
+  if (segmentationModelPromise) {
+    return segmentationModelPromise
+  }
+
+  segmentationModelPromise = (async () => {
+    if (!window.tf) {
+      await loadSegmentationScript(TENSORFLOW_JS_SRC)
+    }
+
+    if (!window.deeplab) {
+      await loadSegmentationScript(DEEPLAB_MODEL_SRC)
+    }
+
+    if (!window.deeplab || typeof window.deeplab.load !== 'function') {
+      throw new Error('DeepLab 모델을 초기화할 수 없습니다.')
+    }
+
+    return window.deeplab.load(SEGMENTATION_MODEL_CONFIG)
+  })()
+
+  try {
+    const model = await segmentationModelPromise
+    return model
+  } catch (error) {
+    segmentationModelPromise = null
+    throw error
+  }
+}
+
+function loadSegmentationScript(src) {
+  if (!src) {
+    return Promise.resolve()
+  }
+
+  if (SEGMENTATION_SCRIPT_LOADERS.has(src)) {
+    return SEGMENTATION_SCRIPT_LOADERS.get(src)
+  }
+
+  const promise = new Promise((resolve, reject) => {
+    const existing = Array.from(document.getElementsByTagName('script')).find(
+      (script) => script.src === src,
+    )
+
+    if (existing) {
+      const loadedAttr = existing.getAttribute('data-loaded')
+      if (loadedAttr === 'true' || existing.readyState === 'complete') {
+        existing.setAttribute('data-loaded', 'true')
+        resolve()
+        return
+      }
+    }
+
+    const target = existing || document.createElement('script')
+    const cleanup = () => {
+      target.removeEventListener('load', handleLoad)
+      target.removeEventListener('error', handleError)
+    }
+
+    const handleLoad = () => {
+      cleanup()
+      target.setAttribute('data-loaded', 'true')
+      resolve()
+    }
+
+    const handleError = () => {
+      cleanup()
+      if (!existing && target.parentNode) {
+        target.parentNode.removeChild(target)
+      }
+      reject(new Error(`Failed to load script: ${src}`))
+    }
+
+    target.addEventListener('load', handleLoad)
+    target.addEventListener('error', handleError)
+
+    if (!existing) {
+      target.src = src
+      target.async = true
+      target.defer = true
+      target.setAttribute('data-role', 'segmentation-lib')
+      document.head.appendChild(target)
+    }
+  })
+
+  const trackedPromise = promise.catch((error) => {
+    SEGMENTATION_SCRIPT_LOADERS.delete(src)
+    throw error
+  })
+
+  SEGMENTATION_SCRIPT_LOADERS.set(src, trackedPromise)
+  return trackedPromise
+}
+
+function applyBackgroundRemovalFallback(imageData, width, height) {
   if (!imageData || width <= 0 || height <= 0) {
     return imageData
   }
@@ -9070,7 +9312,7 @@ function deleteResults(ids) {
 async function processRemoveBackground(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
   let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
+  imageData = await applyBackgroundRemoval(imageData, canvas.width, canvas.height, canvas)
   const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
   if (refined && refined.mask) {
     imageData = applyMaskToImageData(imageData, refined.mask)
@@ -9116,7 +9358,7 @@ async function processAutoCrop(source, previousOperations = []) {
 async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
   let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  imageData = applyBackgroundRemoval(imageData, canvas.width, canvas.height)
+  imageData = await applyBackgroundRemoval(imageData, canvas.width, canvas.height, canvas)
   const refined = refineAlphaMask(imageData, canvas.width, canvas.height)
   if (refined && refined.mask) {
     imageData = applyMaskToImageData(imageData, refined.mask)
