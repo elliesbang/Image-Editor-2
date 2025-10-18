@@ -122,15 +122,6 @@ const GOOGLE_RETRY_REASON_HINTS = {
   GOOGLE_CONFIG_FETCH_FAILED: 'Google 로그인 구성을 확인하는 중 문제가 발생했습니다.',
 }
 
-const REMOVE_BG_API_KEY =
-  typeof process !== 'undefined' &&
-  process &&
-  typeof process.env === 'object' &&
-  process.env &&
-  typeof process.env.REMOVE_BG_API_KEY === 'string'
-    ? process.env.REMOVE_BG_API_KEY
-    : ''
-
 const TENSORFLOW_JS_SRC = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js'
 const DEEPLAB_MODEL_SRC =
   'https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@3.0.0/dist/deeplab.min.js'
@@ -6712,9 +6703,9 @@ function buildForegroundMask(imageData, width, height, stats) {
   return mask
 }
 
-async function callSmartBackgroundRemoval(imageBlob) {
+async function callSmartBackgroundRemoval(imageBlob, options = {}) {
   try {
-    const result = await callRemoveBgAPI(imageBlob)
+    const result = await callRemoveBgAPI(imageBlob, options)
     console.log('✅ remove.bg background removal successful')
     return result
   } catch (error) {
@@ -6725,28 +6716,56 @@ async function callSmartBackgroundRemoval(imageBlob) {
   }
 }
 
-async function callRemoveBgAPI(imageBlob) {
+async function callRemoveBgAPI(imageBlob, options = {}) {
   if (!(imageBlob instanceof Blob)) {
     throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
   }
 
-  if (!REMOVE_BG_API_KEY) {
-    throw new Error('REMOVE_BG_API_KEY_MISSING')
+  const normalizedOptions = options && typeof options === 'object' ? options : {}
+  const optionName =
+    typeof normalizedOptions.name === 'string' && normalizedOptions.name.trim()
+      ? normalizedOptions.name.trim()
+      : typeof normalizedOptions.fileName === 'string' && normalizedOptions.fileName.trim()
+        ? normalizedOptions.fileName.trim()
+        : ''
+
+  const headers = {
+    Accept: 'application/json',
+    'Content-Type': imageBlob.type || 'application/octet-stream',
   }
 
-  const formData = new FormData()
-  formData.append('image_file', imageBlob)
-  formData.append('size', 'auto')
-  formData.append('bg_color', 'transparent')
+  if (optionName) {
+    headers['X-File-Name'] = optionName
+  }
 
-  const response = await fetch('https://api.remove.bg/v1.0/removebg', {
+  const response = await fetch('/api/remove-background', {
     method: 'POST',
-    headers: { 'X-Api-Key': REMOVE_BG_API_KEY },
-    body: formData,
+    headers,
+    body: imageBlob,
   })
 
   if (!response.ok) {
-    throw new Error(`remove.bg API failed (${response.status})`)
+    throw new Error(`remove.bg proxy failed (${response.status})`)
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+
+  if (contentType.includes('application/json')) {
+    const payload = await response.json()
+    if (payload && typeof payload.base64 === 'string' && payload.base64) {
+      return payload.base64
+    }
+
+    if (payload && payload.fallback) {
+      const error = new Error(payload.reason || 'REMOVE_BG_FALLBACK_TRIGGERED')
+      error.code = payload.reason || 'REMOVE_BG_FALLBACK_TRIGGERED'
+      if (payload.detail) {
+        error.detail = payload.detail
+      }
+      throw error
+    }
+
+    throw new Error('REMOVE_BG_RESPONSE_INVALID')
   }
 
   const blob = await response.blob()
@@ -6949,7 +6968,7 @@ async function applyBackgroundRemoval(imageData, width, height, canvas, options 
   if (canvas) {
     try {
       const inputBlob = await canvasToBlob(canvas, 'image/png', 0.95)
-      const base64Result = await callSmartBackgroundRemoval(inputBlob)
+      const base64Result = await callSmartBackgroundRemoval(inputBlob, options)
       if (typeof base64Result === 'string' && base64Result.trim()) {
         const normalizedBase64 = base64Result.replace(/\s+/g, '')
         let restoredBase64 = normalizedBase64
@@ -10154,10 +10173,12 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
 
   let workingContext = ctx
   let imageData = baseImageData
+  let targetWidth = canvas.width
+  let targetHeight = canvas.height
 
   if (removal?.type === 'smart' && removal.source) {
-    const targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
-    const targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
+    targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
+    targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
     if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
       canvas.width = targetWidth
       canvas.height = targetHeight
@@ -10173,8 +10194,8 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
     }
     imageData = workingContext.getImageData(0, 0, targetWidth, targetHeight)
   } else if (removal?.type === 'fallback' && removal.imageData) {
-    const targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
-    const targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
+    targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
+    targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
     if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
       canvas.width = targetWidth
       canvas.height = targetHeight
@@ -10193,7 +10214,8 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
     workingContext.putImageData(imageData, 0, 0)
   }
 
-  const { canvas: cropped } = cropTransparentArea(canvas, workingContext, imageData)
+  const bounds = detectSubjectBounds(imageData, targetWidth, targetHeight)
+  const { canvas: cropped } = cropCanvas(canvas, workingContext, bounds)
   const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
   const operations = mergeOperations(previousOperations, '배경 제거', '피사체 크롭')
