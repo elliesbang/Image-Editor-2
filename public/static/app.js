@@ -6749,6 +6749,10 @@ function createCanvas(width, height) {
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, width)
   canvas.height = Math.max(1, height)
+  const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }
   return canvas
 }
 
