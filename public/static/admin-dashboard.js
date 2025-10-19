@@ -18,6 +18,7 @@ const state = {
   periodHistory: [],
   users: [],
   logs: [],
+  michinaMembers: [],
 }
 
 const elements = {
@@ -35,6 +36,13 @@ const elements = {
   logTbody: document.querySelector('[data-role="log-tbody"]'),
   logEmpty: document.querySelector('[data-role="log-empty"]'),
   toast: document.querySelector('[data-role="toast"]'),
+  michinaUploadForm: document.querySelector('[data-role="michina-upload-form"]'),
+  michinaUploadFile: document.querySelector('[data-role="michina-upload-file"]'),
+  michinaUploadStatus: document.querySelector('[data-role="michina-upload-status"]'),
+  michinaUploadButton: document.querySelector('[data-role="michina-upload-button"]'),
+  michinaMembersTbody: document.querySelector('[data-role="michina-members-tbody"]'),
+  michinaMembersEmpty: document.querySelector('[data-role="michina-members-empty"]'),
+  michinaResetButton: document.querySelector('[data-role="michina-reset-button"]'),
 }
 
 let toastTimer = 0
@@ -166,6 +174,89 @@ function formatDateTime(value) {
   })
 }
 
+function splitCsvLine(line) {
+  const result = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"'
+        i += 1
+      } else {
+        inQuotes = !inQuotes
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current)
+      current = ''
+    } else {
+      current += char
+    }
+  }
+  result.push(current)
+  return result.map((value) => value.trim())
+}
+
+function parseMichinaCsv(content) {
+  if (typeof content !== 'string') {
+    return []
+  }
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  if (!lines.length) {
+    return []
+  }
+  const headerLine = lines.shift()
+  if (!headerLine) {
+    return []
+  }
+  const headers = splitCsvLine(headerLine.toLowerCase())
+  const indexFor = (...keys) => {
+    for (const key of keys) {
+      const idx = headers.indexOf(key)
+      if (idx !== -1) {
+        return idx
+      }
+    }
+    return -1
+  }
+
+  const nameIndex = indexFor('name', '이름')
+  const emailIndex = indexFor('email', '이메일')
+  const batchIndex = indexFor('batch', '기수')
+  const startIndex = indexFor('start_date', 'start date', '시작일', 'start')
+  const endIndex = indexFor('end_date', 'end date', '종료일', 'end')
+
+  const records = []
+  for (const line of lines) {
+    const cells = splitCsvLine(line)
+    const readCell = (index) => {
+      if (index < 0 || index >= cells.length) {
+        return ''
+      }
+      return cells[index]?.replace(/^"|"$/g, '').trim() || ''
+    }
+
+    const name = readCell(nameIndex)
+    const email = readCell(emailIndex)
+    if (!name && !email) {
+      continue
+    }
+    const record = {
+      name,
+      email,
+      batch: readCell(batchIndex),
+      startDate: readCell(startIndex),
+      endDate: readCell(endIndex),
+    }
+    records.push(record)
+  }
+  return records
+}
+
 function renderPeriod(period) {
   const startInput = elements.periodStart instanceof HTMLInputElement ? elements.periodStart : null
   const endInput = elements.periodEnd instanceof HTMLInputElement ? elements.periodEnd : null
@@ -278,6 +369,87 @@ function renderUsers() {
     tr.appendChild(remainingCell)
 
     elements.userTbody.appendChild(tr)
+  }
+}
+
+function renderMichinaMembers() {
+  if (!(elements.michinaMembersTbody instanceof HTMLElement)) {
+    return
+  }
+
+  elements.michinaMembersTbody.innerHTML = ''
+
+  if (elements.michinaMembersEmpty instanceof HTMLElement) {
+    if (state.michinaMembers.length === 0) {
+      elements.michinaMembersEmpty.hidden = false
+      elements.michinaMembersEmpty.textContent = '등록된 명단이 없습니다.'
+    } else {
+      elements.michinaMembersEmpty.hidden = true
+    }
+  }
+
+  for (const member of state.michinaMembers) {
+    const tr = document.createElement('tr')
+
+    const nameCell = document.createElement('td')
+    nameCell.textContent = member.name || '—'
+
+    const emailCell = document.createElement('td')
+    emailCell.textContent = member.email
+
+    const batchCell = document.createElement('td')
+    batchCell.textContent = Number.isFinite(Number(member.batch)) ? String(member.batch) : '—'
+
+    const startCell = document.createElement('td')
+    startCell.textContent = member.startDate ? formatDateDisplay(member.startDate) : '—'
+
+    const endCell = document.createElement('td')
+    endCell.textContent = member.endDate ? formatDateDisplay(member.endDate) : '—'
+
+    tr.appendChild(nameCell)
+    tr.appendChild(emailCell)
+    tr.appendChild(batchCell)
+    tr.appendChild(startCell)
+    tr.appendChild(endCell)
+
+    elements.michinaMembersTbody.appendChild(tr)
+  }
+}
+
+function setMichinaUploadLoading(isLoading) {
+  if (elements.michinaUploadForm instanceof HTMLElement) {
+    elements.michinaUploadForm.dataset.state = isLoading ? 'loading' : 'idle'
+  }
+  if (elements.michinaUploadFile instanceof HTMLInputElement) {
+    elements.michinaUploadFile.disabled = isLoading
+  }
+  if (elements.michinaUploadButton instanceof HTMLButtonElement) {
+    elements.michinaUploadButton.disabled = isLoading
+    if (isLoading) {
+      elements.michinaUploadButton.dataset.loading = 'true'
+    } else {
+      delete elements.michinaUploadButton.dataset.loading
+    }
+  }
+  if (elements.michinaResetButton instanceof HTMLButtonElement) {
+    elements.michinaResetButton.disabled = isLoading
+  }
+}
+
+function updateMichinaUploadStatus(message, tone = 'success') {
+  if (!(elements.michinaUploadStatus instanceof HTMLElement)) {
+    return
+  }
+  if (!message) {
+    elements.michinaUploadStatus.hidden = true
+    return
+  }
+  elements.michinaUploadStatus.hidden = false
+  elements.michinaUploadStatus.textContent = message
+  if (tone === 'error') {
+    elements.michinaUploadStatus.style.color = '#c0392b'
+  } else {
+    elements.michinaUploadStatus.style.color = '#2c7a36'
   }
 }
 
@@ -399,6 +571,33 @@ async function loadUsers(options = {}) {
     if (elements.userEmpty instanceof HTMLElement) {
       elements.userEmpty.hidden = false
       elements.userEmpty.textContent = '사용자 정보를 불러오지 못했습니다.'
+    }
+  }
+}
+
+async function loadMichinaMembers(options = {}) {
+  if (elements.michinaMembersEmpty instanceof HTMLElement) {
+    elements.michinaMembersEmpty.hidden = false
+    elements.michinaMembersEmpty.textContent = '명단을 불러오는 중입니다…'
+  }
+
+  try {
+    const response = await fetch('/api/admin/dashboard/michina-members', { credentials: 'include' })
+    if (response.status === 401) {
+      handleUnauthorized()
+      return
+    }
+    const payload = await response.json().catch(() => ({}))
+    state.michinaMembers = Array.isArray(payload?.members) ? payload.members : []
+    renderMichinaMembers()
+    if (options.showToast) {
+      showToast('미치나 명단을 갱신했습니다.', 'info')
+    }
+  } catch (error) {
+    console.error('미치나 명단을 불러오지 못했습니다.', error)
+    if (elements.michinaMembersEmpty instanceof HTMLElement) {
+      elements.michinaMembersEmpty.hidden = false
+      elements.michinaMembersEmpty.textContent = '명단을 불러오지 못했습니다.'
     }
   }
 }
@@ -548,6 +747,130 @@ if (refreshLogsButton instanceof HTMLElement) {
   })
 }
 
+if (elements.michinaUploadForm instanceof HTMLFormElement) {
+  elements.michinaUploadForm.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    if (!(elements.michinaUploadFile instanceof HTMLInputElement)) {
+      return
+    }
+    const file = elements.michinaUploadFile.files && elements.michinaUploadFile.files[0]
+    if (!file) {
+      updateMichinaUploadStatus('업로드할 CSV 파일을 선택해주세요.', 'error')
+      return
+    }
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      updateMichinaUploadStatus('CSV 파일만 업로드할 수 있습니다.', 'error')
+      return
+    }
+
+    updateMichinaUploadStatus('')
+    setMichinaUploadLoading(true)
+
+    let text = ''
+    try {
+      text = await file.text()
+    } catch (error) {
+      console.error('CSV 파일을 읽지 못했습니다.', error)
+      updateMichinaUploadStatus('CSV 파일을 읽는 중 문제가 발생했습니다.', 'error')
+      setMichinaUploadLoading(false)
+      return
+    }
+
+    const parsed = parseMichinaCsv(text)
+    const records = parsed
+      .map((entry) => ({
+        name: typeof entry.name === 'string' ? entry.name.trim() : '',
+        email: typeof entry.email === 'string' ? entry.email.trim().toLowerCase() : '',
+        batch: entry.batch,
+        startDate: typeof entry.startDate === 'string' ? entry.startDate.trim() : '',
+        endDate: typeof entry.endDate === 'string' ? entry.endDate.trim() : '',
+      }))
+      .filter((entry) => entry.name && entry.email)
+
+    if (!records.length) {
+      updateMichinaUploadStatus('유효한 데이터를 찾지 못했습니다. CSV 내용을 확인해주세요.', 'error')
+      setMichinaUploadLoading(false)
+      return
+    }
+
+    try {
+      const response = await fetch('/api/admin/dashboard/michina-members', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ members: records }),
+      })
+      if (response.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload?.success !== true) {
+        const message =
+          typeof payload?.error === 'string' && payload.error === 'INVALID_MEMBER'
+            ? 'CSV 데이터 형식을 다시 확인해주세요.'
+            : '명단 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.'
+        updateMichinaUploadStatus(message, 'error')
+        showToast(message, 'danger')
+        return
+      }
+      state.michinaMembers = Array.isArray(payload?.members) ? payload.members : []
+      renderMichinaMembers()
+      updateMichinaUploadStatus('✅ 명단 업로드가 완료되었습니다.', 'success')
+      showToast('✅ 미치나 명단을 업데이트했습니다.', 'success')
+      if (elements.michinaUploadForm instanceof HTMLFormElement) {
+        elements.michinaUploadForm.reset()
+      }
+      if (elements.michinaUploadFile instanceof HTMLInputElement) {
+        elements.michinaUploadFile.value = ''
+      }
+    } catch (error) {
+      console.error('미치나 명단 업로드 실패', error)
+      updateMichinaUploadStatus('명단 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.', 'error')
+      showToast('명단 업로드에 실패했습니다.', 'danger')
+    } finally {
+      setMichinaUploadLoading(false)
+    }
+  })
+}
+
+if (elements.michinaResetButton instanceof HTMLButtonElement) {
+  elements.michinaResetButton.addEventListener('click', async () => {
+    const confirmed = window.confirm('등록된 미치나 명단을 모두 삭제할까요?')
+    if (!confirmed) {
+      return
+    }
+    updateMichinaUploadStatus('')
+    setMichinaUploadLoading(true)
+    try {
+      const response = await fetch('/api/admin/dashboard/michina-members', {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (response.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload?.success !== true) {
+        updateMichinaUploadStatus('명단 초기화에 실패했습니다.', 'error')
+        showToast('명단 초기화에 실패했습니다.', 'danger')
+        return
+      }
+      state.michinaMembers = []
+      renderMichinaMembers()
+      updateMichinaUploadStatus('✅ 명단을 초기화했습니다.', 'success')
+      showToast('미치나 명단을 초기화했습니다.', 'success')
+    } catch (error) {
+      console.error('미치나 명단 초기화 실패', error)
+      updateMichinaUploadStatus('명단 초기화에 실패했습니다.', 'error')
+      showToast('명단 초기화에 실패했습니다.', 'danger')
+    } finally {
+      setMichinaUploadLoading(false)
+    }
+  })
+}
+
 const navButtons = Array.from(document.querySelectorAll('[data-section]'))
 navButtons.forEach((button) => {
   button.addEventListener('click', (event) => {
@@ -578,15 +901,18 @@ showSection('period')
 renderUsers()
 renderLogs()
 renderPeriodHistory()
+renderMichinaMembers()
 
 loadPeriod()
 loadUsers()
 loadLogs()
+loadMichinaMembers()
 
 window.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     loadUsers()
     loadLogs()
     loadPeriodHistory()
+    loadMichinaMembers()
   }
 })

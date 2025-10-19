@@ -6,7 +6,6 @@ import { sign, verify } from 'hono/jwt'
 import { Google } from 'arctic'
 import { renderer } from './renderer'
 import { registerAuthRoutes } from '../routes/auth.js'
-import { registerImwebWebhookRoute } from './routes/api/webhook/imweb'
 import { ensureAuthTables } from '../db/init.js'
 import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
@@ -113,6 +112,24 @@ type MichinaListEntry = {
   name: string
   email: string
   approvedAt: string
+}
+
+type MichinaMemberRow = {
+  id: number
+  name: string
+  email: string
+  batch: number | null
+  start_date: string | null
+  end_date: string | null
+}
+
+type MichinaMember = {
+  id: number
+  name: string
+  email: string
+  batch: number | null
+  startDate: string | null
+  endDate: string | null
 }
 
 type AdminSessionPayload = {
@@ -1050,6 +1067,53 @@ function renderAdminDashboardPage(config: { adminEmail: string }) {
               <p class="empty" data-role="user-empty" hidden>표시할 사용자가 없습니다.</p>
             </div>
           </div>
+          <hr class="panel__separator" aria-hidden="true" />
+          <div class="card card--upload" data-role="michina-upload-card">
+            <div class="card__heading">
+              <h3 class="card__title">📋 미치나 명단 업로드</h3>
+              <p class="card__caption">CSV 파일을 업로드하면 기존 명단이 새 데이터로 교체됩니다.</p>
+            </div>
+            <form class="upload-form" data-role="michina-upload-form">
+              <label class="upload-form__field">
+                <span class="upload-form__label">CSV 파일 선택</span>
+                <input
+                  type="file"
+                  accept=".csv"
+                  data-role="michina-upload-file"
+                  aria-label="미치나 명단 CSV 업로드"
+                  required
+                />
+              </label>
+              <div class="upload-form__actions">
+                <button type="submit" class="btn btn--upload" data-role="michina-upload-button">
+                  <i class="ri-upload-cloud-2-line" aria-hidden="true"></i>
+                  <span>명단 업로드</span>
+                </button>
+                <button type="button" class="btn btn--danger-outline" data-role="michina-reset-button">
+                  <i class="ri-refresh-line" aria-hidden="true"></i>
+                  <span>명단 초기화</span>
+                </button>
+              </div>
+              <p class="upload-form__status" data-role="michina-upload-status" hidden>
+                ✅ 명단 업로드가 완료되었습니다.
+              </p>
+            </form>
+            <div class="table-wrapper table-wrapper--members">
+              <table class="data-table data-table--members" aria-describedby="panel-users-heading">
+                <thead>
+                  <tr>
+                    <th scope="col">이름</th>
+                    <th scope="col">이메일</th>
+                    <th scope="col">기수</th>
+                    <th scope="col">시작일</th>
+                    <th scope="col">종료일</th>
+                  </tr>
+                </thead>
+                <tbody data-role="michina-members-tbody"></tbody>
+              </table>
+              <p class="empty" data-role="michina-members-empty" hidden>등록된 명단이 없습니다.</p>
+            </div>
+          </div>
         </section>
 
         <section class="panel" data-panel="logs" aria-labelledby="panel-logs-heading">
@@ -1773,6 +1837,65 @@ async function ensureParticipantsTable(db: D1Database) {
     console.error('[d1] Failed to ensure michina_participants table', error)
     throw error
   }
+}
+
+async function ensureMichinaMembersTable(db: D1Database) {
+  try {
+    await db
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS michina_members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL,
+          batch INTEGER,
+          start_date TEXT,
+          end_date TEXT
+        )`,
+      )
+      .run()
+    await db
+      .prepare(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_michina_members_email_batch ON michina_members(lower(email), COALESCE(batch, -1))',
+      )
+      .run()
+  } catch (error) {
+    console.error('[d1] Failed to ensure michina_members table', error)
+    throw error
+  }
+}
+
+async function listMichinaMembers(db: D1Database): Promise<MichinaMember[]> {
+  await ensureMichinaMembersTable(db)
+  const result = await db
+    .prepare('SELECT id, name, email, batch, start_date, end_date FROM michina_members ORDER BY lower(name) ASC, id ASC')
+    .all<MichinaMemberRow>()
+  const rows = Array.isArray(result.results) ? result.results : []
+  return rows.map((row) => ({
+    id: Number(row.id),
+    name: typeof row.name === 'string' ? row.name.trim() : '',
+    email: typeof row.email === 'string' ? row.email.trim().toLowerCase() : '',
+    batch: typeof row.batch === 'number' && Number.isFinite(row.batch) ? row.batch : null,
+    startDate: typeof row.start_date === 'string' && row.start_date.trim() ? row.start_date.trim() : null,
+    endDate: typeof row.end_date === 'string' && row.end_date.trim() ? row.end_date.trim() : null,
+  }))
+}
+
+async function replaceMichinaMembers(db: D1Database, members: MichinaMember[]) {
+  await ensureMichinaMembersTable(db)
+  await db.prepare('DELETE FROM michina_members').run()
+  for (const member of members) {
+    await db
+      .prepare(
+        'INSERT INTO michina_members (name, email, batch, start_date, end_date) VALUES (?, ?, ?, ?, ?)',
+      )
+      .bind(member.name, member.email, member.batch, member.startDate, member.endDate)
+      .run()
+  }
+}
+
+async function clearMichinaMembers(db: D1Database) {
+  await ensureMichinaMembersTable(db)
+  await db.prepare('DELETE FROM michina_members').run()
 }
 
 async function saveChallengePeriodToDb(
@@ -2751,8 +2874,6 @@ function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
 const app = new Hono<{ Bindings: Bindings }>()
 
 registerAuthRoutes(app)
-registerImwebWebhookRoute(app)
-
 app.use('*', async (c, next) => {
   await next()
 
@@ -3040,6 +3161,153 @@ app.get('/api/admin/dashboard/users', async (c) => {
   })
 
   return c.json({ users })
+})
+
+app.get('/api/admin/dashboard/michina-members', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ error: 'UNAUTHORIZED', members: [] }, 401)
+  }
+
+  let db: D1Database
+  try {
+    db = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.error('[admin] Michina database binding is not configured', error)
+    return c.json({ error: 'DATABASE_NOT_CONFIGURED', members: [] }, 500)
+  }
+
+  try {
+    const members = await listMichinaMembers(db)
+    return c.json({ members })
+  } catch (error) {
+    console.error('[admin] Failed to load michina members', error)
+    return c.json({ error: 'DATABASE_ERROR', members: [] }, 500)
+  }
+})
+
+app.post('/api/admin/dashboard/michina-members', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, error: 'UNAUTHORIZED' }, 401)
+  }
+
+  let db: D1Database
+  try {
+    db = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.error('[admin] Michina database binding is not configured', error)
+    return c.json({ success: false, error: 'DATABASE_NOT_CONFIGURED' }, 500)
+  }
+
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch (error) {
+    return c.json({ success: false, error: 'INVALID_JSON' }, 400)
+  }
+
+  const rawMembers = Array.isArray((payload as { members?: unknown }).members)
+    ? ((payload as { members: unknown[] }).members as unknown[])
+    : []
+
+  if (!rawMembers.length) {
+    return c.json({ success: false, error: 'EMPTY_MEMBERS' }, 400)
+  }
+
+  const sanitized: MichinaMember[] = []
+  const emailSet = new Set<string>()
+  for (const entry of rawMembers) {
+    if (!entry || typeof entry !== 'object') {
+      continue
+    }
+    const nameRaw = (entry as { name?: unknown }).name
+    const emailRaw = (entry as { email?: unknown }).email
+    const batchRaw = (entry as { batch?: unknown }).batch
+    const startRaw = (entry as { startDate?: unknown }).startDate ?? (entry as { start_date?: unknown }).start_date
+    const endRaw = (entry as { endDate?: unknown }).endDate ?? (entry as { end_date?: unknown }).end_date
+
+    const name = typeof nameRaw === 'string' ? nameRaw.trim() : ''
+    const email = typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : ''
+
+    if (!name || !email || !email.includes('@')) {
+      return c.json({ success: false, error: 'INVALID_MEMBER' }, 400)
+    }
+
+    if (emailSet.has(`${email}:${name.toLowerCase()}`)) {
+      continue
+    }
+    emailSet.add(`${email}:${name.toLowerCase()}`)
+
+    let batch: number | null = null
+    if (typeof batchRaw === 'number' && Number.isFinite(batchRaw)) {
+      batch = Math.trunc(batchRaw)
+    } else if (typeof batchRaw === 'string' && batchRaw.trim()) {
+      const parsed = Number(batchRaw.trim())
+      if (Number.isFinite(parsed)) {
+        batch = Math.trunc(parsed)
+      }
+    }
+
+    const normalizeDate = (value: unknown) => {
+      if (typeof value !== 'string') {
+        return null
+      }
+      const trimmed = value.trim()
+      if (!trimmed) {
+        return null
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return null
+      }
+      return trimmed
+    }
+
+    sanitized.push({
+      id: sanitized.length + 1,
+      name,
+      email,
+      batch,
+      startDate: normalizeDate(startRaw),
+      endDate: normalizeDate(endRaw),
+    })
+  }
+
+  if (!sanitized.length) {
+    return c.json({ success: false, error: 'INVALID_MEMBER' }, 400)
+  }
+
+  try {
+    await replaceMichinaMembers(db, sanitized)
+    const members = await listMichinaMembers(db)
+    return c.json({ success: true, members })
+  } catch (error) {
+    console.error('[admin] Failed to save michina members', error)
+    return c.json({ success: false, error: 'DATABASE_ERROR' }, 500)
+  }
+})
+
+app.delete('/api/admin/dashboard/michina-members', async (c) => {
+  const adminEmail = await requireAdminSession(c)
+  if (!adminEmail) {
+    return c.json({ success: false, error: 'UNAUTHORIZED' }, 401)
+  }
+
+  let db: D1Database
+  try {
+    db = getMichinaDatabase(c.env)
+  } catch (error) {
+    console.error('[admin] Michina database binding is not configured', error)
+    return c.json({ success: false, error: 'DATABASE_NOT_CONFIGURED' }, 500)
+  }
+
+  try {
+    await clearMichinaMembers(db)
+    return c.json({ success: true, members: [] })
+  } catch (error) {
+    console.error('[admin] Failed to clear michina members', error)
+    return c.json({ success: false, error: 'DATABASE_ERROR' }, 500)
+  }
 })
 
 app.get('/api/admin/dashboard/demotion-logs', async (c) => {
