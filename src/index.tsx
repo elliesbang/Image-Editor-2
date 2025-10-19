@@ -6,6 +6,7 @@ import { sign, verify } from 'hono/jwt'
 import { Google } from 'arctic'
 import { renderer } from './renderer'
 import { registerAuthRoutes } from '../routes/auth.js'
+import { registerImwebWebhookRoute } from './routes/api/webhook/imweb'
 import { ensureAuthTables } from '../db/init.js'
 import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
@@ -36,6 +37,7 @@ type Bindings = {
   D1_MAIN?: D1Database
   DB_MAIN: D1Database
   DB_MICHINA: D1Database
+  D1_DATABASE?: D1Database
   OPENAI_API_KEY?: string
   REMOVE_BG_API_KEY?: string
   ADMIN_EMAIL?: string
@@ -2749,6 +2751,7 @@ function clearAdminSession(c: Context<{ Bindings: Bindings }>) {
 const app = new Hono<{ Bindings: Bindings }>()
 
 registerAuthRoutes(app)
+registerImwebWebhookRoute(app)
 
 app.use('*', async (c, next) => {
   await next()
