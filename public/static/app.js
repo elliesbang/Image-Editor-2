@@ -404,6 +404,53 @@ const workingOutputState = {
   name: '',
 }
 
+const backgroundRemovalExportState = {
+  canvas: null,
+  blob: null,
+  dataUrl: '',
+  width: 0,
+  height: 0,
+  sourceId: '',
+}
+
+function clearBackgroundRemovalExportState() {
+  backgroundRemovalExportState.canvas = null
+  backgroundRemovalExportState.blob = null
+  backgroundRemovalExportState.dataUrl = ''
+  backgroundRemovalExportState.width = 0
+  backgroundRemovalExportState.height = 0
+  backgroundRemovalExportState.sourceId = ''
+}
+
+function setBackgroundRemovalExportState(payload) {
+  if (!payload || !(payload.canvas instanceof HTMLCanvasElement) || !(payload.blob instanceof Blob)) {
+    clearBackgroundRemovalExportState()
+    return
+  }
+
+  backgroundRemovalExportState.canvas = payload.canvas
+  backgroundRemovalExportState.blob = payload.blob
+  backgroundRemovalExportState.dataUrl = typeof payload.dataUrl === 'string' ? payload.dataUrl : ''
+  backgroundRemovalExportState.width = payload.canvas.width
+  backgroundRemovalExportState.height = payload.canvas.height
+  backgroundRemovalExportState.sourceId = typeof payload.sourceId === 'string' ? payload.sourceId : ''
+}
+
+function getBackgroundRemovalExportState() {
+  if (!(backgroundRemovalExportState.blob instanceof Blob)) {
+    return null
+  }
+
+  return {
+    canvas: backgroundRemovalExportState.canvas || null,
+    blob: backgroundRemovalExportState.blob,
+    dataUrl: backgroundRemovalExportState.dataUrl,
+    width: backgroundRemovalExportState.width,
+    height: backgroundRemovalExportState.height,
+    sourceId: backgroundRemovalExportState.sourceId,
+  }
+}
+
 function revokeWorkingImageObjectUrl() {
   if (workingOutputState.imageObjectUrl) {
     try {
@@ -10743,14 +10790,15 @@ function deleteResults(ids) {
 
 async function processRemoveBackground(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
+  clearBackgroundRemovalExportState()
   const baseImageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas, { name })
+  const removalBlob = removal?.blob instanceof Blob ? removal.blob : null
 
   let targetWidth = canvas.width
   let targetHeight = canvas.height
   let workingContext = ctx
   let imageData = baseImageData
-  let blob = null
 
   if (removal?.type === 'smart' && removal.source) {
     targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
@@ -10769,7 +10817,6 @@ async function processRemoveBackground(source, previousOperations = []) {
       removal.source.close()
     }
     imageData = workingContext.getImageData(0, 0, targetWidth, targetHeight)
-    blob = removal.blob ?? (await canvasToBlob(canvas, 'image/png', 0.95))
   } else if (removal?.type === 'fallback' && removal.imageData) {
     targetWidth = Math.max(1, Math.round(removal.width || canvas.width))
     targetHeight = Math.max(1, Math.round(removal.height || canvas.height))
@@ -10784,7 +10831,6 @@ async function processRemoveBackground(source, previousOperations = []) {
     workingContext.clearRect(0, 0, targetWidth, targetHeight)
     workingContext.putImageData(removal.imageData, 0, 0)
     imageData = removal.imageData
-    blob = await canvasToBlob(canvas, 'image/png', 0.95)
   } else {
     if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
       canvas.width = targetWidth
@@ -10796,25 +10842,70 @@ async function processRemoveBackground(source, previousOperations = []) {
     }
     workingContext.clearRect(0, 0, targetWidth, targetHeight)
     workingContext.putImageData(imageData, 0, 0)
-    blob = await canvasToBlob(canvas, 'image/png', 0.95)
   }
+
+  const exportCanvas = createCanvas(targetWidth, targetHeight)
+  const exportContext = exportCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
+  if (!exportContext) {
+    throw new Error('EXPORT_CANVAS_CONTEXT_NOT_AVAILABLE')
+  }
+  exportContext.clearRect(0, 0, targetWidth, targetHeight)
+  try {
+    exportContext.putImageData(imageData, 0, 0)
+  } catch (error) {
+    console.warn('putImageData failed on export canvas; attempting ImageBitmap fallback', error)
+    let bitmap = null
+    if (removalBlob && typeof createImageBitmap === 'function') {
+      try {
+        bitmap = await createImageBitmap(removalBlob)
+      } catch (bitmapError) {
+        console.warn('ImageBitmap fallback from blob failed', bitmapError)
+      }
+    }
+    if (!bitmap && typeof createImageBitmap === 'function') {
+      try {
+        bitmap = await createImageBitmap(imageData)
+      } catch (bitmapError) {
+        console.warn('ImageBitmap fallback from ImageData failed', bitmapError)
+      }
+    }
+    if (!bitmap) {
+      throw error instanceof Error ? error : new Error('EXPORT_CANVAS_DRAW_FAILED')
+    }
+    exportContext.clearRect(0, 0, targetWidth, targetHeight)
+    exportContext.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
+    if (typeof bitmap.close === 'function') {
+      bitmap.close()
+    }
+  }
+  const exportBlob = await canvasToBlob(exportCanvas, 'image/png', 0.95)
+  const exportDataUrl = exportCanvas.toDataURL('image/png')
+  setBackgroundRemovalExportState({
+    canvas: exportCanvas,
+    blob: exportBlob,
+    dataUrl: exportDataUrl,
+    sourceId: typeof source?.id === 'string' ? source.id : '',
+  })
   const operations = mergeOperations(previousOperations, '배경 제거')
   const result = {
-    blob,
-    width: canvas.width,
-    height: canvas.height,
+    blob: exportBlob,
+    width: targetWidth,
+    height: targetHeight,
     operations,
     type: 'image/png',
     name: `${baseName(name)}__bg-removed.png`,
+    previewDataUrl: exportDataUrl,
+    exportDataUrl,
   }
   setResult(result)
-  const outputFile = createFileFromBlob(blob, result.name) || blob
+  const outputFile = createFileFromBlob(exportBlob, result.name) || exportBlob
   setImage(outputFile)
   return result
 }
 
 async function processAutoCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
+  clearBackgroundRemovalExportState()
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const bounds = detectSubjectBounds(imageData, canvas.width, canvas.height)
   const { canvas: cropped } = cropCanvas(canvas, ctx, bounds)
@@ -10838,6 +10929,7 @@ async function processAutoCrop(source, previousOperations = []) {
 
 async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
+  clearBackgroundRemovalExportState()
   const baseImageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas, { name })
 
@@ -10890,6 +10982,12 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas: cropped } = cropCanvas(canvas, workingContext, bounds)
   const previewDataUrl = cropped.toDataURL('image/png')
   const blob = await canvasToBlob(cropped, 'image/png', 0.95)
+  setBackgroundRemovalExportState({
+    canvas: cropped,
+    blob,
+    dataUrl: previewDataUrl,
+    sourceId: typeof source?.id === 'string' ? source.id : '',
+  })
   const operations = mergeOperations(previousOperations, '배경 제거', '피사체 크롭')
   const result = {
     blob,
@@ -10899,6 +10997,7 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
     type: 'image/png',
     name: `${baseName(name)}__bg-cropped.png`,
     previewDataUrl,
+    exportDataUrl: previewDataUrl,
   }
   setResult(result)
   const outputFile = createFileFromBlob(blob, result.name) || blob
@@ -10908,6 +11007,7 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
 
 async function processDenoise(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
+  clearBackgroundRemovalExportState()
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   applyBoxBlur(imageData, canvas.width, canvas.height)
   ctx.putImageData(imageData, 0, 0)
@@ -10930,6 +11030,7 @@ async function processDenoise(source, previousOperations = []) {
 async function processResize(upload, targetWidth, previousOperations = []) {
   const normalizedWidth = Math.max(1, Math.round(targetWidth))
   const history = Array.isArray(previousOperations) ? [...previousOperations] : []
+  clearBackgroundRemovalExportState()
 
   const sources = []
   if (upload && upload.blob instanceof Blob) {
@@ -11022,7 +11123,10 @@ function appendResult(upload, result, options = {}) {
   const normalizedBlob =
     baseBlob.type === resolvedType ? baseBlob : new Blob([baseBlob], { type: resolvedType })
   const objectUrl = URL.createObjectURL(normalizedBlob)
-  const previewDataUrl = typeof result.previewDataUrl === 'string' && result.previewDataUrl ? result.previewDataUrl : ''
+  const previewDataUrl =
+    typeof result.previewDataUrl === 'string' && result.previewDataUrl ? result.previewDataUrl : ''
+  const exportDataUrl =
+    typeof result.exportDataUrl === 'string' && result.exportDataUrl ? result.exportDataUrl : previewDataUrl
   const record = {
     id: uuid(),
     sourceId: upload.id,
@@ -11034,6 +11138,7 @@ function appendResult(upload, result, options = {}) {
     type: resolvedType,
     objectUrl,
     previewDataUrl,
+    exportDataUrl,
     operations: result.operations,
     createdAt: Date.now(),
   }
@@ -11095,6 +11200,12 @@ function replaceResult(existingResult, updatedPayload) {
       typeof updatedPayload.previewDataUrl === 'string' && updatedPayload.previewDataUrl
         ? updatedPayload.previewDataUrl
         : previous.previewDataUrl,
+    exportDataUrl:
+      typeof updatedPayload.exportDataUrl === 'string' && updatedPayload.exportDataUrl
+        ? updatedPayload.exportDataUrl
+        : typeof updatedPayload.previewDataUrl === 'string' && updatedPayload.previewDataUrl
+          ? updatedPayload.previewDataUrl
+          : previous.exportDataUrl,
     operations: updatedPayload.operations,
     updatedAt: Date.now(),
   }
@@ -11882,6 +11993,41 @@ async function resolveDownloadBlob(result) {
   }
 }
 
+async function logPreviewDownloadComparison(result, downloadBlob) {
+  if (!result) {
+    return
+  }
+
+  const previewDataUrl =
+    typeof result.previewDataUrl === 'string' && result.previewDataUrl ? result.previewDataUrl : ''
+  let downloadDataUrl =
+    typeof result.exportDataUrl === 'string' && result.exportDataUrl ? result.exportDataUrl : ''
+
+  if (!downloadDataUrl && downloadBlob instanceof Blob) {
+    try {
+      downloadDataUrl = await blobToDataUrl(downloadBlob)
+    } catch (error) {
+      console.warn('Failed to generate download data URL for comparison', error)
+      downloadDataUrl = ''
+    }
+  }
+
+  const previewLength = previewDataUrl.length
+  const downloadLength = downloadDataUrl.length
+
+  if (!previewLength && !downloadLength) {
+    return
+  }
+
+  console.log('[download][comparison]', {
+    id: result.id || null,
+    name: result.name,
+    previewLength,
+    downloadLength,
+    matches: previewLength > 0 && previewLength === downloadLength,
+  })
+}
+
 async function downloadResults(ids, mode = 'selected') {
   const targets = ids.map((id) => state.results.find((result) => result.id === id)).filter(Boolean)
   if (targets.length === 0) {
@@ -11900,6 +12046,11 @@ async function downloadResults(ids, mode = 'selected') {
     if (targets.length === 1) {
       const [result] = targets
       const { blob: downloadBlob, sanitized } = await resolveDownloadBlob(result)
+      try {
+        await logPreviewDownloadComparison(result, downloadBlob)
+      } catch (error) {
+        console.warn('Failed to log preview/download comparison for single download', error)
+      }
       const directUrl = URL.createObjectURL(downloadBlob)
       const link = document.createElement('a')
       link.href = directUrl
@@ -11927,6 +12078,12 @@ async function downloadResults(ids, mode = 'selected') {
         if (sanitized) {
           sanitizedSvgCount += 1
         }
+      }
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await logPreviewDownloadComparison(result, downloadBlob)
+      } catch (error) {
+        console.warn('Failed to log preview/download comparison for batch download', error)
       }
       // eslint-disable-next-line no-await-in-loop
       const arrayBuffer = await downloadBlob.arrayBuffer()
