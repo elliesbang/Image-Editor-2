@@ -1071,16 +1071,16 @@ function renderAdminDashboardPage(config: { adminEmail: string }) {
           <div class="card card--upload" data-role="michina-upload-card">
             <div class="card__heading">
               <h3 class="card__title">📋 미치나 명단 업로드</h3>
-              <p class="card__caption">CSV 파일을 업로드하면 기존 명단이 새 데이터로 교체됩니다.</p>
+              <p class="card__caption">CSV 또는 XLSX 파일을 업로드하면 기존 명단이 새 데이터로 교체됩니다.</p>
             </div>
             <form class="upload-form" data-role="michina-upload-form">
               <label class="upload-form__field">
-                <span class="upload-form__label">CSV 파일 선택</span>
+                <span class="upload-form__label">CSV/XLSX 파일 선택</span>
                 <input
                   type="file"
-                  accept=".csv"
+                  accept=".csv,.xlsx"
                   data-role="michina-upload-file"
-                  aria-label="미치나 명단 CSV 업로드"
+                  aria-label="미치나 명단 파일 업로드"
                   required
                 />
               </label>
@@ -1095,7 +1095,7 @@ function renderAdminDashboardPage(config: { adminEmail: string }) {
                 </button>
               </div>
               <p class="upload-form__status" data-role="michina-upload-status" hidden>
-                ✅ 명단 업로드가 완료되었습니다.
+                ✅ 명단이 정상적으로 업로드되었습니다
               </p>
             </form>
             <div class="table-wrapper table-wrapper--members">
@@ -3223,9 +3223,6 @@ app.post('/api/admin/dashboard/michina-members', async (c) => {
     }
     const nameRaw = (entry as { name?: unknown }).name
     const emailRaw = (entry as { email?: unknown }).email
-    const batchRaw = (entry as { batch?: unknown }).batch
-    const startRaw = (entry as { startDate?: unknown }).startDate ?? (entry as { start_date?: unknown }).start_date
-    const endRaw = (entry as { endDate?: unknown }).endDate ?? (entry as { end_date?: unknown }).end_date
 
     const name = typeof nameRaw === 'string' ? nameRaw.trim() : ''
     const email = typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : ''
@@ -3234,42 +3231,19 @@ app.post('/api/admin/dashboard/michina-members', async (c) => {
       return c.json({ success: false, error: 'INVALID_MEMBER' }, 400)
     }
 
-    if (emailSet.has(`${email}:${name.toLowerCase()}`)) {
+    const dedupeKey = `${email}:${name.toLowerCase()}`
+    if (emailSet.has(dedupeKey)) {
       continue
     }
-    emailSet.add(`${email}:${name.toLowerCase()}`)
-
-    let batch: number | null = null
-    if (typeof batchRaw === 'number' && Number.isFinite(batchRaw)) {
-      batch = Math.trunc(batchRaw)
-    } else if (typeof batchRaw === 'string' && batchRaw.trim()) {
-      const parsed = Number(batchRaw.trim())
-      if (Number.isFinite(parsed)) {
-        batch = Math.trunc(parsed)
-      }
-    }
-
-    const normalizeDate = (value: unknown) => {
-      if (typeof value !== 'string') {
-        return null
-      }
-      const trimmed = value.trim()
-      if (!trimmed) {
-        return null
-      }
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-        return null
-      }
-      return trimmed
-    }
+    emailSet.add(dedupeKey)
 
     sanitized.push({
       id: sanitized.length + 1,
       name,
       email,
-      batch,
-      startDate: normalizeDate(startRaw),
-      endDate: normalizeDate(endRaw),
+      batch: null,
+      startDate: null,
+      endDate: null,
     })
   }
 

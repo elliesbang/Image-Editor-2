@@ -198,6 +198,71 @@ function splitCsvLine(line) {
   return result.map((value) => value.trim())
 }
 
+const MICHINA_NAME_HEADERS = ['name', '이름', 'full name', 'fullname']
+const MICHINA_EMAIL_HEADERS = ['email', '이메일', 'e mail', 'email address', '이메일주소']
+
+function normalizeHeader(value) {
+  if (value == null) {
+    return ''
+  }
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
+function sanitizeCellValue(value) {
+  if (value == null) {
+    return ''
+  }
+  if (typeof value === 'string') {
+    return value.trim()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return String(value).trim()
+}
+
+function readCellValue(row, index) {
+  if (!Array.isArray(row) || index < 0 || index >= row.length) {
+    return ''
+  }
+  return sanitizeCellValue(row[index])
+}
+
+function extractMichinaRecords(headers, rows) {
+  const normalizedHeaders = headers.map((header) => normalizeHeader(header))
+  const indexFor = (candidates) => {
+    for (const candidate of candidates) {
+      const idx = normalizedHeaders.indexOf(candidate)
+      if (idx !== -1) {
+        return idx
+      }
+    }
+    return -1
+  }
+
+  const nameIndex = indexFor(MICHINA_NAME_HEADERS)
+  const emailIndex = indexFor(MICHINA_EMAIL_HEADERS)
+
+  if (nameIndex === -1 || emailIndex === -1) {
+    return []
+  }
+
+  const records = []
+  for (const row of rows) {
+    const name = readCellValue(row, nameIndex)
+    const email = readCellValue(row, emailIndex).toLowerCase()
+    if (!name || !email) {
+      continue
+    }
+    records.push({ name, email })
+  }
+  return records
+}
+
 function parseMichinaCsv(content) {
   if (typeof content !== 'string') {
     return []
@@ -213,48 +278,95 @@ function parseMichinaCsv(content) {
   if (!headerLine) {
     return []
   }
-  const headers = splitCsvLine(headerLine.toLowerCase())
-  const indexFor = (...keys) => {
-    for (const key of keys) {
-      const idx = headers.indexOf(key)
-      if (idx !== -1) {
-        return idx
-      }
+  const headerCells = splitCsvLine(headerLine)
+  const dataRows = lines.map((line) => splitCsvLine(line))
+  return extractMichinaRecords(headerCells, dataRows)
+}
+
+const loadXlsxModule = (() => {
+  let promise = null
+  return async () => {
+    if (!promise) {
+      promise = import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm').catch((error) => {
+        promise = null
+        throw error
+      })
     }
-    return -1
+    return promise
+  }
+})()
+
+async function parseMichinaXlsx(buffer) {
+  if (!(buffer instanceof ArrayBuffer)) {
+    return []
+  }
+  const xlsx = await loadXlsxModule()
+  const workbook = xlsx.read(buffer, { type: 'array' })
+  const sheetName = Array.isArray(workbook.SheetNames) ? workbook.SheetNames[0] : undefined
+  if (!sheetName) {
+    return []
+  }
+  const sheet = workbook.Sheets?.[sheetName]
+  if (!sheet) {
+    return []
+  }
+  const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false })
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return []
+  }
+  const headerRow = Array.isArray(rows[0]) ? rows[0] : []
+  if (!headerRow.length) {
+    return []
+  }
+  const dataRows = rows.slice(1).map((row) => {
+    const source = Array.isArray(row) ? row : []
+    const normalized = []
+    for (let i = 0; i < headerRow.length; i += 1) {
+      normalized.push(sanitizeCellValue(source[i]))
+    }
+    return normalized
+  })
+  return extractMichinaRecords(headerRow, dataRows)
+}
+
+async function parseMichinaMembersFile(file) {
+  const extension = (file.name?.split('.')?.pop() || '').toLowerCase()
+  const mime = (file.type || '').toLowerCase()
+  const isCsv = extension === 'csv' || mime.includes('csv') || mime === 'text/plain'
+  const isXlsx = extension === 'xlsx' || mime.includes('spreadsheetml') || mime.includes('excel')
+
+  if (isCsv) {
+    const text = await file.text()
+    return parseMichinaCsv(text)
+  }
+  if (isXlsx) {
+    const buffer = await file.arrayBuffer()
+    return parseMichinaXlsx(buffer)
   }
 
-  const nameIndex = indexFor('name', '이름')
-  const emailIndex = indexFor('email', '이메일')
-  const batchIndex = indexFor('batch', '기수')
-  const startIndex = indexFor('start_date', 'start date', '시작일', 'start')
-  const endIndex = indexFor('end_date', 'end date', '종료일', 'end')
-
-  const records = []
-  for (const line of lines) {
-    const cells = splitCsvLine(line)
-    const readCell = (index) => {
-      if (index < 0 || index >= cells.length) {
-        return ''
-      }
-      return cells[index]?.replace(/^"|"$/g, '').trim() || ''
+  let lastError = null
+  try {
+    const text = await file.text()
+    const records = parseMichinaCsv(text)
+    if (records.length) {
+      return records
     }
-
-    const name = readCell(nameIndex)
-    const email = readCell(emailIndex)
-    if (!name && !email) {
-      continue
-    }
-    const record = {
-      name,
-      email,
-      batch: readCell(batchIndex),
-      startDate: readCell(startIndex),
-      endDate: readCell(endIndex),
-    }
-    records.push(record)
+  } catch (error) {
+    lastError = error
   }
-  return records
+  try {
+    const buffer = await file.arrayBuffer()
+    const records = await parseMichinaXlsx(buffer)
+    if (records.length) {
+      return records
+    }
+  } catch (error) {
+    lastError = error
+  }
+  if (lastError) {
+    throw lastError
+  }
+  return []
 }
 
 function renderPeriod(period) {
@@ -755,40 +867,25 @@ if (elements.michinaUploadForm instanceof HTMLFormElement) {
     }
     const file = elements.michinaUploadFile.files && elements.michinaUploadFile.files[0]
     if (!file) {
-      updateMichinaUploadStatus('업로드할 CSV 파일을 선택해주세요.', 'error')
-      return
-    }
-    if (!file.name.toLowerCase().endsWith('.csv')) {
-      updateMichinaUploadStatus('CSV 파일만 업로드할 수 있습니다.', 'error')
+      updateMichinaUploadStatus('업로드할 파일을 선택해주세요.', 'error')
       return
     }
 
     updateMichinaUploadStatus('')
     setMichinaUploadLoading(true)
 
-    let text = ''
+    let records = []
     try {
-      text = await file.text()
+      records = await parseMichinaMembersFile(file)
     } catch (error) {
-      console.error('CSV 파일을 읽지 못했습니다.', error)
-      updateMichinaUploadStatus('CSV 파일을 읽는 중 문제가 발생했습니다.', 'error')
+      console.error('명단 파일을 처리하지 못했습니다.', error)
+      updateMichinaUploadStatus('파일을 처리하는 중 문제가 발생했습니다. 다시 시도해주세요.', 'error')
       setMichinaUploadLoading(false)
       return
     }
 
-    const parsed = parseMichinaCsv(text)
-    const records = parsed
-      .map((entry) => ({
-        name: typeof entry.name === 'string' ? entry.name.trim() : '',
-        email: typeof entry.email === 'string' ? entry.email.trim().toLowerCase() : '',
-        batch: entry.batch,
-        startDate: typeof entry.startDate === 'string' ? entry.startDate.trim() : '',
-        endDate: typeof entry.endDate === 'string' ? entry.endDate.trim() : '',
-      }))
-      .filter((entry) => entry.name && entry.email)
-
     if (!records.length) {
-      updateMichinaUploadStatus('유효한 데이터를 찾지 못했습니다. CSV 내용을 확인해주세요.', 'error')
+      updateMichinaUploadStatus('파일에서 유효한 이름과 이메일을 찾지 못했습니다. 파일 내용을 확인해주세요.', 'error')
       setMichinaUploadLoading(false)
       return
     }
@@ -808,7 +905,7 @@ if (elements.michinaUploadForm instanceof HTMLFormElement) {
       if (!response.ok || payload?.success !== true) {
         const message =
           typeof payload?.error === 'string' && payload.error === 'INVALID_MEMBER'
-            ? 'CSV 데이터 형식을 다시 확인해주세요.'
+            ? '업로드한 파일의 형식을 다시 확인해주세요.'
             : '명단 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.'
         updateMichinaUploadStatus(message, 'error')
         showToast(message, 'danger')
@@ -816,7 +913,7 @@ if (elements.michinaUploadForm instanceof HTMLFormElement) {
       }
       state.michinaMembers = Array.isArray(payload?.members) ? payload.members : []
       renderMichinaMembers()
-      updateMichinaUploadStatus('✅ 명단 업로드가 완료되었습니다.', 'success')
+      updateMichinaUploadStatus('✅ 명단이 정상적으로 업로드되었습니다', 'success')
       showToast('✅ 미치나 명단을 업데이트했습니다.', 'success')
       if (elements.michinaUploadForm instanceof HTMLFormElement) {
         elements.michinaUploadForm.reset()
