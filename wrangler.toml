@@ -1,14 +1,9 @@
-name = "elliesbang-image-editor"
-main = "dist/_worker.js"
-compatibility_date = "2025-10-18"
+name = "image-editor"
+compatibility_date = "2025-10-20"
 
 [build]
 command = "npm run build"
-pages_build_output_dir = "dist"
-
-[site]
-bucket = "./dist"
-entry-point = "."
+pages_build_output_dir = "./dist"
 
 [vars]
 NODE_VERSION = "22.16.0"
