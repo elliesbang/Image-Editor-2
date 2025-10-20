@@ -25,12 +25,22 @@ export async function ensureAuthTables(db) {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         email TEXT UNIQUE,
+        password_hash TEXT,
         role TEXT DEFAULT 'user',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_login TIMESTAMP
       )
     `)
   )
+
+  const { results: passwordColumnResults } =
+    (await db
+      .prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'password_hash'")
+      .all()) ?? {}
+
+  if (!Array.isArray(passwordColumnResults) || passwordColumnResults.length === 0) {
+    await runStatement(db.prepare('ALTER TABLE users ADD COLUMN password_hash TEXT'))
+  }
 
   await runStatement(
     db.prepare(`
