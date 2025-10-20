@@ -5304,13 +5304,17 @@ app.post('/api/analyze', async (c) => {
   }
 })
 
-app.get('/admin-dashboard', async (c) => {
+const adminRoutes = app.route('/admin')
+
+adminRoutes.get('/dashboard', async (c) => {
   const adminEmail = await requireAdminSession(c)
   if (!adminEmail) {
     return c.html(renderAdminDashboardUnauthorizedPage('/admin-login/'), 401)
   }
   return c.html(renderAdminDashboardPage({ adminEmail }))
 })
+
+app.get('/admin-dashboard', (c) => c.redirect('/admin/dashboard', 308))
 
 app.get('/signup', (c) => {
   const url = new URL(c.req.url)

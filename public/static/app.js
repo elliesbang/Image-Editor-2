@@ -2012,10 +2012,10 @@ function initializeAdminAuthSync() {
 
 function getAdminDashboardUrl() {
   try {
-    return new URL('/admin-dashboard', window.location.origin).toString()
+    return new URL('/admin/dashboard', window.location.origin).toString()
   } catch (error) {
     console.warn('관리자 대시보드 경로를 계산하지 못했습니다.', error)
-    return '/admin-dashboard'
+    return '/admin/dashboard'
   }
 }
 
