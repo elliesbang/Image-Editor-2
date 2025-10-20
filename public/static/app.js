@@ -8323,6 +8323,10 @@ function applyBackgroundRemovalFallback(imageData, width, height) {
     mask.set(tempMask)
   }
 
+  const colorSimilarityCutoff = colorSoftThreshold * colorSoftThreshold * 1.05
+  const brightnessSimilarityCutoff = brightnessSoftThreshold * 1.1
+  const gradientSoftLimit = gradientReference * 1.2
+
   for (let index = 0; index < pixelCount; index += 1) {
     const offset = index * 4
     const originalAlpha = data[offset + 3] / 255
@@ -8330,13 +8334,33 @@ function applyBackgroundRemovalFallback(imageData, width, height) {
 
     if (confidence <= 0.02) {
       confidence = 0
+    } else if (confidence < 0.35) {
+      confidence = Math.pow(confidence, 1.45)
     } else if (confidence >= 0.98) {
       confidence = 1
     } else {
-      confidence = Math.pow(confidence, 0.85)
+      confidence = Math.pow(confidence, 0.9)
     }
 
-    const finalAlpha = Math.max(0, Math.min(1, confidence * originalAlpha))
+    let finalAlpha = Math.max(0, Math.min(1, confidence * originalAlpha))
+
+    if (finalAlpha > 0 && finalAlpha < 0.28) {
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      const colorDiffSq = (r - meanR) * (r - meanR) + (g - meanG) * (g - meanG) + (b - meanB) * (b - meanB)
+      const brightnessDiff = Math.abs(brightness[index] - meanBrightness)
+      const gradientStrength = gradients[index]
+      const nearBackground =
+        colorDiffSq <= colorSimilarityCutoff &&
+        brightnessDiff <= brightnessSimilarityCutoff &&
+        gradientStrength <= gradientSoftLimit
+
+      if (nearBackground) {
+        finalAlpha = 0
+      }
+    }
+
     data[offset + 3] = Math.round(finalAlpha * 255)
 
     if (finalAlpha === 0) {
