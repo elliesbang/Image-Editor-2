@@ -1,14 +1,3 @@
-name = "elliesbang-image-editor"
-main = "dist/_worker.js"
-compatibility_date = "2025-10-18"
-
-[build]
-command = "npm run build"
-pages_build_output_dir = "dist"
-
-[site]
-bucket = "./dist"
-entry-point = "."
-
-[vars]
-NODE_VERSION = "22.16.0"
+name = "image-editor-background-remove"
+main = "functions/remove-background.js"
+compatibility_date = "2025-10-22"

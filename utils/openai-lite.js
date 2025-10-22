@@ -41,21 +41,42 @@ function buildOutputText(payload) {
   return segments.join('').trim()
 }
 
+const resolveFileName = (value, fallback) => {
+  if (!value || typeof value !== 'object') {
+    return fallback
+  }
+  if (typeof value.name === 'string' && value.name.trim()) {
+    return value.name.trim()
+  }
+  return fallback
+}
+
 class OpenAI {
   constructor(options = {}) {
-    const { apiKey, baseURL } = options
+    const { apiKey, baseURL, organization } = options
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY_REQUIRED')
     }
     this.apiKey = apiKey
     this.baseURL = normalizeBaseUrl(baseURL)
+    this.organization = organization ?? null
+  }
+
+  #buildAuthHeaders() {
+    const headers = {
+      Authorization: `Bearer ${this.apiKey}`,
+    }
+    if (this.organization) {
+      headers['OpenAI-Organization'] = this.organization
+    }
+    return headers
   }
 
   async #request(path, body) {
     const response = await fetch(`${this.baseURL}${path}`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        ...this.#buildAuthHeaders(),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -87,9 +108,80 @@ class OpenAI {
     return payload
   }
 
+  async #multipartRequest(path, formData) {
+    const response = await fetch(`${this.baseURL}${path}`, {
+      method: 'POST',
+      headers: {
+        ...this.#buildAuthHeaders(),
+      },
+      body: formData,
+    })
+
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch (error) {
+      throw new OpenAIResponseError('Invalid JSON response from OpenAI', {
+        status: response.status,
+        details: text,
+      })
+    }
+
+    if (!response.ok) {
+      const message = payload?.error?.message || `OpenAI request failed with status ${response.status}`
+      throw new OpenAIResponseError(message, {
+        status: response.status,
+        details: payload,
+      })
+    }
+
+    return payload
+  }
+
   get responses() {
     return {
       create: (body) => this.#request('/responses', body),
+    }
+  }
+
+  get images() {
+    return {
+      edit: async (options = {}) => {
+        const { image, mask, prompt, size, model, response_format: responseFormat, user } = options
+        if (!image) {
+          throw new Error('OPENAI_IMAGE_REQUIRED')
+        }
+
+        const form = new FormData()
+        form.append('image', image, resolveFileName(image, 'image.png'))
+
+        if (mask instanceof Blob) {
+          form.append('mask', mask, resolveFileName(mask, 'mask.png'))
+        }
+
+        if (typeof prompt === 'string' && prompt.trim()) {
+          form.append('prompt', prompt.trim())
+        }
+
+        if (typeof size === 'string' && size.trim()) {
+          form.append('size', size.trim())
+        }
+
+        if (typeof model === 'string' && model.trim()) {
+          form.append('model', model.trim())
+        }
+
+        if (typeof responseFormat === 'string' && responseFormat.trim()) {
+          form.append('response_format', responseFormat.trim())
+        }
+
+        if (typeof user === 'string' && user.trim()) {
+          form.append('user', user.trim())
+        }
+
+        return this.#multipartRequest('/images/edits', form)
+      },
     }
   }
 }
