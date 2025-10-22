@@ -13,7 +13,24 @@ export default defineConfig({
     },
   },
   plugins: [
-    build(),
+    build({
+      entry: './src/index.tsx',
+      entryContentDefaultExportHook: (appName) => `export default {
+  async fetch(request, env, context) {
+    const url = new URL(request.url)
+    if (url.pathname.startsWith('/api/')) {
+      return ${appName}.fetch(request, env, context)
+    }
+
+    const response = await ${appName}.fetch(request, env, context)
+    if (response && response.status === 404) {
+      return context.next()
+    }
+
+    return response
+  }
+}`,
+    }),
     devServer({
       adapter,
       entry: 'src/index.tsx'
