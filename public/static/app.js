@@ -133,7 +133,7 @@ const SEGMENTATION_MODEL_CONFIG = Object.freeze({ base: 'pascal', quantizationBy
 const SEGMENTATION_SCRIPT_LOADERS = new Map()
 let segmentationModelPromise = null
 let bodyPixModelPromise = null
-let segmentationModelWarningShown = false
+let backgroundRemovalWarningShown = false
 const PROTECTED_SEGMENTATION_LABEL_KEYWORDS = Object.freeze([
   'person',
   'people',
@@ -2173,7 +2173,7 @@ const backgroundNotification = (() => {
 
   return {
     show,
-    success(message = '✅ 배경이 제거되었습니다.') {
+    success(message = '배경이 제거되었습니다 ✅') {
       show('success', message)
     },
     error(message = '⚠️ 배경 제거에 실패했습니다. 다시 시도해주세요.') {
@@ -7253,385 +7253,308 @@ function buildForegroundMask(imageData, width, height, stats) {
   return mask
 }
 
-async function callSmartBackgroundRemoval(imageBlob, options = {}) {
-  try {
-    return await callLocalBackgroundRemoval(imageBlob, options)
-  } catch (error) {
-    console.warn('[background-remove] Local background removal failed, falling back to canvas.', error?.message || error)
-    return localAIBgRemoval(imageBlob)
+function collectEdgeStatistics(imageData, width, height) {
+  const { data } = imageData
+  const margin = Math.max(1, Math.round(Math.min(width, height) * 0.12))
+  const stepX = Math.max(1, Math.round(Math.max(1, margin) / 4))
+  const stepY = stepX
+  const samples = []
+
+  const addSample = (rawX, rawY) => {
+    const x = Math.min(width - 1, Math.max(0, rawX))
+    const y = Math.min(height - 1, Math.max(0, rawY))
+    const index = y * width + x
+    const offset = index * 4
+    const r = data[offset]
+    const g = data[offset + 1]
+    const b = data[offset + 2]
+    const avg = (r + g + b) / 3
+    const contrast = Math.max(r, g, b) - Math.min(r, g, b)
+    samples.push({ r, g, b, avg, contrast })
+  }
+
+  for (let x = 0; x < width; x += stepX) {
+    for (let y = 0; y < margin; y += stepY) addSample(x, y)
+    for (let y = Math.max(0, height - margin); y < height; y += stepY) addSample(x, y)
+  }
+
+  for (let y = 0; y < height; y += stepY) {
+    for (let x = 0; x < margin; x += stepX) addSample(x, y)
+    for (let x = Math.max(0, width - margin); x < width; x += stepX) addSample(x, y)
+  }
+
+  if (samples.length === 0) {
+    addSample(0, 0)
+  }
+
+  let sumR = 0
+  let sumG = 0
+  let sumB = 0
+  let sumBrightness = 0
+  let sumContrast = 0
+
+  for (const sample of samples) {
+    sumR += sample.r
+    sumG += sample.g
+    sumB += sample.b
+    sumBrightness += sample.avg
+    sumContrast += sample.contrast
+  }
+
+  const count = samples.length || 1
+  const meanColor = {
+    r: sumR / count,
+    g: sumG / count,
+    b: sumB / count,
+  }
+  const meanBrightness = sumBrightness / count
+  const meanContrast = sumContrast / count
+
+  let sumColorDeviation = 0
+  let sumBrightnessDeviation = 0
+  let sumContrastDeviation = 0
+
+  for (const sample of samples) {
+    const colorDiff = Math.sqrt(
+      (sample.r - meanColor.r) * (sample.r - meanColor.r) +
+        (sample.g - meanColor.g) * (sample.g - meanColor.g) +
+        (sample.b - meanColor.b) * (sample.b - meanColor.b),
+    )
+    sumColorDeviation += colorDiff
+    sumBrightnessDeviation += Math.abs(sample.avg - meanBrightness)
+    sumContrastDeviation += Math.abs(sample.contrast - meanContrast)
+  }
+
+  return {
+    meanColor,
+    meanBrightness,
+    meanContrast,
+    avgColorDeviation: sumColorDeviation / count,
+    avgBrightnessDeviation: sumBrightnessDeviation / count,
+    avgContrastDeviation: sumContrastDeviation / count,
   }
 }
 
-async function callLocalBackgroundRemoval(imageBlob, options = {}) {
-  if (!(imageBlob instanceof Blob)) {
-    throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
+function applyThresholdMask(imageData, width, height, stats) {
+  if (!stats) {
+    return null
   }
 
-  const normalizedOptions = options && typeof options === 'object' ? options : {}
-  const optionName =
-    typeof normalizedOptions.name === 'string' && normalizedOptions.name.trim()
-      ? normalizedOptions.name.trim()
-      : typeof normalizedOptions.fileName === 'string' && normalizedOptions.fileName.trim()
-        ? normalizedOptions.fileName.trim()
-        : ''
+  const { data } = imageData
+  const totalPixels = width * height
+  const brightness = new Float32Array(totalPixels)
 
-  const headers = {
-    Accept: 'image/png,image/*;q=0.9',
-    'Content-Type': imageBlob.type || 'application/octet-stream',
+  for (let index = 0; index < totalPixels; index += 1) {
+    const offset = index * 4
+    brightness[index] = (data[offset] + data[offset + 1] + data[offset + 2]) / 3
   }
 
-  if (optionName) {
-    headers['X-File-Name'] = optionName
-  }
+  const brightnessSoftThreshold =
+    stats.meanBrightness + Math.max(8, stats.avgBrightnessDeviation * 1.4 + 12)
+  const brightnessHardThreshold =
+    stats.meanBrightness + Math.max(16, stats.avgBrightnessDeviation * 2.2 + 20)
+  const colorSoftThreshold = Math.max(12, stats.avgColorDeviation * 1.6 + 12)
+  const colorHardThreshold = Math.max(colorSoftThreshold + 10, stats.avgColorDeviation * 2.3 + 22)
+  const contrastThreshold = Math.max(22, stats.meanContrast + stats.avgContrastDeviation * 1.6 + 14)
+  const edgeThreshold = Math.max(10, stats.avgBrightnessDeviation * 2 + 14)
 
-  const response = await fetch('/remove-bg', {
-    method: 'POST',
-    headers,
-    body: imageBlob,
-  })
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+  let foregroundCount = 0
 
-  if (!response.ok) {
-    let detail = ''
-    try {
-      const payload = await response.json()
-      if (payload && typeof payload === 'object') {
-        detail = typeof payload.message === 'string' ? payload.message : JSON.stringify(payload)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x
+      const offset = index * 4
+      const alpha = data[offset + 3]
+
+      if (alpha <= 10) {
+        data[offset + 3] = 0
+        continue
       }
-    } catch {
-      try {
-        detail = await response.text()
-      } catch {
-        detail = ''
-      }
-    }
-    const error = new Error(detail || `BACKGROUND_REMOVAL_FAILED_${response.status}`)
-    error.status = response.status
-    throw error
-  }
 
-  const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    const payload = await response.json().catch(() => null)
-    const error = new Error((payload && payload.message) || 'BACKGROUND_REMOVAL_FAILED')
-    error.status = (payload && payload.status) || response.status || 500
-    error.detail = payload
-    throw error
-  }
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      const avg = brightness[index]
+      const colorDiff = Math.sqrt(
+        (r - stats.meanColor.r) * (r - stats.meanColor.r) +
+          (g - stats.meanColor.g) * (g - stats.meanColor.g) +
+          (b - stats.meanColor.b) * (b - stats.meanColor.b),
+      )
+      const contrast = Math.max(r, g, b) - Math.min(r, g, b)
+      const brightnessDiff = Math.abs(avg - stats.meanBrightness)
 
-  const blob = await response.blob()
-  const base64 = await blobToBase64(blob)
-  return base64.replace(/^data:[^;]+;base64,/, '')
-}
-
-async function localAIBgRemoval(imageBlob) {
-  if (!(imageBlob instanceof Blob)) {
-    throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
-  }
-
-  const net = await ensureBodyPixModel()
-  const objectUrl = URL.createObjectURL(imageBlob)
-
-  try {
-    const img = new Image()
-    img.src = objectUrl
-    img.crossOrigin = 'anonymous'
-    img.decoding = 'async'
-
-    if (typeof img.decode === 'function') {
-      try {
-        await img.decode()
-      } catch (error) {
-        await new Promise((resolve, reject) => {
-          img.addEventListener('load', resolve, { once: true })
-          img.addEventListener('error', (event) => {
-            reject(event instanceof Error ? event : new Error('LOCAL_AI_IMAGE_DECODE_FAILED'))
-          })
-        })
-      }
-    } else {
-      await new Promise((resolve, reject) => {
-        img.addEventListener('load', resolve, { once: true })
-        img.addEventListener('error', (event) => {
-          reject(event instanceof Error ? event : new Error('LOCAL_AI_IMAGE_LOAD_FAILED'))
-        })
-      })
-    }
-
-    const width = Math.max(1, img.naturalWidth || img.width || 1)
-    const height = Math.max(1, img.naturalHeight || img.height || 1)
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
-    if (!ctx) {
-      throw new Error('LOCAL_AI_CANVAS_CONTEXT_NOT_AVAILABLE')
-    }
-
-    ctx.clearRect(0, 0, width, height)
-    ctx.drawImage(img, 0, 0, width, height)
-
-    let imageData = ctx.getImageData(0, 0, width, height)
-    const segmentation = await net.segmentPerson(img)
-    if (!segmentation || !segmentation.data) {
-      throw new Error('LOCAL_AI_SEGMENTATION_FAILED')
-    }
-
-    const segWidth = Math.max(
-      1,
-      Number(segmentation.width) || Number(segmentation.segmentationMapWidth) || width,
-    )
-    const segHeight = Math.max(
-      1,
-      Number(segmentation.height) || Number(segmentation.segmentationMapHeight) || height,
-    )
-    const normalizedMask = normalizeSegmentationMask(
-      segmentation.data,
-      segWidth,
-      segHeight,
-      width,
-      height,
-    )
-
-    if (normalizedMask && normalizedMask.mask) {
-      imageData = applySegmentationMaskToImageData(imageData, normalizedMask, width, height)
-    } else {
-      const pixel = imageData.data
-      const mask = segmentation.data
-      const limit = Math.min(mask.length, Math.floor(pixel.length / 4))
-      for (let i = 0; i < limit; i += 1) {
-        if (!mask[i]) {
-          const offset = i * 4
-          pixel[offset + 3] = 0
+      let maxGradient = 0
+      const updateGradient = (nx, ny, weight = 1) => {
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) return
+        const neighborIndex = ny * width + nx
+        const diff = Math.abs(avg - brightness[neighborIndex]) * weight
+        if (diff > maxGradient) {
+          maxGradient = diff
         }
       }
-    }
 
-    ctx.putImageData(imageData, 0, 0)
-    const dataUrl = canvas.toDataURL('image/png')
-    const parts = dataUrl.split(',')
-    if (parts.length < 2 || !parts[1]) {
-      throw new Error('LOCAL_AI_DATA_URL_FAILED')
-    }
-    return parts[1]
-  } finally {
-    URL.revokeObjectURL(objectUrl)
-  }
-}
+      updateGradient(x - 1, y)
+      updateGradient(x + 1, y)
+      updateGradient(x, y - 1)
+      updateGradient(x, y + 1)
+      updateGradient(x - 1, y - 1, 0.7)
+      updateGradient(x + 1, y - 1, 0.7)
+      updateGradient(x - 1, y + 1, 0.7)
+      updateGradient(x + 1, y + 1, 0.7)
 
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        const parts = reader.result.split(',')
-        resolve(parts.length > 1 ? parts[1] : '')
-      } else {
-        resolve('')
+      const strongBrightness = avg >= brightnessHardThreshold
+      const brightCandidate = avg >= brightnessSoftThreshold
+      const colorSimilar = colorDiff <= colorHardThreshold
+      const lowContrast = contrast <= contrastThreshold
+      const lowBrightnessDiff = brightnessDiff <= Math.max(32, brightnessHardThreshold - stats.meanBrightness)
+
+      let isBackground = false
+      if (strongBrightness && colorDiff <= colorSoftThreshold && lowContrast) {
+        isBackground = true
+      } else if (brightCandidate && colorSimilar && lowContrast && lowBrightnessDiff) {
+        isBackground = true
       }
-    }
-    reader.onerror = (event) => reject(event instanceof Error ? event : new Error('BLOB_TO_BASE64_FAILED'))
-    reader.readAsDataURL(blob)
-  })
-}
 
-async function restoreWhiteObjects(base64Image) {
-  if (typeof base64Image !== 'string' || !base64Image) {
-    return base64Image
+      if (isBackground && maxGradient > edgeThreshold) {
+        isBackground = false
+      }
+
+      if (isBackground) {
+        data[offset + 3] = 0
+        continue
+      }
+
+      if (maxGradient > edgeThreshold * 0.85 && data[offset + 3] < 230) {
+        data[offset + 3] = Math.min(255, data[offset + 3] + 30)
+      }
+
+      foregroundCount += 1
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
   }
 
-  const normalizedBase64 = base64Image.replace(/\s+/g, '')
-  const img = new Image()
-  img.crossOrigin = 'anonymous'
-  img.decoding = 'async'
-  img.src = `data:image/png;base64,${normalizedBase64}`
+  if (foregroundCount === 0 || maxX < minX || maxY < minY) {
+    return null
+  }
 
-  if (typeof img.decode === 'function') {
+  const padding = Math.max(2, Math.round(Math.min(width, height) * 0.01))
+  return {
+    bounds: {
+      minX: Math.max(0, minX - padding),
+      minY: Math.max(0, minY - padding),
+      maxX: Math.min(width - 1, maxX + padding),
+      maxY: Math.min(height - 1, maxY + padding),
+    },
+  }
+}
+
+async function removeBackgroundWithThreshold(sourceCanvas, baseImageData) {
+  if (!(sourceCanvas instanceof HTMLCanvasElement)) {
+    return null
+  }
+
+  const width = Math.max(1, Math.round(sourceCanvas.width))
+  const height = Math.max(1, Math.round(sourceCanvas.height))
+
+  const workingCanvas = document.createElement('canvas')
+  workingCanvas.width = width
+  workingCanvas.height = height
+  const workingCtx = workingCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
+  if (!workingCtx) {
+    throw new Error('BACKGROUND_REMOVAL_CANVAS_CONTEXT_NOT_AVAILABLE')
+  }
+
+  if (baseImageData && baseImageData.width === width && baseImageData.height === height) {
     try {
-      await img.decode()
+      const copy = new ImageData(new Uint8ClampedArray(baseImageData.data), width, height)
+      workingCtx.putImageData(copy, 0, 0)
     } catch (error) {
-      await new Promise((resolve, reject) => {
-        img.addEventListener('load', resolve, { once: true })
-        img.addEventListener('error', (event) => {
-          reject(event instanceof Error ? event : new Error('RESTORE_WHITE_OBJECTS_IMAGE_DECODE_FAILED'))
-        })
-      })
+      workingCtx.drawImage(sourceCanvas, 0, 0, width, height)
     }
   } else {
-    await new Promise((resolve, reject) => {
-      img.addEventListener('load', resolve, { once: true })
-      img.addEventListener('error', (event) => {
-        reject(event instanceof Error ? event : new Error('RESTORE_WHITE_OBJECTS_IMAGE_LOAD_FAILED'))
-      })
-    })
+    workingCtx.drawImage(sourceCanvas, 0, 0, width, height)
   }
 
-  const width = Math.max(1, img.naturalWidth || img.width || 1)
-  const height = Math.max(1, img.naturalHeight || img.height || 1)
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true })
-  if (!ctx) {
-    return normalizedBase64
+  const imageData = workingCtx.getImageData(0, 0, width, height)
+  const stats = collectEdgeStatistics(imageData, width, height)
+  const maskResult = applyThresholdMask(imageData, width, height, stats)
+  if (!maskResult) {
+    return null
   }
 
-  ctx.clearRect(0, 0, width, height)
-  ctx.drawImage(img, 0, 0, width, height)
+  workingCtx.putImageData(imageData, 0, 0)
 
-  const imageData = ctx.getImageData(0, 0, width, height)
-  const data = imageData.data
-  const rowStride = width * 4
-  const searchRadius = Math.max(2, Math.min(4, Math.floor(Math.min(width, height) / 80)))
+  const bounds = maskResult.bounds
+  const cropWidth = Math.max(1, bounds.maxX - bounds.minX + 1)
+  const cropHeight = Math.max(1, bounds.maxY - bounds.minY + 1)
 
-  const hasOpaqueInDirection = (x, y, dx, dy) => {
-    for (let step = 1; step <= searchRadius; step += 1) {
-      const nx = x + dx * step
-      const ny = y + dy * step
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-        break
-      }
-      const neighborIndex = ny * rowStride + nx * 4
-      const neighborAlpha = data[neighborIndex + 3]
-      if (neighborAlpha >= 235) {
-        return true
-      }
-    }
-    return false
+  const croppedCanvas = document.createElement('canvas')
+  croppedCanvas.width = cropWidth
+  croppedCanvas.height = cropHeight
+  const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true, alpha: true })
+  if (!croppedCtx) {
+    throw new Error('BACKGROUND_REMOVAL_CROP_CONTEXT_NOT_AVAILABLE')
   }
 
-  // 흰색 피사체 복원용 후처리 로직 (경계 보존 강화)
-  for (let y = 0; y < height; y += 1) {
-    const rowOffset = y * rowStride
-    for (let x = 0; x < width; x += 1) {
-      const index = rowOffset + x * 4
-      const r = data[index]
-      const g = data[index + 1]
-      const b = data[index + 2]
-      const alpha = data[index + 3]
+  croppedCtx.clearRect(0, 0, cropWidth, cropHeight)
+  croppedCtx.drawImage(
+    workingCanvas,
+    bounds.minX,
+    bounds.minY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight,
+  )
 
-      if (alpha >= 235) {
-        continue
+  const blob = await new Promise((resolve, reject) => {
+    croppedCanvas.toBlob((result) => {
+      if (result) {
+        resolve(result)
+      } else {
+        reject(new Error('BACKGROUND_REMOVAL_EXPORT_FAILED'))
       }
+    }, 'image/png')
+  })
 
-      const brightness = (r + g + b) / 3
-      if (brightness <= 234) {
-        continue
-      }
-
-      const horizontalEnclosed = hasOpaqueInDirection(x, y, -1, 0) && hasOpaqueInDirection(x, y, 1, 0)
-      if (!horizontalEnclosed) {
-        continue
-      }
-
-      const verticalEnclosed = hasOpaqueInDirection(x, y, 0, -1) && hasOpaqueInDirection(x, y, 0, 1)
-      if (!verticalEnclosed) {
-        continue
-      }
-
-      data[index + 3] = 255
-    }
+  return {
+    canvas: croppedCanvas,
+    blob,
+    dataUrl: croppedCanvas.toDataURL('image/png'),
   }
-
-  ctx.putImageData(imageData, 0, 0)
-  const restoredDataUrl = canvas.toDataURL('image/png')
-  const parts = restoredDataUrl.split(',')
-  return parts.length > 1 ? parts[1] : normalizedBase64
 }
 
-function base64ToPngBlob(base64) {
-  const normalized = (base64 || '').replace(/\s+/g, '')
-  const binary = atob(normalized)
-  const length = binary.length
-  const bytes = new Uint8Array(length)
-  for (let index = 0; index < length; index += 1) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-  return new Blob([bytes], { type: 'image/png' })
-}
-
-async function applyBackgroundRemoval(imageData, width, height, canvas, options = {}) {
+async function applyBackgroundRemoval(imageData, width, height, canvas) {
   if (!imageData || width <= 0 || height <= 0) {
     return { type: 'none', imageData, width, height, blob: null }
   }
 
   if (canvas) {
     try {
-      const inputBlob = await canvasToBlob(canvas, 'image/png', 0.95)
-      const base64Result = await callSmartBackgroundRemoval(inputBlob, options)
-      if (typeof base64Result === 'string' && base64Result.trim()) {
-        const normalizedBase64 = base64Result.replace(/\s+/g, '')
-        let restoredBase64 = normalizedBase64
-        try {
-          restoredBase64 = await restoreWhiteObjects(normalizedBase64)
-        } catch (error) {
-          console.warn('restoreWhiteObjects failed; falling back to original mask', error)
-          restoredBase64 = normalizedBase64
-        }
-
-        const sanitizedBase64 =
-          typeof restoredBase64 === 'string' && restoredBase64
-            ? restoredBase64.replace(/\s+/g, '')
-            : normalizedBase64
-        let processedBlob = null
-        let processedDataUrl = `data:image/png;base64,${sanitizedBase64}`
-        try {
-          processedBlob = base64ToPngBlob(sanitizedBase64)
-        } catch (error) {
-          console.warn('Failed to convert restored PNG. Using original canvas blob instead.', error)
-          processedBlob = inputBlob
-          processedDataUrl = await blobToDataUrl(inputBlob)
-        }
-
-        let source = null
-        if (processedBlob && typeof createImageBitmap === 'function') {
-          try {
-            source = await createImageBitmap(processedBlob)
-          } catch (error) {
-            source = null
-          }
-        }
-
-        if (!source) {
-          source = await new Promise((resolve, reject) => {
-            const image = new Image()
-            image.onload = () => resolve(image)
-            image.onerror = (event) =>
-              reject(event instanceof Error ? event : new Error('SMART_BACKGROUND_REMOVAL_IMAGE_LOAD_FAILED'))
-            image.crossOrigin = 'anonymous'
-            image.decoding = 'async'
-            image.src = processedDataUrl
-          })
-        }
-
-        const resolvedWidth =
-          typeof source.width === 'number' && source.width
-            ? source.width
-            : typeof source.naturalWidth === 'number' && source.naturalWidth
-              ? source.naturalWidth
-              : Number.isFinite(width)
-                ? Math.max(1, Math.round(Number(width)))
-                : undefined
-        const resolvedHeight =
-          typeof source.height === 'number' && source.height
-            ? source.height
-            : typeof source.naturalHeight === 'number' && source.naturalHeight
-              ? source.naturalHeight
-              : Number.isFinite(height)
-                ? Math.max(1, Math.round(Number(height)))
-                : undefined
-
+      const removal = await removeBackgroundWithThreshold(canvas, imageData)
+      if (removal && removal.canvas) {
         return {
           type: 'smart',
-          source,
-          width: typeof resolvedWidth === 'number' && resolvedWidth > 0 ? resolvedWidth : undefined,
-          height: typeof resolvedHeight === 'number' && resolvedHeight > 0 ? resolvedHeight : undefined,
-          blob: processedBlob,
+          source: removal.canvas,
+          width: removal.canvas.width,
+          height: removal.canvas.height,
+          blob: removal.blob,
+          dataUrl: removal.dataUrl,
         }
       }
     } catch (error) {
-      if (!segmentationModelWarningShown) {
-        console.warn('[background-remove] 로컬 모델 호출 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
-        segmentationModelWarningShown = true
+      if (!backgroundRemovalWarningShown) {
+        console.warn('[background-remove] 로컬 배경 제거 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
+        backgroundRemovalWarningShown = true
       }
     }
   }
@@ -10880,7 +10803,7 @@ async function processRemoveBackground(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
   clearBackgroundRemovalExportState()
   const baseImageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas, { name })
+  const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas)
   const removalBlob = removal?.blob instanceof Blob ? removal.blob : null
 
   let targetWidth = canvas.width
@@ -11019,7 +10942,7 @@ async function processRemoveBackgroundAndCrop(source, previousOperations = []) {
   const { canvas, ctx, name } = await resolveProcessingSource(source)
   clearBackgroundRemovalExportState()
   const baseImageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas, { name })
+  const removal = await applyBackgroundRemoval(baseImageData, canvas.width, canvas.height, canvas)
 
   let workingContext = ctx
   let imageData = baseImageData
