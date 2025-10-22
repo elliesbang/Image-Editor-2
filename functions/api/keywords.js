@@ -1,4 +1,4 @@
-import OpenAI from 'openai'
+import OpenAI from '../../utils/openai-lite.js'
 
 const MODEL = 'gpt-4o'
 const TEMPERATURE = 0.3
