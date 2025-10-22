@@ -7192,19 +7192,23 @@ async function callRemoveBgAPI(imageBlob, options = {}) {
         ? normalizedOptions.fileName.trim()
         : ''
 
-  const headers = {
-    Accept: 'application/json',
-    'Content-Type': imageBlob.type || 'application/octet-stream',
+  const formData = new FormData()
+  const fileName = optionName || 'image.png'
+  if (imageBlob instanceof File) {
+    formData.append('image', imageBlob, fileName)
+  } else {
+    const fileType = imageBlob.type || 'image/png'
+    const file = new File([imageBlob], fileName, { type: fileType })
+    formData.append('image', file, fileName)
   }
 
   if (optionName) {
-    headers['X-File-Name'] = optionName
+    formData.set('name', optionName)
   }
 
   const response = await fetch('/api/remove-background', {
     method: 'POST',
-    headers,
-    body: imageBlob,
+    body: formData,
   })
 
   if (!response.ok) {
