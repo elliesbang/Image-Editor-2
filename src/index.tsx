@@ -10,6 +10,7 @@ import { ensureAuthTables } from '../db/init.js'
 import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
 import SignupPage from './Signup'
+import Notification from './components/Notification'
 
 type D1Result<T = unknown> = {
   success: boolean
@@ -5782,6 +5783,8 @@ app.get('/', async (c) => {
                 노이즈 제거
               </button>
             </div>
+            <Notification className="bg-removal-toast--inline" />
+
             <div class="operations__resize">
               <label class="operations__label" for="resizeWidth">리사이즈 가로(px)</label>
               <div class="operations__resize-controls">

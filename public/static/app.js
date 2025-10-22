@@ -1035,6 +1035,7 @@ const elements = {
   uploadList: document.querySelector('#uploadList'),
   resultList: document.querySelector('#resultList'),
   status: document.querySelector('[data-role="status"]'),
+  backgroundToast: document.querySelector('[data-role="background-toast"]'),
   heroTriggers: document.querySelectorAll('[data-trigger="file"]'),
   operationButtons: document.querySelectorAll('[data-operation]'),
   resizeInput: document.querySelector('#resizeWidth'),
@@ -2096,6 +2097,92 @@ function mergeOperations(previous = [], ...labels) {
   }
   return history
 }
+
+const backgroundNotification = (() => {
+  let showTimer = null
+  let hideTimer = null
+  let finalizeTimer = null
+
+  const getElement = () =>
+    elements.backgroundToast instanceof HTMLElement ? elements.backgroundToast : null
+
+  const clearTimers = () => {
+    if (showTimer) {
+      clearTimeout(showTimer)
+      showTimer = null
+    }
+    if (hideTimer) {
+      clearTimeout(hideTimer)
+      hideTimer = null
+    }
+    if (finalizeTimer) {
+      clearTimeout(finalizeTimer)
+      finalizeTimer = null
+    }
+  }
+
+  const finalize = (element) => {
+    finalizeTimer = setTimeout(() => {
+      element.hidden = true
+      element.dataset.visible = 'false'
+      element.dataset.state = ''
+      element.setAttribute('aria-hidden', 'true')
+      const messageNode = element.querySelector('[data-role="background-toast-message"]')
+      if (messageNode) {
+        messageNode.textContent = ''
+      }
+    }, 240)
+  }
+
+  const show = (variant, message) => {
+    const element = getElement()
+    if (!element) return
+    clearTimers()
+
+    const messageNode = element.querySelector('[data-role="background-toast-message"]')
+    if (messageNode) {
+      messageNode.textContent = message
+    } else {
+      element.textContent = message
+    }
+
+    element.hidden = false
+    element.dataset.state = variant
+    element.dataset.visible = 'waiting'
+    element.setAttribute('aria-hidden', 'true')
+
+    showTimer = setTimeout(() => {
+      element.dataset.visible = 'true'
+      element.setAttribute('aria-hidden', 'false')
+      hideTimer = setTimeout(() => {
+        element.dataset.visible = 'false'
+        element.setAttribute('aria-hidden', 'true')
+        finalize(element)
+      }, 3000)
+    }, 1200)
+  }
+
+  const hide = () => {
+    const element = getElement()
+    if (!element) return
+    clearTimers()
+    element.dataset.visible = 'false'
+    element.setAttribute('aria-hidden', 'true')
+    finalize(element)
+  }
+
+  return {
+    show,
+    success(message = '✅ 배경이 제거되었습니다.') {
+      show('success', message)
+    },
+    error(message = '⚠️ 배경 제거에 실패했습니다. 다시 시도해주세요.') {
+      show('error', message)
+    },
+    hide,
+    clear: hide,
+  }
+})()
 
 function setStatus(message, tone = 'info', duration = 3200) {
   if (!(elements.status instanceof HTMLElement)) return
@@ -7168,18 +7255,14 @@ function buildForegroundMask(imageData, width, height, stats) {
 
 async function callSmartBackgroundRemoval(imageBlob, options = {}) {
   try {
-    const result = await callRemoveBgAPI(imageBlob, options)
-    console.log('✅ remove.bg background removal successful')
-    return result
+    return await callLocalBackgroundRemoval(imageBlob, options)
   } catch (error) {
-    console.warn('⚠️ remove.bg failed, switching to local segmentation:', error?.message || error)
-    const fallback = await localAIBgRemoval(imageBlob)
-    console.log('✅ local AI background removal executed')
-    return fallback
+    console.warn('[background-remove] Local background removal failed, falling back to canvas.', error?.message || error)
+    return localAIBgRemoval(imageBlob)
   }
 }
 
-async function callRemoveBgAPI(imageBlob, options = {}) {
+async function callLocalBackgroundRemoval(imageBlob, options = {}) {
   if (!(imageBlob instanceof Blob)) {
     throw new Error('BACKGROUND_REMOVAL_IMAGE_BLOB_REQUIRED')
   }
@@ -7193,7 +7276,7 @@ async function callRemoveBgAPI(imageBlob, options = {}) {
         : ''
 
   const headers = {
-    Accept: 'application/json',
+    Accept: 'image/png,image/*;q=0.9',
     'Content-Type': imageBlob.type || 'application/octet-stream',
   }
 
@@ -7201,38 +7284,43 @@ async function callRemoveBgAPI(imageBlob, options = {}) {
     headers['X-File-Name'] = optionName
   }
 
-  const response = await fetch('/api/remove-background', {
+  const response = await fetch('/remove-bg', {
     method: 'POST',
     headers,
     body: imageBlob,
   })
 
   if (!response.ok) {
-    throw new Error(`remove.bg proxy failed (${response.status})`)
+    let detail = ''
+    try {
+      const payload = await response.json()
+      if (payload && typeof payload === 'object') {
+        detail = typeof payload.message === 'string' ? payload.message : JSON.stringify(payload)
+      }
+    } catch {
+      try {
+        detail = await response.text()
+      } catch {
+        detail = ''
+      }
+    }
+    const error = new Error(detail || `BACKGROUND_REMOVAL_FAILED_${response.status}`)
+    error.status = response.status
+    throw error
   }
 
   const contentType = response.headers.get('content-type') || ''
-
   if (contentType.includes('application/json')) {
-    const payload = await response.json()
-    if (payload && payload.fallback) {
-      const error = new Error(payload.reason || 'REMOVE_BG_FALLBACK_TRIGGERED')
-      error.code = payload.reason || 'REMOVE_BG_FALLBACK_TRIGGERED'
-      if (payload.detail) {
-        error.detail = payload.detail
-      }
-      throw error
-    }
-
-    if (payload && typeof payload.base64 === 'string' && payload.base64) {
-      return payload.base64
-    }
-
-    throw new Error('REMOVE_BG_RESPONSE_INVALID')
+    const payload = await response.json().catch(() => null)
+    const error = new Error((payload && payload.message) || 'BACKGROUND_REMOVAL_FAILED')
+    error.status = (payload && payload.status) || response.status || 500
+    error.detail = payload
+    throw error
   }
 
   const blob = await response.blob()
-  return blobToBase64(blob)
+  const base64 = await blobToBase64(blob)
+  return base64.replace(/^data:[^;]+;base64,/, '')
 }
 
 async function localAIBgRemoval(imageBlob) {
@@ -7542,7 +7630,7 @@ async function applyBackgroundRemoval(imageData, width, height, canvas, options 
       }
     } catch (error) {
       if (!segmentationModelWarningShown) {
-        console.warn('[remove-bg] 스마트 배경 제거 호출 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
+        console.warn('[background-remove] 로컬 모델 호출 중 오류가 발생했습니다. 기본 방식으로 전환합니다.', error)
         segmentationModelWarningShown = true
       }
     }
@@ -11239,6 +11327,10 @@ async function runOperation(operation) {
     return
   }
 
+  if (operation === 'remove-bg' || operation === 'remove-bg-crop') {
+    backgroundNotification.clear()
+  }
+
   setStage('refine')
 
   toggleProcessing(true)
@@ -11376,9 +11468,15 @@ async function runOperation(operation) {
 
     const successMessage =
       operation === 'resize' ? '리사이즈가 완료되었습니다.' : '이미지 처리가 완료되었습니다.'
+    if ((operation === 'remove-bg' || operation === 'remove-bg-crop') && processedCount > 0) {
+      backgroundNotification.success()
+    }
     setStatus(successMessage, 'success')
   } catch (error) {
     console.error(error)
+    if (operation === 'remove-bg' || operation === 'remove-bg-crop') {
+      backgroundNotification.error()
+    }
     setStatus('이미지 처리 중 오류가 발생했습니다.', 'danger')
   } finally {
     toggleProcessing(false)
