@@ -11,6 +11,7 @@ import { hashCode } from '../utils/hash.js'
 import AnalyzePanel from './features/keywords/AnalyzePanel'
 import SignupPage from './Signup'
 import Notification from './components/Notification'
+import OpenAI from '../utils/openai-lite.js'
 
 type D1Result<T = unknown> = {
   success: boolean
@@ -4750,24 +4751,258 @@ const parseImageDataUrl = (value: string): ParsedDataUrl | null => {
 
 const decodeBase64ToUint8Array = (base64: string): Uint8Array => {
   const normalized = base64.replace(/\s+/g, '')
-  const binaryString = atob(normalized)
-  const length = binaryString.length
-  const bytes = new Uint8Array(length)
-  for (let i = 0; i < length; i += 1) {
-    bytes[i] = binaryString.charCodeAt(i)
+
+  if (typeof atob === 'function') {
+    const binaryString = atob(normalized)
+    const length = binaryString.length
+    const bytes = new Uint8Array(length)
+    for (let i = 0; i < length; i += 1) {
+      bytes[i] = binaryString.charCodeAt(i)
+    }
+    return bytes
   }
-  return bytes
+
+  const globalBuffer = (globalThis as Record<string, unknown>).Buffer as
+    | { from(input: string, encoding: string): Uint8Array; isBuffer?(value: unknown): boolean }
+    | undefined
+
+  if (globalBuffer && typeof globalBuffer.from === 'function') {
+    const buffer = globalBuffer.from(normalized, 'base64')
+    if (buffer instanceof Uint8Array) {
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+    }
+    return new Uint8Array(buffer as unknown as ArrayBuffer)
+  }
+
+  throw new Error('BASE64_DECODING_NOT_SUPPORTED')
+}
+
+const sanitizeFileName = (value: unknown, fallback = 'image.png'): string => {
+  if (typeof value !== 'string') {
+    return fallback
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return fallback
+  }
+  const safe = trimmed.replace(/[\r\n\t]+/g, ' ').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').trim()
+  if (!safe) {
+    return fallback
+  }
+  return safe.toLowerCase().endsWith('.png') ? safe : `${safe.replace(/\.[^./]+$/, '') || 'image'}.png`
+}
+
+const parsePositiveDimension = (value: unknown): number | null => {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseFloat(value.replace(/[^0-9.+-]/g, ''))
+        : Number.NaN
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null
+  }
+  return Math.round(numeric)
+}
+
+const toUploadBlob = (bytes: Uint8Array, mimeType: string, name: string): Blob => {
+  const type = mimeType && typeof mimeType === 'string' ? mimeType : 'image/png'
+  if (typeof File === 'function') {
+    try {
+      return new File([bytes], name, { type })
+    } catch (error) {
+      console.warn('File constructor not available, falling back to Blob.', error)
+    }
+  }
+  return new Blob([bytes], { type })
 }
 
 const handleRemoveBackgroundRequest = async (c: Context<{ Bindings: Bindings }>) => {
   c.header('cache-control', 'no-store')
-  return c.json(
-    {
-      error: 'BACKGROUND_REMOVAL_LOCAL_ONLY',
-      message: '배경 제거는 브라우저 환경에서만 지원됩니다.',
-    },
-    410,
-  )
+
+  const env = c.env
+  const processEnv =
+    typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env
+      ? ((globalThis as any).process.env as Record<string, string | undefined>)
+      : undefined
+  const processApiKey = typeof processEnv?.OPENAI_API_KEY === 'string' ? processEnv.OPENAI_API_KEY.trim() : ''
+  const bindingApiKey = typeof env.OPENAI_API_KEY === 'string' ? env.OPENAI_API_KEY.trim() : ''
+  const openaiApiKey = processApiKey || bindingApiKey
+
+  if (!openaiApiKey) {
+    return c.json({ error: 'OPENAI_API_KEY_NOT_CONFIGURED' }, 500)
+  }
+
+  const request = c.req.raw
+  const contentType = request.headers.get('content-type')?.toLowerCase() ?? ''
+
+  let imageBlob: Blob | null = null
+  let inferredMime = 'image/png'
+  let requestedName = 'image.png'
+  let requestedWidth: number | null = null
+  let requestedHeight: number | null = null
+
+  try {
+    if (contentType.includes('application/json')) {
+      const body = (await request.json()) as BackgroundRemovalRequestBody | null
+      if (!body || typeof body.image !== 'string') {
+        return c.json({ error: 'IMAGE_DATA_URL_REQUIRED' }, 400)
+      }
+
+      const parsed = parseImageDataUrl(body.image)
+      if (!parsed) {
+        return c.json({ error: 'INVALID_IMAGE_DATA_URL' }, 400)
+      }
+
+      inferredMime = parsed.mimeType || 'image/png'
+      requestedName = sanitizeFileName(body.name, 'image.png')
+      requestedWidth = parsePositiveDimension(body.width)
+      requestedHeight = parsePositiveDimension(body.height)
+      const bytes = decodeBase64ToUint8Array(parsed.base64)
+      imageBlob = toUploadBlob(bytes, inferredMime, requestedName)
+    } else if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData()
+      const fileEntry = formData.get('file') ?? formData.get('image')
+      const nameEntry = formData.get('name')
+      requestedName = sanitizeFileName(nameEntry ?? (fileEntry as File | null)?.name ?? 'image.png')
+      requestedWidth = parsePositiveDimension(formData.get('width'))
+      requestedHeight = parsePositiveDimension(formData.get('height'))
+
+      if (fileEntry && typeof fileEntry === 'object' && 'arrayBuffer' in fileEntry) {
+        const fileLike = fileEntry as File
+        const arrayBuffer = await fileLike.arrayBuffer()
+        inferredMime = fileLike.type || inferredMime
+        imageBlob = toUploadBlob(new Uint8Array(arrayBuffer), inferredMime, requestedName)
+      } else if (typeof fileEntry === 'string' && fileEntry.startsWith('data:')) {
+        const parsed = parseImageDataUrl(fileEntry)
+        if (!parsed) {
+          return c.json({ error: 'INVALID_IMAGE_DATA_URL' }, 400)
+        }
+        inferredMime = parsed.mimeType || inferredMime
+        const bytes = decodeBase64ToUint8Array(parsed.base64)
+        imageBlob = toUploadBlob(bytes, inferredMime, requestedName)
+      }
+    } else if (contentType.startsWith('image/') || contentType === 'application/octet-stream') {
+      const arrayBuffer = await request.arrayBuffer()
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        return c.json({ error: 'IMAGE_PAYLOAD_REQUIRED' }, 400)
+      }
+      const headerName = request.headers.get('x-file-name') || request.headers.get('x-filename')
+      requestedName = sanitizeFileName(headerName, 'image.png')
+      inferredMime = contentType.startsWith('image/') ? contentType : inferredMime
+      imageBlob = toUploadBlob(new Uint8Array(arrayBuffer), inferredMime, requestedName)
+    } else {
+      // Attempt to parse as JSON payload even if content-type is missing or incorrect
+      const textBody = await request.text()
+      if (textBody) {
+        try {
+          const fallback = JSON.parse(textBody) as BackgroundRemovalRequestBody
+          if (fallback && typeof fallback.image === 'string') {
+            const parsed = parseImageDataUrl(fallback.image)
+            if (!parsed) {
+              return c.json({ error: 'INVALID_IMAGE_DATA_URL' }, 400)
+            }
+            inferredMime = parsed.mimeType || inferredMime
+            requestedName = sanitizeFileName(fallback.name, 'image.png')
+            requestedWidth = parsePositiveDimension(fallback.width)
+            requestedHeight = parsePositiveDimension(fallback.height)
+            const bytes = decodeBase64ToUint8Array(parsed.base64)
+            imageBlob = toUploadBlob(bytes, inferredMime, requestedName)
+          }
+        } catch (error) {
+          return c.json({ error: 'INVALID_JSON_BODY' }, 400)
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to parse background removal request.', error)
+    return c.json({ error: 'INVALID_IMAGE_PAYLOAD' }, 400)
+  }
+
+  if (!imageBlob) {
+    return c.json({ error: 'IMAGE_FILE_REQUIRED' }, 400)
+  }
+
+  const client = new OpenAI({ apiKey: openaiApiKey })
+  const prompt =
+    'Remove all background cleanly, preserve subject edges and natural shadows, output transparent PNG, crop tightly to subject.'
+
+  const attemptRemoval = async (retries = 3): Promise<Uint8Array> => {
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      try {
+        const response = await client.images.edit({
+          image: imageBlob,
+          mask: null,
+          prompt,
+          size: '1024x1024',
+          response_format: 'b64_json',
+        })
+
+        const result = response?.data?.[0]
+        if (!result) {
+          throw new Error('OPENAI_IMAGE_EDIT_NO_RESULT')
+        }
+
+        if (typeof result.b64_json === 'string' && result.b64_json.trim()) {
+          return decodeBase64ToUint8Array(result.b64_json.trim())
+        }
+
+        if (typeof result.url === 'string' && result.url.trim()) {
+          const cacheBuster = Date.now()
+          const imageResponse = await fetch(`${result.url.trim()}?cb=${cacheBuster}`)
+          if (!imageResponse.ok) {
+            throw new Error(`IMAGE_DOWNLOAD_FAILED_${imageResponse.status}`)
+          }
+          const buffer = await imageResponse.arrayBuffer()
+          return new Uint8Array(buffer)
+        }
+
+        throw new Error('OPENAI_IMAGE_EDIT_EMPTY_PAYLOAD')
+      } catch (error) {
+        lastError = error
+        if (attempt === retries - 1) {
+          break
+        }
+        const delay = 1500 * (attempt + 1)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+    }
+    const failure = lastError instanceof Error ? lastError : new Error('OPENAI_IMAGE_EDIT_FAILED')
+    throw failure
+  }
+
+  try {
+    const backgroundRemoved = await attemptRemoval()
+    const safeName = sanitizeFileName(requestedName, 'image.png')
+    const headers = new Headers({
+      'Content-Type': 'image/png',
+      'Cache-Control': 'no-store',
+      'Content-Disposition': `inline; filename="${safeName.replace(/"/g, '')}"`,
+    })
+
+    if (requestedWidth && requestedHeight) {
+      headers.set('X-Requested-Width', String(requestedWidth))
+      headers.set('X-Requested-Height', String(requestedHeight))
+    }
+
+    return new Response(backgroundRemoved, { headers })
+  } catch (error) {
+    console.error('Background removal failed.', error)
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'BACKGROUND_REMOVAL_FAILED'
+    return c.json(
+      {
+        error: 'BACKGROUND_REMOVAL_FAILED',
+        message,
+      },
+      502,
+    )
+  }
 }
 
 app.post('/api/image/remove-background', handleRemoveBackgroundRequest)
