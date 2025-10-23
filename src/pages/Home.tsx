@@ -1,38 +1,27 @@
-import { useState } from 'react'
-import EditorSection from '../components/EditorSection'
-import Footer from '../components/Footer'
-import Header from '../components/Header'
-import ModalLogin from '../components/ModalLogin'
-import ModalSubscriptionPlans from '../components/ModalSubscriptionPlans'
-import ResultSection from '../components/ResultSection'
-import UploadSection from '../components/UploadSection'
-import UtilityPanel from '../components/UtilityPanel'
-import Toast from '../components/Toast'
+import EllieHeader from '../components/ellie/EllieHeader'
+import EditSection from '../components/ellie/EditSection'
+import ExtraFeatureSection from '../components/ellie/ExtraFeatureSection'
+import ImageUploadSection from '../components/ellie/ImageUploadSection'
+import ResultSection from '../components/ellie/ResultSection'
 
 function Home() {
-  const [isLoginOpen, setIsLoginOpen] = useState(false)
-  const [isUpgradeOpen, setIsUpgradeOpen] = useState(false)
+  const handleLoginClick = () => {
+    alert('로그인 기능은 준비 중이에요!')
+  }
+
+  const handleUpgradeClick = () => {
+    alert('업그레이드 기능은 곧 제공될 예정이에요!')
+  }
 
   return (
-    <div className="min-h-screen bg-ellie-ivory text-ellie-text">
-      <Header
-        onLoginClick={() => setIsLoginOpen(true)}
-        onUpgradeClick={() => setIsUpgradeOpen(true)}
-      />
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-4 pb-36 pt-24 sm:px-6 lg:px-8">
-        <UploadSection />
-        <EditorSection />
+    <div className="min-h-screen bg-[#fffef9] text-[#404040]">
+      <EllieHeader onLoginClick={handleLoginClick} onUpgradeClick={handleUpgradeClick} />
+      <main className="mx-auto flex w-full max-w-6xl flex-col space-y-10 px-4 pb-16 pt-24 sm:px-6 lg:px-8">
+        <ImageUploadSection />
+        <EditSection />
+        <ExtraFeatureSection />
         <ResultSection />
-        <UtilityPanel />
       </main>
-      <Footer />
-      <Toast />
-      <ModalLogin open={isLoginOpen} onClose={() => setIsLoginOpen(false)} />
-      <ModalSubscriptionPlans
-        open={isUpgradeOpen}
-        onClose={() => setIsUpgradeOpen(false)}
-        currentPlanId="free"
-      />
     </div>
   )
 }
