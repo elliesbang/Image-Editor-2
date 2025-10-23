@@ -168,6 +168,10 @@ export async function removeBackgroundLocally(
     const imageData = ctx.getImageData(0, 0, width, height)
     const { data } = imageData
 
+    if (width === 0 || height === 0) {
+      return blob
+    }
+
     const samplePoints: Array<[number, number]> = [
       [0, 0],
       [Math.max(width - 1, 0), 0],
@@ -196,23 +200,64 @@ export async function removeBackgroundLocally(
     baseB /= sampleCount
 
     const softThreshold = tolerance + softness
+    const visited = new Uint8Array(width * height)
+    const queue: number[] = []
 
+    const enqueue = (x: number, y: number) => {
+      if (x < 0 || x >= width || y < 0 || y >= height) {
+        return
+      }
+      const index = y * width + x
+      if (visited[index]) {
+        return
+      }
+      visited[index] = 1
+      queue.push(index)
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      enqueue(x, 0)
+      enqueue(x, height - 1)
+    }
     for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const index = (y * width + x) * 4
-        const r = data[index]
-        const g = data[index + 1]
-        const b = data[index + 2]
-        const a = data[index + 3]
+      enqueue(0, y)
+      enqueue(width - 1, y)
+    }
 
-        const diff = Math.sqrt((r - baseR) ** 2 + (g - baseG) ** 2 + (b - baseB) ** 2)
+    let head = 0
+    while (head < queue.length) {
+      const flatIndex = queue[head]
+      head += 1
 
-        if (diff <= tolerance) {
-          data[index + 3] = 0
-        } else if (diff < softThreshold) {
-          const ratio = (diff - tolerance) / Math.max(1, softThreshold - tolerance)
-          data[index + 3] = Math.min(255, Math.round(a * ratio))
-        }
+      const x = flatIndex % width
+      const y = Math.floor(flatIndex / width)
+      const dataIndex = flatIndex * 4
+      const r = data[dataIndex]
+      const g = data[dataIndex + 1]
+      const b = data[dataIndex + 2]
+      const a = data[dataIndex + 3]
+
+      const diff = Math.sqrt((r - baseR) ** 2 + (g - baseG) ** 2 + (b - baseB) ** 2)
+
+      if (diff <= tolerance) {
+        data[dataIndex + 3] = 0
+      } else if (diff < softThreshold) {
+        const ratio = (diff - tolerance) / Math.max(1, softThreshold - tolerance)
+        data[dataIndex + 3] = Math.min(255, Math.round(a * ratio))
+      } else {
+        // Stop flood fill propagation when the pixel differs greatly from the sampled background.
+        continue
+      }
+
+      enqueue(x - 1, y)
+      enqueue(x + 1, y)
+      enqueue(x, y - 1)
+      enqueue(x, y + 1)
+    }
+
+    for (let index = 3; index < data.length; index += 4) {
+      if (data[index] < 16) {
+        data[index] = 0
       }
     }
 
