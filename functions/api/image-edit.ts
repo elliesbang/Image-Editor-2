@@ -53,6 +53,28 @@ async function handleRemoveBackground(image: File, apiKey: string) {
   return callOpenAI(formData, apiKey)
 }
 
+async function handleCropToSubject(image: File, apiKey: string) {
+  const formData = new FormData()
+  formData.append('model', 'gpt-image-1')
+  formData.append('image', image, image.name || 'image.png')
+  formData.append(
+    'prompt',
+    'Crop the image so that the main subject fills the frame with minimal padding. Keep transparency intact and avoid adding any new background elements.',
+  )
+  return callOpenAI(formData, apiKey)
+}
+
+async function handleRemoveBackgroundAndCrop(image: File, apiKey: string) {
+  const formData = new FormData()
+  formData.append('model', 'gpt-image-1')
+  formData.append('image', image, image.name || 'image.png')
+  formData.append(
+    'prompt',
+    'Remove the background completely, then crop the canvas so the subject is tightly framed with a transparent background. Do not add borders or padding beyond what is necessary to contain the subject.',
+  )
+  return callOpenAI(formData, apiKey)
+}
+
 async function handleDenoise(image: File, apiKey: string, noiseLevel: number) {
   const normalized = Math.min(Math.max(Number.isFinite(noiseLevel) ? noiseLevel : 50, 0), 100)
   const formData = new FormData()
@@ -117,6 +139,10 @@ export const onRequestPost: PagesFunction = async ({ request, env }) => {
 
     if (operation === 'remove_background') {
       base64Image = await handleRemoveBackground(image, env.OPENAI_API_KEY)
+    } else if (operation === 'crop_to_subject') {
+      base64Image = await handleCropToSubject(image, env.OPENAI_API_KEY)
+    } else if (operation === 'remove_background_and_crop') {
+      base64Image = await handleRemoveBackgroundAndCrop(image, env.OPENAI_API_KEY)
     } else if (operation === 'denoise') {
       const noiseLevelRaw = formData.get('noiseLevel')
       const noiseLevel = noiseLevelRaw == null ? 50 : Number(noiseLevelRaw)
