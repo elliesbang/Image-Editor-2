@@ -1,6 +1,116 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useImageEditor } from '../hooks/useImageEditor'
 
+type IconProps = {
+  className?: string
+}
+
+function IconEraser({ className }: IconProps) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      height="20"
+      viewBox="0 0 24 24"
+      width="20"
+    >
+      <path
+        d="M4.75 14.5 13.38 5.87a2.25 2.25 0 0 1 3.18 0l2.57 2.56a2.25 2.25 0 0 1 0 3.18l-8.63 8.63H7.32a2.25 2.25 0 0 1-1.59-.66l-1-1a2.25 2.25 0 0 1 0-3.18Z"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path d="M9.5 18.5 5.5 14.5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+function IconCrop({ className }: IconProps) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      height="20"
+      viewBox="0 0 24 24"
+      width="20"
+    >
+      <path
+        d="M7.5 3.5v13a1 1 0 0 0 1 1h13"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M20.5 16.5v-13a1 1 0 0 0-1-1h-13"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path d="M3.5 7.5h13" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+      <path d="M16.5 20.5h-13" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+function IconMagicCrop({ className }: IconProps) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      height="20"
+      viewBox="0 0 24 24"
+      width="20"
+    >
+      <path
+        d="M7.5 3.5v13a1 1 0 0 0 1 1h13"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M20.5 16.5v-13a1 1 0 0 0-1-1h-13"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path d="M3.5 7.5h4" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+      <path d="M16.5 20.5h-4" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+      <path
+        d="m5.5 19.5 1.5-3 1.5 3 3 .5-2.5 2 1 3-3-1.8-3 1.8 1-3-2.5-2 3-.5Z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
+
+function IconSparkle({ className }: IconProps) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      height="20"
+      viewBox="0 0 24 24"
+      width="20"
+    >
+      <path
+        d="m12 3 1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5Z"
+        fill="currentColor"
+      />
+      <path d="m5 4 1 2 2 1-2 1-1 2-1-2-2-1 2-1Z" fill="currentColor" opacity="0.6" />
+      <path d="m19 14 0.8 1.6L21.5 16l-1.2 1 0.4 1.8-1.7-0.9-1.7 0.9 0.4-1.8-1.2-1 1.7-0.4Z" fill="currentColor" opacity="0.6" />
+    </svg>
+  )
+}
+
 const NOISE_MIN = 0
 const NOISE_MAX = 100
 
@@ -144,7 +254,10 @@ function EditorSection() {
             disabled={isProcessing}
             className="min-h-[44px] rounded-full bg-ellie-yellow px-6 text-sm font-semibold text-ellie-text transition hover:bg-[#ffe35d] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            배경제거 실행
+            <span className="flex items-center justify-center gap-2">
+              <IconEraser className="text-ellie-text" />
+              <span>배경제거</span>
+            </span>
           </button>
         </article>
 
@@ -155,7 +268,10 @@ function EditorSection() {
             disabled={isProcessing}
             className="min-h-[44px] rounded-full border border-ellie-border bg-white px-6 text-sm font-semibold text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
-            피사체 기준 크롭
+            <span className="flex items-center justify-center gap-2">
+              <IconCrop className="text-ellie-text" />
+              <span>크롭</span>
+            </span>
           </button>
         </article>
 
@@ -166,7 +282,10 @@ function EditorSection() {
             disabled={isProcessing}
             className="min-h-[44px] rounded-full border border-ellie-border bg-white px-6 text-sm font-semibold text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
-            배경제거+크롭 실행
+            <span className="flex items-center justify-center gap-2">
+              <IconMagicCrop className="text-ellie-text" />
+              <span>배경제거+크롭</span>
+            </span>
           </button>
         </article>
 
@@ -195,7 +314,10 @@ function EditorSection() {
             disabled={isProcessing}
             className="min-h-[44px] rounded-full border border-ellie-border bg-white px-6 text-sm font-semibold text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
-            노이즈 제거 실행
+            <span className="flex items-center justify-center gap-2">
+              <IconSparkle className="text-ellie-text" />
+              <span>노이즈 제거</span>
+            </span>
           </button>
         </article>
 
