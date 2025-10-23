@@ -1,22 +1,16 @@
-import build from '@hono/vite-build/cloudflare-pages'
-import devServer from '@hono/vite-dev-server'
-import adapter from '@hono/vite-dev-server/cloudflare'
 import { defineConfig } from 'vite'
-import { fileURLToPath } from 'node:url'
-
-const arcticEntry = fileURLToPath(new URL('./utils/arctic-google.js', import.meta.url))
+import react from '@vitejs/plugin-react'
+import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
+  base: './', // ✅ Amplify 정적 서빙용
+  plugins: [react()],
   resolve: {
     alias: {
-      arctic: arcticEntry,
-    },
+      '@': fileURLToPath(new URL('./src', import.meta.url))
+    }
   },
-  plugins: [
-    build(),
-    devServer({
-      adapter,
-      entry: 'src/index.tsx'
-    })
-  ]
+  build: {
+    outDir: 'dist', // ✅ 기본 Vite 빌드 결과물 경로
+  }
 })
