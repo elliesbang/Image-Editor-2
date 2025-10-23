@@ -392,8 +392,13 @@ export function ImageEditorProvider({ children }: ProviderProps) {
   const removeBackgroundAndCrop = useCallback(async () => {
     await processSelectedUploads(async (image) => {
       const backgroundRemoved = await tryRemoveBackground(image)
-      const cropped = await cropToSubject(backgroundRemoved)
-      return { blob: cropped, suffix: '-bg-removed-cropped' }
+      try {
+        const cropped = await cropToSubject(backgroundRemoved)
+        return { blob: cropped, suffix: '-bg-removed-cropped' }
+      } catch (error) {
+        console.error('[ImageEditor] crop after background removal failed, returning background-only result', error)
+        return { blob: backgroundRemoved, suffix: '-bg-removed' }
+      }
     })
   }, [processSelectedUploads, tryRemoveBackground])
 
