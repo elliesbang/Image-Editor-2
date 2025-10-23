@@ -77,6 +77,10 @@ type ImageEditorContextValue = {
   readonly removeBackgroundAndCrop: () => Promise<void>
   readonly denoiseWithOpenAI: (noiseLevel: number) => Promise<void>
   readonly resizeToWidth: (width: number) => Promise<void>
+  readonly addResultFromBlob: (
+    blob: Blob,
+    options: { baseName: string; sourceId?: string; suffix?: string; extension?: string },
+  ) => Promise<ResultImage>
   readonly showToast: (message: string, status?: ToastStatus, options?: ToastOptions) => string
   readonly dismissToast: (id: string) => void
   readonly toast: ToastState | null
@@ -305,14 +309,21 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     [isProcessing],
   )
 
-  const createResultImageFromBlob = useCallback(
-    async (blob: Blob, source: UploadedImage, suffix: string): Promise<ResultImage> => {
+  const buildResultImage = useCallback(
+    async (
+      blob: Blob,
+      { baseName, sourceId, suffix = '', extension }: { baseName: string; sourceId?: string; suffix?: string; extension?: string },
+    ): Promise<ResultImage> => {
       const { width, height } = await loadImageDimensions(blob)
-      const nameWithoutExt = source.name.replace(/\.[^.]+$/, '')
-      const filename = `${nameWithoutExt}${suffix}.png`
+      const normalizedBase = baseName.replace(/\.[^.]+$/, '') || 'result'
+      const inferredExtension =
+        typeof extension === 'string' && extension.trim()
+          ? extension.trim()
+          : blob.type.split('/')[1]?.toLowerCase() || 'png'
+      const filename = `${normalizedBase}${suffix}.${inferredExtension}`
       return {
         id: createId(),
-        sourceId: source.id,
+        sourceId: sourceId ?? 'custom',
         name: filename,
         blob,
         url: URL.createObjectURL(blob),
@@ -323,6 +334,25 @@ export function ImageEditorProvider({ children }: ProviderProps) {
       }
     },
     [],
+  )
+
+  const addResultFromBlob = useCallback(
+    async (
+      blob: Blob,
+      options: { baseName: string; sourceId?: string; suffix?: string; extension?: string },
+    ): Promise<ResultImage> => {
+      const result = await buildResultImage(blob, options)
+      setResultImages((previous) => [result, ...previous])
+      return result
+    },
+    [buildResultImage],
+  )
+
+  const createResultImageFromBlob = useCallback(
+    async (blob: Blob, source: UploadedImage, suffix: string): Promise<ResultImage> => {
+      return buildResultImage(blob, { baseName: source.name, sourceId: source.id, suffix, extension: 'png' })
+    },
+    [buildResultImage],
   )
 
   const processSelectedUploads = useCallback(
@@ -531,11 +561,13 @@ export function ImageEditorProvider({ children }: ProviderProps) {
       removeBackgroundAndCrop,
       denoiseWithOpenAI,
       resizeToWidth,
+      addResultFromBlob,
       showToast,
       dismissToast,
       toast,
     }),
     [
+      addResultFromBlob,
       areAllResultsSelected,
       areAllUploadsSelected,
       clearResultSelection,
