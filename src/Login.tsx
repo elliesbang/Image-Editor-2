@@ -1,5 +1,5 @@
 import { useState } from "react";
-import GoogleLoginButton from "../components/GoogleLoginButton";
+import GoogleLoginButton from "./components/GoogleLoginButton";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
