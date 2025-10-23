@@ -158,6 +158,11 @@ function EditorSection() {
     }
   }, [])
 
+  const clearBackgroundMessage = useCallback(() => {
+    clearBackgroundMessageTimeout()
+    setBackgroundMessage(null)
+  }, [clearBackgroundMessageTimeout])
+
   const updateBackgroundMessage = useCallback(
     (message: string, status: 'pending' | 'success' | 'error') => {
       clearBackgroundMessageTimeout()
@@ -182,53 +187,63 @@ function EditorSection() {
 
   useEffect(() => () => clearBackgroundMessageTimeout(), [clearBackgroundMessageTimeout])
 
-  const runWithToast = async (
-    action: () => Promise<void>,
+  type RunWithToastResult<T> =
+    | { success: true; data: T }
+    | { success: false; aborted: boolean }
+
+  const runWithToast = async <T>(
+    action: () => Promise<T>,
     pendingMessage: string,
     successMessage: string,
     errorMessage: string,
-  ): Promise<boolean> => {
+  ): Promise<RunWithToastResult<T>> => {
     if (isProcessing) {
       showToast('이전 작업이 끝날 때까지 기다려주세요.', 'info')
-      return false
+      return { success: false, aborted: true }
     }
 
     const toastId = showToast(pendingMessage, 'info', { duration: 0 })
     try {
-      await action()
+      const data = await action()
       dismissToast(toastId)
       showToast(successMessage, 'success')
-      return true
+      return { success: true, data }
     } catch (error) {
       dismissToast(toastId)
       if (error instanceof Error) {
         if (error.message === 'NO_UPLOADS_SELECTED') {
           showToast('편집할 이미지를 먼저 선택해주세요.', 'error')
-          return false
+          return { success: false, aborted: true }
         }
         if (error.message === 'PROCESS_ALREADY_RUNNING') {
           showToast('이미 처리가 진행 중이에요. 잠시만 기다려주세요.', 'info')
-          return false
+          return { success: false, aborted: true }
         }
       }
       console.error('[EditorSection] operation failed', error)
       showToast(errorMessage, 'error')
-      return false
+      return { success: false, aborted: false }
     }
   }
 
   const handleBackgroundRemoval = async () => {
     updateBackgroundMessage('배경제거 진행 중입니다...', 'pending')
-    const success = await runWithToast(
+    const result = await runWithToast(
       removeBackground,
       '선택한 이미지의 배경을 제거하는 중이에요...',
       '배경이 제거된 이미지가 처리결과에 추가되었습니다.',
-      '배경제거 실패. 다시 시도해주세요.',
+      '배경제거 중 오류가 발생했습니다.',
     )
-    if (success) {
-      updateBackgroundMessage('배경제거 완료!', 'success')
+    if (result.success) {
+      if (result.data.usedFallback) {
+        updateBackgroundMessage('배경제거 중 오류가 발생했습니다.', 'error')
+      } else {
+        updateBackgroundMessage('배경제거 완료!', 'success')
+      }
+    } else if (result.aborted) {
+      clearBackgroundMessage()
     } else {
-      updateBackgroundMessage('배경제거 실패. 다시 시도해주세요.', 'error')
+      updateBackgroundMessage('배경제거 중 오류가 발생했습니다.', 'error')
     }
   }
 

@@ -6,6 +6,7 @@ frontend:
         - npm install
     build:
       commands:
+        - npm ci || npm install
         - npm run build
   artifacts:
     baseDirectory: dist
