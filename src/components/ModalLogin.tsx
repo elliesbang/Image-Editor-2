@@ -61,17 +61,17 @@ function ModalLogin({ open, onClose }: ModalLoginProps) {
               </label>
               <div className="space-y-3 pt-2">
                 <button
+                  type="submit"
+                  className="w-full min-h-[48px] rounded-full bg-ellie-yellow text-sm font-semibold text-ellie-text shadow transition-colors hover:bg-ellie-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ellie-yellow"
+                >
+                  로그인
+                </button>
+                <button
                   type="button"
                   onClick={() => setMode('signup')}
                   className="w-full min-h-[48px] rounded-full border border-ellie-border bg-white text-sm font-semibold text-ellie-text shadow-sm transition-colors hover:bg-ellie-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ellie-yellow"
                 >
                   회원가입
-                </button>
-                <button
-                  type="submit"
-                  className="w-full min-h-[48px] rounded-full bg-ellie-yellow text-sm font-semibold text-ellie-text shadow transition-colors hover:bg-ellie-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ellie-yellow"
-                >
-                  로그인
                 </button>
                 <button
                   type="button"
