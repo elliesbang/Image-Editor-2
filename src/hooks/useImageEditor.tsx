@@ -325,14 +325,19 @@ export function ImageEditorProvider({ children }: ProviderProps) {
 
   const processSelectedUploads = useCallback(
     async (operation: (image: UploadedImage) => Promise<{ blob: Blob; suffix: string }>) => {
-      const selected = getSelectedUploads()
-      if (selected.length === 0) {
-        throw new Error('NO_UPLOADS_SELECTED')
+      let targets = getSelectedUploads()
+      if (targets.length === 0) {
+        const allUploads = uploadedImagesRef.current
+        if (allUploads.length === 0) {
+          throw new Error('NO_UPLOADS_SELECTED')
+        }
+        setUploadedImages((previous) => previous.map((image) => ({ ...image, selected: true })))
+        targets = allUploads
       }
 
       await withProcessing(async () => {
         const results: ResultImage[] = []
-        for (const image of selected) {
+        for (const image of targets) {
           const { blob, suffix } = await operation(image)
           const result = await createResultImageFromBlob(blob, image, suffix)
           results.push(result)
@@ -340,7 +345,7 @@ export function ImageEditorProvider({ children }: ProviderProps) {
         setResultImages((previous) => [...results, ...previous])
       })
     },
-    [createResultImageFromBlob, getSelectedUploads, withProcessing],
+    [createResultImageFromBlob, getSelectedUploads, setUploadedImages, withProcessing],
   )
 
   const tryRemoveBackground = useCallback(
