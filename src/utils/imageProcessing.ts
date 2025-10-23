@@ -153,3 +153,83 @@ export async function resizeImage(blob: Blob, width: number): Promise<Blob> {
     cleanup()
   }
 }
+
+type BackgroundRemovalOptions = {
+  tolerance?: number
+  softness?: number
+}
+
+export async function removeBackgroundLocally(
+  blob: Blob,
+  { tolerance = 45, softness = 20 }: BackgroundRemovalOptions = {},
+): Promise<Blob> {
+  const { canvas, ctx, width, height, cleanup } = await createCanvasFromBlob(blob)
+  try {
+    const imageData = ctx.getImageData(0, 0, width, height)
+    const { data } = imageData
+
+    const samplePoints: Array<[number, number]> = [
+      [0, 0],
+      [Math.max(width - 1, 0), 0],
+      [0, Math.max(height - 1, 0)],
+      [Math.max(width - 1, 0), Math.max(height - 1, 0)],
+      [Math.floor(width / 2), 0],
+      [Math.floor(width / 2), Math.max(height - 1, 0)],
+      [0, Math.floor(height / 2)],
+      [Math.max(width - 1, 0), Math.floor(height / 2)],
+    ]
+
+    let baseR = 0
+    let baseG = 0
+    let baseB = 0
+
+    for (const [x, y] of samplePoints) {
+      const index = (y * width + x) * 4
+      baseR += data[index]
+      baseG += data[index + 1]
+      baseB += data[index + 2]
+    }
+
+    const sampleCount = samplePoints.length || 1
+    baseR /= sampleCount
+    baseG /= sampleCount
+    baseB /= sampleCount
+
+    const softThreshold = tolerance + softness
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = (y * width + x) * 4
+        const r = data[index]
+        const g = data[index + 1]
+        const b = data[index + 2]
+        const a = data[index + 3]
+
+        const diff = Math.sqrt((r - baseR) ** 2 + (g - baseG) ** 2 + (b - baseB) ** 2)
+
+        if (diff <= tolerance) {
+          data[index + 3] = 0
+        } else if (diff < softThreshold) {
+          const ratio = (diff - tolerance) / Math.max(1, softThreshold - tolerance)
+          data[index + 3] = Math.min(255, Math.round(a * ratio))
+        }
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0)
+
+    const processedBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((result) => {
+        if (result) {
+          resolve(result)
+        } else {
+          reject(new Error('BACKGROUND_REMOVAL_EXPORT_FAILED'))
+        }
+      }, 'image/png')
+    })
+
+    return processedBlob
+  } finally {
+    cleanup()
+  }
+}

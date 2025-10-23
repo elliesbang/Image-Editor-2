@@ -12,15 +12,9 @@ import {
   base64ToBlob,
   cropToSubject,
   loadImageDimensions,
+  removeBackgroundLocally,
   resizeImage,
 } from '../utils/imageProcessing'
-
-type ProcessedImage = {
-  blob: Blob
-  url: string
-  width: number
-  height: number
-}
 
 type ToastStatus = 'info' | 'success' | 'error'
 
@@ -34,27 +28,71 @@ type ToastOptions = {
   duration?: number
 }
 
+type UploadedImage = {
+  id: string
+  name: string
+  blob: Blob
+  url: string
+  width: number
+  height: number
+  size: number
+  selected: boolean
+}
+
+type ResultImage = {
+  id: string
+  sourceId: string
+  name: string
+  blob: Blob
+  url: string
+  width: number
+  height: number
+  size: number
+  selected: boolean
+}
+
 type ImageEditorContextValue = {
-  originalFile: File | null
-  currentImage: ProcessedImage | null
-  isProcessing: boolean
-  setOriginalFile: (file: File) => Promise<void>
-  setProcessedImageFromBlob: (blob: Blob) => Promise<void>
-  reset: () => void
-  showToast: (message: string, status?: ToastStatus, options?: ToastOptions) => string
-  dismissToast: (id: string) => void
-  toast: ToastState | null
-  removeBackgroundWithOpenAI: () => Promise<void>
-  cropToSubjectBounds: () => Promise<void>
-  denoiseWithOpenAI: (noiseLevel: number) => Promise<void>
-  resizeToWidth: (width: number) => Promise<void>
+  readonly uploadedImages: readonly UploadedImage[]
+  readonly resultImages: readonly ResultImage[]
+  readonly isProcessing: boolean
+  readonly hasSelectedUploads: boolean
+  readonly hasSelectedResults: boolean
+  readonly areAllUploadsSelected: boolean
+  readonly areAllResultsSelected: boolean
+  readonly uploadImages: (files: FileList | File[] | null) => Promise<void>
+  readonly toggleUploadSelection: (id: string) => void
+  readonly selectAllUploads: () => void
+  readonly clearUploadSelection: () => void
+  readonly removeUpload: (id: string) => void
+  readonly removeAllUploads: () => void
+  readonly toggleResultSelection: (id: string) => void
+  readonly selectAllResults: () => void
+  readonly clearResultSelection: () => void
+  readonly removeResult: (id: string) => void
+  readonly removeAllResults: () => void
+  readonly removeBackground: () => Promise<void>
+  readonly cropToSubjectBounds: () => Promise<void>
+  readonly removeBackgroundAndCrop: () => Promise<void>
+  readonly denoiseWithOpenAI: (noiseLevel: number) => Promise<void>
+  readonly resizeToWidth: (width: number) => Promise<void>
+  readonly showToast: (message: string, status?: ToastStatus, options?: ToastOptions) => string
+  readonly dismissToast: (id: string) => void
+  readonly toast: ToastState | null
 }
 
 const ImageEditorContext = createContext<ImageEditorContextValue | null>(null)
 
+const MAX_FILE_SIZE_MB = 20
+const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
+const MAX_BATCH_SIZE = 50
+
 function revokeUrl(url: string | null | undefined) {
   if (!url) return
   URL.revokeObjectURL(url)
+}
+
+function createId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 type ProviderProps = {
@@ -62,8 +100,8 @@ type ProviderProps = {
 }
 
 export function ImageEditorProvider({ children }: ProviderProps) {
-  const [originalFile, setOriginalFileState] = useState<File | null>(null)
-  const [currentImage, setCurrentImage] = useState<ProcessedImage | null>(null)
+  const [uploadedImages, setUploadedImages] = useState<UploadedImage[]>([])
+  const [resultImages, setResultImages] = useState<ResultImage[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const timeoutRef = useRef<number | null>(null)
@@ -75,20 +113,23 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     }
   }, [])
 
-  const scheduleToastDismiss = useCallback((id: string, duration: number | undefined) => {
-    clearToastTimeout()
-    if (Number.isFinite(duration) && duration && duration > 0) {
-      timeoutRef.current = window.setTimeout(() => {
-        setToast((current) => (current?.id === id ? null : current))
-      }, duration)
-    }
-  }, [clearToastTimeout])
+  const scheduleToastDismiss = useCallback(
+    (id: string, duration: number | undefined) => {
+      clearToastTimeout()
+      if (Number.isFinite(duration) && duration && duration > 0) {
+        timeoutRef.current = window.setTimeout(() => {
+          setToast((current) => (current?.id === id ? null : current))
+        }, duration)
+      }
+    },
+    [clearToastTimeout],
+  )
 
   useEffect(() => () => clearToastTimeout(), [clearToastTimeout])
 
   const showToast = useCallback(
     (message: string, status: ToastStatus = 'info', options: ToastOptions = {}): string => {
-      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const id = createId()
       setToast({ id, message, status })
       const duration = options.duration ?? 3200
       scheduleToastDismiss(id, duration)
@@ -97,46 +138,155 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     [scheduleToastDismiss],
   )
 
-  const dismissToast = useCallback((id: string) => {
-    clearToastTimeout()
-    setToast((current) => (current?.id === id ? null : current))
-  }, [clearToastTimeout])
+  const dismissToast = useCallback(
+    (id: string) => {
+      clearToastTimeout()
+      setToast((current) => (current?.id === id ? null : current))
+    },
+    [clearToastTimeout],
+  )
 
-  const setProcessedImageFromBlob = useCallback(async (blob: Blob) => {
-    const { width, height } = await loadImageDimensions(blob)
-    setCurrentImage((previous) => {
-      if (previous?.url) {
-        revokeUrl(previous.url)
+  const createUploadedImage = useCallback(async (file: File): Promise<UploadedImage> => {
+    const { width, height } = await loadImageDimensions(file)
+    return {
+      id: createId(),
+      name: file.name,
+      blob: file,
+      url: URL.createObjectURL(file),
+      width,
+      height,
+      size: file.size,
+      selected: false,
+    }
+  }, [])
+
+  const uploadImages = useCallback(
+    async (files: FileList | File[] | null) => {
+      if (!files || files.length === 0) {
+        showToast('업로드할 이미지를 선택해주세요.', 'error')
+        return
       }
-      return {
-        blob,
-        url: URL.createObjectURL(blob),
-        width,
-        height,
+
+      const normalized = Array.from(files).filter((file) => file.type.startsWith('image/'))
+      if (normalized.length === 0) {
+        showToast('이미지 파일만 업로드할 수 있어요.', 'error')
+        return
       }
+
+      const limited = normalized.slice(0, MAX_BATCH_SIZE)
+      if (normalized.length > MAX_BATCH_SIZE) {
+        showToast('이미지는 한 번에 최대 50장까지 업로드할 수 있어요.', 'error')
+      }
+
+      const accepted: UploadedImage[] = []
+      let skippedForSize = 0
+
+      for (const file of limited) {
+        if (file.size > MAX_FILE_SIZE) {
+          skippedForSize += 1
+          continue
+        }
+        const created = await createUploadedImage(file)
+        accepted.push(created)
+      }
+
+      if (accepted.length === 0) {
+        if (skippedForSize > 0) {
+          showToast(`각 이미지의 용량은 최대 ${MAX_FILE_SIZE_MB}MB까지 업로드할 수 있어요.`, 'error')
+        } else {
+          showToast('업로드할 수 있는 이미지가 없어요.', 'error')
+        }
+        return
+      }
+
+      if (skippedForSize > 0) {
+        showToast(`용량이 큰 ${skippedForSize}개의 이미지는 제외되었어요.`, 'info')
+      }
+
+      setUploadedImages((previous) => [...previous, ...accepted])
+      showToast(`${accepted.length}개의 이미지를 불러왔어요. 원하는 편집을 시작해보세요!`, 'success')
+    },
+    [createUploadedImage, showToast],
+  )
+
+  const toggleUploadSelection = useCallback((id: string) => {
+    setUploadedImages((previous) =>
+      previous.map((image) => (image.id === id ? { ...image, selected: !image.selected } : image)),
+    )
+  }, [])
+
+  const selectAllUploads = useCallback(() => {
+    setUploadedImages((previous) => previous.map((image) => ({ ...image, selected: true })))
+  }, [])
+
+  const clearUploadSelection = useCallback(() => {
+    setUploadedImages((previous) => previous.map((image) => ({ ...image, selected: false })))
+  }, [])
+
+  const removeUpload = useCallback((id: string) => {
+    setUploadedImages((previous) => {
+      const target = previous.find((image) => image.id === id)
+      revokeUrl(target?.url)
+      return previous.filter((image) => image.id !== id)
     })
   }, [])
 
-  const setOriginalFile = useCallback(async (file: File) => {
-    setOriginalFileState(file)
-    await setProcessedImageFromBlob(file)
-  }, [setProcessedImageFromBlob])
+  const removeAllUploads = useCallback(() => {
+    setUploadedImages((previous) => {
+      previous.forEach((image) => revokeUrl(image.url))
+      return []
+    })
+  }, [])
 
-  const reset = useCallback(() => {
-    revokeUrl(currentImage?.url)
-    setCurrentImage(null)
-    setOriginalFileState(null)
-    setIsProcessing(false)
-    clearToastTimeout()
-    setToast(null)
-  }, [clearToastTimeout, currentImage?.url])
+  const toggleResultSelection = useCallback((id: string) => {
+    setResultImages((previous) =>
+      previous.map((image) => (image.id === id ? { ...image, selected: !image.selected } : image)),
+    )
+  }, [])
 
-  const ensureImage = useCallback(() => {
-    if (!currentImage) {
-      throw new Error('IMAGE_NOT_READY')
-    }
-    return currentImage
-  }, [currentImage])
+  const selectAllResults = useCallback(() => {
+    setResultImages((previous) => previous.map((image) => ({ ...image, selected: true })))
+  }, [])
+
+  const clearResultSelection = useCallback(() => {
+    setResultImages((previous) => previous.map((image) => ({ ...image, selected: false })))
+  }, [])
+
+  const removeResult = useCallback((id: string) => {
+    setResultImages((previous) => {
+      const target = previous.find((image) => image.id === id)
+      revokeUrl(target?.url)
+      return previous.filter((image) => image.id !== id)
+    })
+  }, [])
+
+  const removeAllResults = useCallback(() => {
+    setResultImages((previous) => {
+      previous.forEach((image) => revokeUrl(image.url))
+      return []
+    })
+  }, [])
+
+  const uploadedImagesRef = useRef<UploadedImage[]>([])
+  const resultImagesRef = useRef<ResultImage[]>([])
+
+  useEffect(() => {
+    uploadedImagesRef.current = uploadedImages
+  }, [uploadedImages])
+
+  useEffect(() => {
+    resultImagesRef.current = resultImages
+  }, [resultImages])
+
+  useEffect(
+    () => () => {
+      uploadedImagesRef.current.forEach((image) => revokeUrl(image.url))
+      resultImagesRef.current.forEach((image) => revokeUrl(image.url))
+    },
+    [],
+  )
+
+  const getSelectedUploads = useCallback(() => uploadedImages.filter((image) => image.selected), [uploadedImages])
 
   const withProcessing = useCallback(
     async (task: () => Promise<void>) => {
@@ -153,44 +303,102 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     [isProcessing],
   )
 
-  const removeBackgroundWithOpenAI = useCallback(async () => {
-    await withProcessing(async () => {
-      const image = ensureImage()
-      const formData = new FormData()
-      formData.append('operation', 'remove_background')
-      formData.append('image', image.blob, 'image.png')
-      const response = await fetch('/api/image-edit', {
-        method: 'POST',
-        body: formData,
+  const createResultImageFromBlob = useCallback(
+    async (blob: Blob, source: UploadedImage, suffix: string): Promise<ResultImage> => {
+      const { width, height } = await loadImageDimensions(blob)
+      const nameWithoutExt = source.name.replace(/\.[^.]+$/, '')
+      const filename = `${nameWithoutExt}${suffix}.png`
+      return {
+        id: createId(),
+        sourceId: source.id,
+        name: filename,
+        blob,
+        url: URL.createObjectURL(blob),
+        width,
+        height,
+        size: blob.size,
+        selected: false,
+      }
+    },
+    [],
+  )
+
+  const processSelectedUploads = useCallback(
+    async (operation: (image: UploadedImage) => Promise<{ blob: Blob; suffix: string }>) => {
+      const selected = getSelectedUploads()
+      if (selected.length === 0) {
+        throw new Error('NO_UPLOADS_SELECTED')
+      }
+
+      await withProcessing(async () => {
+        const results: ResultImage[] = []
+        for (const image of selected) {
+          const { blob, suffix } = await operation(image)
+          const result = await createResultImageFromBlob(blob, image, suffix)
+          results.push(result)
+        }
+        setResultImages((previous) => [...results, ...previous])
       })
-      if (!response.ok) {
-        throw new Error('BACKGROUND_REMOVAL_FAILED')
+    },
+    [createResultImageFromBlob, getSelectedUploads, withProcessing],
+  )
+
+  const tryRemoveBackground = useCallback(
+    async (image: UploadedImage) => {
+      try {
+        const formData = new FormData()
+        formData.append('operation', 'remove_background')
+        formData.append('image', image.blob, image.name || 'image.png')
+        const response = await fetch('/api/image-edit', {
+          method: 'POST',
+          body: formData,
+        })
+        if (!response.ok) {
+          throw new Error('BACKGROUND_REMOVAL_FAILED')
+        }
+        const payload = (await response.json()) as { image?: string }
+        if (!payload?.image) {
+          throw new Error('BACKGROUND_REMOVAL_INVALID_PAYLOAD')
+        }
+        const blob = base64ToBlob(payload.image, 'image/png')
+        return blob
+      } catch (error) {
+        console.warn('[ImageEditor] background removal failed, using canvas fallback', error)
+        return removeBackgroundLocally(image.blob)
       }
-      const payload = (await response.json()) as { image?: string }
-      if (!payload?.image) {
-        throw new Error('BACKGROUND_REMOVAL_INVALID_PAYLOAD')
-      }
-      const blob = base64ToBlob(payload.image, 'image/png')
-      await setProcessedImageFromBlob(blob)
-    })
-  }, [ensureImage, setProcessedImageFromBlob, withProcessing])
+    },
+    [],
+  )
+
+  const removeBackground = useCallback(async () => {
+    await processSelectedUploads(async (image) => ({
+      blob: await tryRemoveBackground(image),
+      suffix: '-bg-removed',
+    }))
+  }, [processSelectedUploads, tryRemoveBackground])
 
   const cropToSubjectBounds = useCallback(async () => {
-    await withProcessing(async () => {
-      const image = ensureImage()
-      const croppedBlob = await cropToSubject(image.blob)
-      await setProcessedImageFromBlob(croppedBlob)
+    await processSelectedUploads(async (image) => ({
+      blob: await cropToSubject(image.blob),
+      suffix: '-cropped',
+    }))
+  }, [processSelectedUploads])
+
+  const removeBackgroundAndCrop = useCallback(async () => {
+    await processSelectedUploads(async (image) => {
+      const backgroundRemoved = await tryRemoveBackground(image)
+      const cropped = await cropToSubject(backgroundRemoved)
+      return { blob: cropped, suffix: '-bg-removed-cropped' }
     })
-  }, [ensureImage, setProcessedImageFromBlob, withProcessing])
+  }, [processSelectedUploads, tryRemoveBackground])
 
   const denoiseWithOpenAI = useCallback(
     async (noiseLevel: number) => {
-      await withProcessing(async () => {
-        const image = ensureImage()
+      await processSelectedUploads(async (image) => {
         const formData = new FormData()
         formData.append('operation', 'denoise')
         formData.append('noiseLevel', String(noiseLevel))
-        formData.append('image', image.blob, 'image.png')
+        formData.append('image', image.blob, image.name || 'image.png')
         const response = await fetch('/api/image-edit', {
           method: 'POST',
           body: formData,
@@ -202,56 +410,98 @@ export function ImageEditorProvider({ children }: ProviderProps) {
         if (!payload?.image) {
           throw new Error('DENOISE_INVALID_PAYLOAD')
         }
-        const blob = base64ToBlob(payload.image, 'image/png')
-        await setProcessedImageFromBlob(blob)
+        return { blob: base64ToBlob(payload.image, 'image/png'), suffix: '-denoised' }
       })
     },
-    [ensureImage, setProcessedImageFromBlob, withProcessing],
+    [processSelectedUploads],
   )
 
   const resizeToWidth = useCallback(
     async (width: number) => {
-      await withProcessing(async () => {
-        const image = ensureImage()
-        const resizedBlob = await resizeImage(image.blob, width)
-        await setProcessedImageFromBlob(resizedBlob)
-      })
+      await processSelectedUploads(async (image) => ({
+        blob: await resizeImage(image.blob, width),
+        suffix: `-resized-${width}`,
+      }))
     },
-    [ensureImage, setProcessedImageFromBlob, withProcessing],
+    [processSelectedUploads],
   )
 
-  useEffect(() => () => revokeUrl(currentImage?.url), [currentImage?.url])
+  const areAllUploadsSelected = useMemo(
+    () => uploadedImages.length > 0 && uploadedImages.every((image) => image.selected),
+    [uploadedImages],
+  )
+
+  const areAllResultsSelected = useMemo(
+    () => resultImages.length > 0 && resultImages.every((image) => image.selected),
+    [resultImages],
+  )
+
+  const hasSelectedUploads = useMemo(
+    () => uploadedImages.some((image) => image.selected),
+    [uploadedImages],
+  )
+
+  const hasSelectedResults = useMemo(
+    () => resultImages.some((image) => image.selected),
+    [resultImages],
+  )
 
   const value = useMemo<ImageEditorContextValue>(
     () => ({
-      originalFile,
-      currentImage,
+      uploadedImages,
+      resultImages,
       isProcessing,
-      setOriginalFile,
-      setProcessedImageFromBlob,
-      reset,
+      hasSelectedUploads,
+      hasSelectedResults,
+      areAllUploadsSelected,
+      areAllResultsSelected,
+      uploadImages,
+      toggleUploadSelection,
+      selectAllUploads,
+      clearUploadSelection,
+      removeUpload,
+      removeAllUploads,
+      toggleResultSelection,
+      selectAllResults,
+      clearResultSelection,
+      removeResult,
+      removeAllResults,
+      removeBackground,
+      cropToSubjectBounds,
+      removeBackgroundAndCrop,
+      denoiseWithOpenAI,
+      resizeToWidth,
       showToast,
       dismissToast,
       toast,
-      removeBackgroundWithOpenAI,
-      cropToSubjectBounds,
-      denoiseWithOpenAI,
-      resizeToWidth,
     }),
     [
-      cropToSubjectBounds,
-      currentImage,
+      areAllResultsSelected,
+      areAllUploadsSelected,
+      clearResultSelection,
+      clearUploadSelection,
       denoiseWithOpenAI,
       dismissToast,
+      hasSelectedResults,
+      hasSelectedUploads,
       isProcessing,
-      originalFile,
-      removeBackgroundWithOpenAI,
-      reset,
+      removeAllResults,
+      removeAllUploads,
+      removeBackground,
+      removeBackgroundAndCrop,
+      removeResult,
+      removeUpload,
+      resultImages,
+      cropToSubjectBounds,
       resizeToWidth,
-      setOriginalFile,
-      setProcessedImageFromBlob,
+      selectAllResults,
+      selectAllUploads,
       showToast,
+      toggleResultSelection,
+      toggleUploadSelection,
       toast,
+      uploadImages,
+      uploadedImages,
     ],
   )
 
