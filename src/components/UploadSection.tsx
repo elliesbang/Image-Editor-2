@@ -1,7 +1,5 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useImageEditor } from '../hooks/useImageEditor'
-
-const MAX_FILE_SIZE_MB = 20
 
 function formatBytes(bytes: number) {
   const mb = bytes / (1024 * 1024)
@@ -13,37 +11,35 @@ function formatBytes(bytes: number) {
 }
 
 function UploadSection() {
-  const { setOriginalFile, currentImage, reset, isProcessing, showToast } = useImageEditor()
+  const {
+    uploadImages,
+    uploadedImages,
+    toggleUploadSelection,
+    selectAllUploads,
+    clearUploadSelection,
+    removeUpload,
+    removeAllUploads,
+    areAllUploadsSelected,
+    hasSelectedUploads,
+    isProcessing,
+    showToast,
+  } = useImageEditor()
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
 
+  const selectedCount = useMemo(
+    () => uploadedImages.filter((image) => image.selected).length,
+    [uploadedImages],
+  )
+
   const handleFiles = useCallback(
     async (fileList: FileList | null) => {
-      if (!fileList || fileList.length === 0) {
-        return
-      }
-      const [file] = Array.from(fileList).filter((item) => item.type.startsWith('image/'))
-      if (!file) {
-        showToast('이미지 파일만 업로드할 수 있어요.', 'error')
-        return
-      }
-      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        showToast(`최대 ${MAX_FILE_SIZE_MB}MB 이하의 이미지만 업로드할 수 있어요.`, 'error')
-        return
-      }
-      try {
-        await setOriginalFile(file)
-        showToast('이미지를 불러왔어요. 원하는 편집을 시작해보세요!', 'success')
-      } catch (error) {
-        console.error('[UploadSection] failed to load image', error)
-        showToast('이미지를 불러오지 못했어요. 다시 시도해주세요.', 'error')
-      } finally {
-        if (inputRef.current) {
-          inputRef.current.value = ''
-        }
+      await uploadImages(fileList)
+      if (inputRef.current) {
+        inputRef.current.value = ''
       }
     },
-    [setOriginalFile, showToast],
+    [uploadImages],
   )
 
   const handleDrop = useCallback(
@@ -75,6 +71,28 @@ function UploadSection() {
     [handleFiles],
   )
 
+  const handleSelectAllToggle = () => {
+    if (areAllUploadsSelected) {
+      clearUploadSelection()
+    } else {
+      selectAllUploads()
+    }
+  }
+
+  const handleRemoveAll = () => {
+    if (uploadedImages.length === 0) {
+      showToast('삭제할 이미지가 없어요.', 'error')
+      return
+    }
+    removeAllUploads()
+    showToast('업로드한 이미지를 모두 삭제했어요.', 'success')
+  }
+
+  const handleRemoveSingle = (id: string) => {
+    removeUpload(id)
+    showToast('선택한 이미지를 삭제했어요.', 'success')
+  }
+
   return (
     <section
       className="space-y-6 rounded-lg bg-white p-6 shadow-sm ring-1 ring-inset ring-ellie-border/60"
@@ -85,7 +103,7 @@ function UploadSection() {
           이미지 업로드
         </h2>
         <p className="text-sm text-ellie-text/70">
-          편집하고 싶은 이미지를 업로드하면 모든 도구를 사용할 수 있어요.
+          편집하고 싶은 이미지를 업로드하면 원하는 도구를 눌러 직접 처리할 수 있어요.
         </p>
       </div>
 
@@ -103,6 +121,7 @@ function UploadSection() {
           ref={inputRef}
           type="file"
           accept="image/*"
+          multiple
           className="hidden"
           onChange={handleInputChange}
           disabled={isProcessing}
@@ -112,38 +131,84 @@ function UploadSection() {
             <span className="text-2xl font-semibold">+</span>
           </div>
           <span className="text-sm text-ellie-text">
-            이미지를 드래그하거나 클릭해서 업로드하세요 (최대 {MAX_FILE_SIZE_MB}MB)
+            이미지를 드래그하거나 클릭해서 업로드하세요 (한 번에 최대 50장)
           </span>
         </div>
         <span className="text-xs text-ellie-text/60">
-          지원 형식: PNG, JPG, JPEG, GIF 등 이미지 파일
+          지원 형식: PNG, JPG, JPEG, GIF 등 이미지 파일 · 최대 20MB/장
         </span>
       </label>
 
-      {currentImage && (
-        <div className="flex flex-col gap-4 rounded-lg bg-ellie-ivory p-4 text-sm text-ellie-text">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="font-medium">선택된 이미지 정보</p>
-              <p className="text-xs text-ellie-text/70">
-                {currentImage.width} × {currentImage.height} px · {formatBytes(currentImage.blob.size)}
-              </p>
+      {uploadedImages.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+            <p className="text-ellie-text/70">
+              총 {uploadedImages.length}장의 이미지 중 {selectedCount}장 선택됨
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSelectAllToggle}
+                disabled={isProcessing}
+                className="rounded-full border border-ellie-border bg-white px-4 py-2 text-xs font-medium text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {areAllUploadsSelected ? '선택 해제' : '전체 선택'}
+              </button>
+              {hasSelectedUploads && (
+                <button
+                  type="button"
+                  onClick={clearUploadSelection}
+                  disabled={isProcessing}
+                  className="rounded-full border border-ellie-border bg-white px-4 py-2 text-xs font-medium text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  선택 해제
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleRemoveAll}
+                disabled={isProcessing}
+                className="rounded-full border border-ellie-border bg-white px-4 py-2 text-xs font-medium text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                전체 삭제
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={reset}
-              disabled={isProcessing}
-              className="rounded-full border border-ellie-border bg-white px-4 py-2 text-xs font-medium text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              초기화
-            </button>
           </div>
-          <div className="flex justify-center">
-            <img
-              src={currentImage.url}
-              alt="업로드한 이미지 미리보기"
-              className="max-h-64 w-auto rounded-md border border-ellie-border bg-white object-contain"
-            />
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
+            {uploadedImages.map((image) => (
+              <div
+                key={image.id}
+                className="group relative"
+                title={`${image.name} • ${image.width}×${image.height}px • ${formatBytes(image.size)}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleUploadSelection(image.id)}
+                  disabled={isProcessing}
+                  aria-pressed={image.selected}
+                  className={`relative aspect-square w-full overflow-hidden rounded-lg border border-ellie-border bg-white transition hover:-translate-y-0.5 hover:shadow disabled:cursor-not-allowed disabled:opacity-60 ${
+                    image.selected ? 'ring-2 ring-ellie-yellow ring-offset-2 ring-offset-white' : ''
+                  }`}
+                >
+                  <img
+                    src={image.url}
+                    alt={image.name}
+                    className="h-full w-full object-cover"
+                  />
+                  <span className="pointer-events-none absolute inset-0 bg-ellie-yellow/0 transition group-hover:bg-ellie-yellow/10" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveSingle(image.id)}
+                  disabled={isProcessing}
+                  className="absolute right-2 top-2 hidden h-7 w-7 items-center justify-center rounded-full bg-black/70 text-xs font-semibold text-white shadow-sm transition group-hover:flex disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="이미지 삭제"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       )}

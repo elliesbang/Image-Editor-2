@@ -6,10 +6,11 @@ const NOISE_MAX = 100
 
 function EditorSection() {
   const {
-    currentImage,
+    uploadedImages,
     isProcessing,
-    removeBackgroundWithOpenAI,
+    removeBackground,
     cropToSubjectBounds,
+    removeBackgroundAndCrop,
     denoiseWithOpenAI,
     resizeToWidth,
     showToast,
@@ -18,28 +19,27 @@ function EditorSection() {
   const [noiseLevel, setNoiseLevel] = useState(40)
   const [widthInput, setWidthInput] = useState('')
 
+  const selectedUploads = useMemo(
+    () => uploadedImages.filter((image) => image.selected),
+    [uploadedImages],
+  )
+
+  const firstSelected = selectedUploads[0]
+
   const resizePlaceholder = useMemo(() => {
-    if (!currentImage) {
+    if (!firstSelected) {
       return '가로 픽셀 입력'
     }
-    return `${currentImage.width}`
-  }, [currentImage])
+    return `${firstSelected.width}`
+  }, [firstSelected])
 
   useEffect(() => {
-    if (!currentImage) {
+    if (!firstSelected) {
       setWidthInput('')
       return
     }
-    setWidthInput(String(currentImage.width))
-  }, [currentImage])
-
-  const requireImage = () => {
-    if (currentImage) {
-      return true
-    }
-    showToast('이미지를 먼저 업로드해주세요.', 'error')
-    return false
-  }
+    setWidthInput(String(firstSelected.width))
+  }, [firstSelected])
 
   const runWithToast = async (
     action: () => Promise<void>,
@@ -51,25 +51,33 @@ function EditorSection() {
       showToast('이전 작업이 끝날 때까지 기다려주세요.', 'info')
       return
     }
-    if (!requireImage()) {
-      return
-    }
+
     const toastId = showToast(pendingMessage, 'info', { duration: 0 })
     try {
       await action()
       dismissToast(toastId)
       showToast(successMessage, 'success')
     } catch (error) {
-      console.error('[EditorSection] operation failed', error)
       dismissToast(toastId)
+      if (error instanceof Error) {
+        if (error.message === 'NO_UPLOADS_SELECTED') {
+          showToast('편집할 이미지를 먼저 선택해주세요.', 'error')
+          return
+        }
+        if (error.message === 'PROCESS_ALREADY_RUNNING') {
+          showToast('이미 처리가 진행 중이에요. 잠시만 기다려주세요.', 'info')
+          return
+        }
+      }
+      console.error('[EditorSection] operation failed', error)
       showToast(errorMessage, 'error')
     }
   }
 
   const handleBackgroundRemoval = async () => {
     await runWithToast(
-      removeBackgroundWithOpenAI,
-      '배경을 제거하는 중이에요...',
+      removeBackground,
+      '선택한 이미지의 배경을 제거하는 중이에요...',
       '배경제거가 완료되었어요!',
       '배경제거에 실패했어요. 잠시 후 다시 시도해주세요.',
     )
@@ -78,16 +86,25 @@ function EditorSection() {
   const handleCrop = async () => {
     await runWithToast(
       cropToSubjectBounds,
-      '피사체에 맞춰 크롭하는 중이에요...',
-      '여백 없이 크롭이 완료되었어요!',
+      '선택한 이미지를 피사체에 맞춰 자르는 중이에요...',
+      '크롭이 완료되었어요!',
       '크롭에 실패했어요. 다시 시도해주세요.',
+    )
+  }
+
+  const handleBackgroundAndCrop = async () => {
+    await runWithToast(
+      removeBackgroundAndCrop,
+      '배경제거 후 크롭까지 진행하는 중이에요...',
+      '배경제거와 크롭이 함께 완료되었어요!',
+      '배경제거+크롭 작업에 실패했어요. 다시 시도해주세요.',
     )
   }
 
   const handleDenoise = async () => {
     await runWithToast(
       () => denoiseWithOpenAI(noiseLevel),
-      '노이즈를 줄이는 중이에요...',
+      '선택한 이미지의 노이즈를 줄이는 중이에요...',
       '노이즈 제거가 완료되었어요!',
       '노이즈 제거에 실패했어요. 잠시 후 다시 시도해주세요.',
     )
@@ -102,7 +119,7 @@ function EditorSection() {
     }
     await runWithToast(
       () => resizeToWidth(parsedWidth),
-      '이미지를 리사이즈하는 중이에요...',
+      '선택한 이미지를 리사이즈하는 중이에요...',
       '리사이즈가 완료되었어요!',
       '리사이즈에 실패했어요. 값을 확인한 뒤 다시 시도해주세요.',
     )
@@ -115,7 +132,7 @@ function EditorSection() {
           편집 도구
         </h2>
         <p className="text-sm text-ellie-text/70">
-          각 기능 버튼을 눌러 이미지를 편집하고 실시간으로 결과를 확인해보세요.
+          편집할 이미지를 선택한 뒤 원하는 기능 버튼을 눌러주세요. 처리 결과는 별도 영역에 저장돼요.
         </p>
       </div>
 
@@ -124,7 +141,7 @@ function EditorSection() {
           <div className="space-y-2">
             <h3 className="text-base font-semibold text-ellie-text">배경제거</h3>
             <p className="text-sm text-ellie-text/70">
-              OpenAI API를 사용해 배경을 투명하게 만들고 피사체만 또렷하게 남겨요.
+              OpenAI API를 우선 사용하고, 실패하면 캔버스로 배경을 제거해 투명 PNG로 만들어줘요.
             </p>
           </div>
           <button
@@ -141,7 +158,7 @@ function EditorSection() {
           <div className="space-y-2">
             <h3 className="text-base font-semibold text-ellie-text">크롭</h3>
             <p className="text-sm text-ellie-text/70">
-              배경제거 후 남은 투명 영역을 계산해 피사체에 꼭 맞게 잘라줘요.
+              배경의 투명 영역을 분석해 피사체에 꼭 맞춰 잘라줘요.
             </p>
           </div>
           <button
@@ -151,6 +168,23 @@ function EditorSection() {
             className="min-h-[44px] rounded-full border border-ellie-border bg-white px-6 text-sm font-semibold text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
             피사체 기준 크롭
+          </button>
+        </article>
+
+        <article className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
+          <div className="space-y-2">
+            <h3 className="text-base font-semibold text-ellie-text">배경제거 + 크롭</h3>
+            <p className="text-sm text-ellie-text/70">
+              배경제거 후 곧바로 크롭까지 자동으로 이어서 진행해요.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleBackgroundAndCrop}
+            disabled={isProcessing}
+            className="min-h-[44px] rounded-full border border-ellie-border bg-white px-6 text-sm font-semibold text-ellie-text transition hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            배경제거+크롭 실행
           </button>
         </article>
 
