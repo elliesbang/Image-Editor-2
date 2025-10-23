@@ -3,11 +3,12 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
     "strict": true,
+    "esModuleInterop": true,
     "skipLibCheck": true,
     "lib": ["ESNext", "DOM"],
-    "types": ["vite/client"],
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
-  }
+    "types": ["vite/client"]
+  },
+  "include": ["src"]
 }
