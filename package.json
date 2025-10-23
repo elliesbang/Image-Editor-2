@@ -1,26 +1,26 @@
 {
   "name": "easy-image-editor",
+  "private": true,
+  "version": "1.0.0",
   "type": "module",
-  "imports": {
-    "openai": "./utils/openai-lite.js",
-    "arctic": "./utils/arctic-google.js"
-  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "dev:sandbox": "wrangler pages dev dist --local --ip 0.0.0.0 --port 3000",
-    "deploy": "npm run build && wrangler pages deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "preview": "vite preview"
   },
   "dependencies": {
     "hono": "^4.9.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "sharp": "^0.33.5"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
-    "@vitejs/plugin-react": "^4.3.2",         
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "^5.6.3",
     "vite": "^6.3.5",
     "wrangler": "^4.4.0"
   }

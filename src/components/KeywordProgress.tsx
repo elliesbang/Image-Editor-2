@@ -29,7 +29,7 @@ export default function KeywordProgress({
 
   return (
     <div
-      class={`analysis-progress${isIdle ? ' is-idle' : ''}`}
+      className={`analysis-progress${isIdle ? ' is-idle' : ''}`}
       data-role="analysis-progress"
       data-status={status}
       data-phase={phase}
@@ -39,13 +39,13 @@ export default function KeywordProgress({
       aria-hidden={isIdle}
     >
       <div
-        class="analysis-progress__message"
+        className="analysis-progress__message"
         data-role="analysis-progress-message"
       >
         {status === 'running' ? message : ''}
       </div>
       <div
-        class="analysis-progress__bar"
+        className="analysis-progress__bar"
         data-role="analysis-progress-bar"
         role="progressbar"
         aria-valuemin="0"
@@ -53,27 +53,27 @@ export default function KeywordProgress({
         aria-valuenow={safePercent}
       >
         <div
-          class="analysis-progress__fill"
+          className="analysis-progress__fill"
           data-role="analysis-progress-fill"
           style={{ width: `${safePercent}%` }}
         />
       </div>
       <div
-        class="analysis-progress__status analysis-progress__status--success"
+        className="analysis-progress__status analysis-progress__status--success"
         data-role="analysis-progress-success"
         hidden
       >
         분석 완료
       </div>
       <div
-        class="analysis-progress__status analysis-progress__status--error"
+        className="analysis-progress__status analysis-progress__status--error"
         data-role="analysis-progress-error"
         hidden
       >
         <span data-role="analysis-progress-error-message">
           분석 실패. 잠시 후 다시 시도해 주세요.
         </span>
-        <button type="button" class="analysis-progress__retry" data-action="analysis-retry">
+        <button type="button" className="analysis-progress__retry" data-action="analysis-retry">
           다시 시도
         </button>
       </div>
