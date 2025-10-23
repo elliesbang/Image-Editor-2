@@ -110,7 +110,7 @@ function Footer() {
 
   return (
     <>
-      <footer className="bg-[#f5eee9] border-t border-[#e6dccc] py-6 text-center text-[#404040] text-xs sm:text-sm space-y-2">
+      <footer className="bg-ellie-yellow border-t border-[#e6dccc] py-6 text-center text-[#404040] text-xs sm:text-sm space-y-2">
         <p className="font-semibold">엘리의방 이미지 에디터</p>
         <p>
           문의 :{' '}
