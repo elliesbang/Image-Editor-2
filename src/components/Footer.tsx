@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const termsContent = [
   '[엘리의방 이미지 에디터 이용약관]',
@@ -69,34 +69,44 @@ const cookieContent = [
   '문의 : ellie@elliesbang.kr'
 ].join('\n')
 
+const MODALS = {
+  terms: {
+    title: '이용약관',
+    content: termsContent
+  },
+  privacy: {
+    title: '개인정보처리방침',
+    content: privacyContent
+  },
+  cookie: {
+    title: '쿠키정책',
+    content: cookieContent
+  }
+} as const
+
+type ModalKey = keyof typeof MODALS
+
 function Footer() {
-  const [isTermsOpen, setIsTermsOpen] = useState(false)
-  const [isPrivacyOpen, setIsPrivacyOpen] = useState(false)
-  const [isCookieOpen, setIsCookieOpen] = useState(false)
+  const [openModal, setOpenModal] = useState<ModalKey | null>(null)
 
-  const closeModal = () => {
-    setIsTermsOpen(false)
-    setIsPrivacyOpen(false)
-    setIsCookieOpen(false)
-  }
+  const closeModal = () => setOpenModal(null)
 
-  const openTermsModal = () => {
-    setIsTermsOpen(true)
-    setIsPrivacyOpen(false)
-    setIsCookieOpen(false)
-  }
+  useEffect(() => {
+    if (!openModal) {
+      return
+    }
 
-  const openPrivacyModal = () => {
-    setIsPrivacyOpen(true)
-    setIsTermsOpen(false)
-    setIsCookieOpen(false)
-  }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeModal()
+      }
+    }
 
-  const openCookieModal = () => {
-    setIsCookieOpen(true)
-    setIsTermsOpen(false)
-    setIsPrivacyOpen(false)
-  }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [openModal])
+
+  const modal = openModal ? MODALS[openModal] : null
 
   return (
     <>
@@ -109,57 +119,46 @@ function Footer() {
           </a>
         </p>
         <div className="flex justify-center gap-4 text-xs sm:text-sm">
-          <button type="button" onClick={openTermsModal} className="hover:text-[#ffd331]">
+          <button
+            type="button"
+            onClick={() => setOpenModal('terms')}
+            className="hover:text-[#ffd331]"
+          >
             이용약관
           </button>
-          <span>·</span>
-          <button type="button" onClick={openPrivacyModal} className="hover:text-[#ffd331]">
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            onClick={() => setOpenModal('privacy')}
+            className="hover:text-[#ffd331]"
+          >
             개인정보처리방침
           </button>
-          <span>·</span>
-          <button type="button" onClick={openCookieModal} className="hover:text-[#ffd331]">
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            onClick={() => setOpenModal('cookie')}
+            className="hover:text-[#ffd331]"
+          >
             쿠키정책
           </button>
         </div>
       </footer>
 
-      {isTermsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="max-h-[80vh] w-[90%] max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="mb-4 text-lg font-semibold text-[#404040]">이용약관</h2>
-            <p className="text-sm text-gray-600 whitespace-pre-line">{termsContent}</p>
-            <button
-              type="button"
-              onClick={closeModal}
-              className="mt-6 w-full rounded-xl bg-[#ffd331] py-2 font-medium text-[#404040] hover:bg-[#ffec8b]"
-            >
-              닫기
-            </button>
-          </div>
-        </div>
-      )}
-
-      {isPrivacyOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="max-h-[80vh] w-[90%] max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="mb-4 text-lg font-semibold text-[#404040]">개인정보처리방침</h2>
-            <p className="text-sm text-gray-600 whitespace-pre-line">{privacyContent}</p>
-            <button
-              type="button"
-              onClick={closeModal}
-              className="mt-6 w-full rounded-xl bg-[#ffd331] py-2 font-medium text-[#404040] hover:bg-[#ffec8b]"
-            >
-              닫기
-            </button>
-          </div>
-        </div>
-      )}
-
-      {isCookieOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="max-h-[80vh] w-[90%] max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="mb-4 text-lg font-semibold text-[#404040]">쿠키정책</h2>
-            <p className="text-sm text-gray-600 whitespace-pre-line">{cookieContent}</p>
+      {modal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={closeModal}
+          aria-modal="true"
+          role="dialog"
+          aria-label={modal.title}
+        >
+          <div
+            className="max-h-[80vh] w-[90%] max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="mb-4 text-lg font-semibold text-[#404040]">{modal.title}</h2>
+            <p className="text-sm text-gray-600 whitespace-pre-line">{modal.content}</p>
             <button
               type="button"
               onClick={closeModal}
