@@ -1,11 +1,15 @@
-import Home from './pages/Home'
-import { ImageEditorProvider } from './hooks/useImageEditor'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import Login from './pages/Login'
+import AdminDashboard from './pages/AdminDashboard'
 
 function App() {
   return (
-    <ImageEditorProvider>
-      <Home />
-    </ImageEditorProvider>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Login />} />
+        <Route path="/admin" element={<AdminDashboard />} />
+      </Routes>
+    </BrowserRouter>
   )
 }
 
