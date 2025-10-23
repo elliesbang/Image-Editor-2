@@ -37,6 +37,24 @@ export function base64ToBlob(base64: string, mimeType = 'image/png'): Blob {
   return new Blob([bytes], { type: mimeType })
 }
 
+export async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      const { result } = reader
+      if (typeof result === 'string') {
+        resolve(result)
+      } else {
+        reject(new Error('BLOB_TO_BASE64_CONVERSION_FAILED'))
+      }
+    }
+    reader.onerror = () => {
+      reject(reader.error ?? new Error('BLOB_TO_BASE64_CONVERSION_FAILED'))
+    }
+    reader.readAsDataURL(blob)
+  })
+}
+
 async function createCanvasFromBlob(blob: Blob): Promise<{
   canvas: HTMLCanvasElement
   ctx: CanvasRenderingContext2D
