@@ -110,15 +110,17 @@ function Footer() {
 
   return (
     <>
-      <footer className="bg-ellie-yellow border-t border-[#e6dccc] py-6 text-center text-[#404040] text-xs sm:text-sm space-y-2">
-        <p className="font-semibold">엘리의방 이미지 에디터</p>
-        <p>
-          문의 :{' '}
-          <a href="mailto:ellie@elliesbang.kr" className="hover:text-[#ffd331]">
-            ellie@elliesbang.kr
-          </a>
-        </p>
-        <div className="flex justify-center gap-4 text-xs sm:text-sm">
+      <footer className="bg-ellie-yellow border-t border-[#e6dccc] px-4 py-6 text-center text-xs text-[#404040] sm:text-sm">
+        <div className="mx-auto flex max-w-4xl flex-col items-center gap-2">
+          <p className="font-semibold">엘리의방 이미지 에디터</p>
+          <p>
+            문의:{' '}
+            <a href="mailto:ellie@elliesbang.kr" className="font-medium hover:text-[#ffd331]">
+              ellie@elliesbang.kr
+            </a>
+          </p>
+        </div>
+        <div className="mt-3 flex justify-center gap-4 text-xs sm:text-sm">
           <button
             type="button"
             onClick={() => setOpenModal('terms')}

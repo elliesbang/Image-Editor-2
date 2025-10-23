@@ -3,6 +3,7 @@ import EditSection from '../components/ellie/EditSection'
 import ExtraFeatureSection from '../components/ellie/ExtraFeatureSection'
 import ImageUploadSection from '../components/ellie/ImageUploadSection'
 import ResultSection from '../components/ellie/ResultSection'
+import Footer from '../components/Footer'
 
 function Home() {
   const handleLoginClick = () => {
@@ -14,14 +15,15 @@ function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-[#fffef9] text-[#404040]">
+    <div className="flex min-h-screen flex-col bg-[#fffef9] text-[#404040]">
       <EllieHeader onLoginClick={handleLoginClick} onUpgradeClick={handleUpgradeClick} />
-      <main className="mx-auto flex w-full max-w-6xl flex-col space-y-10 px-4 pb-16 pt-24 sm:px-6 lg:px-8">
+      <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col space-y-10 px-4 pb-16 pt-24 sm:px-6 lg:px-8">
         <ImageUploadSection />
         <EditSection />
         <ExtraFeatureSection />
         <ResultSection />
       </main>
+      <Footer />
     </div>
   )
 }
