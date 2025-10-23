@@ -108,9 +108,6 @@ function PngToGifTool() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-ellie-text">PNG → GIF 애니메이션</h3>
-            <p className="mt-1 text-sm text-ellie-text/70">
-              처리된 PNG 이미지를 선택하고 원하는 움직임을 입력하면 OpenAI가 애니메이션 계획을 만들고 GIF로 변환해요. 결과는 자동으로 25MB 이하로 압축됩니다.
-            </p>
           </div>
           <button
             type="button"
@@ -118,7 +115,7 @@ function PngToGifTool() {
             disabled={!selectedImage || isGenerating || isProcessing}
             className="min-h-[44px] rounded-full border border-ellie-border bg-ellie-ivory px-4 text-sm font-medium text-ellie-text transition-colors hover:bg-ellie-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isGenerating ? '생성 중…' : 'GIF 만들기'}
+            {isGenerating ? '실행 중…' : '실행'}
           </button>
         </div>
 
