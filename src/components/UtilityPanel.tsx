@@ -1,3 +1,5 @@
+import PngToGifTool from './tools/PngToGifTool'
+
 const utilities = [
   {
     title: 'PNG → SVG 변환',
@@ -14,6 +16,7 @@ function UtilityPanel() {
     <section aria-label="유틸리티" className="space-y-4">
       <h2 className="text-lg font-semibold text-ellie-text">추가 도구</h2>
       <div className="grid gap-4 md:grid-cols-2">
+        <PngToGifTool />
         {utilities.map((utility) => (
           <article key={utility.title} className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between gap-3">
