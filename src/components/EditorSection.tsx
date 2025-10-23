@@ -138,12 +138,6 @@ function EditorSection() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <article className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold text-ellie-text">배경제거</h3>
-            <p className="text-sm text-ellie-text/70">
-              OpenAI API를 우선 사용하고, 실패하면 캔버스로 배경을 제거해 투명 PNG로 만들어줘요.
-            </p>
-          </div>
           <button
             type="button"
             onClick={handleBackgroundRemoval}
@@ -155,12 +149,6 @@ function EditorSection() {
         </article>
 
         <article className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold text-ellie-text">크롭</h3>
-            <p className="text-sm text-ellie-text/70">
-              배경의 투명 영역을 분석해 피사체에 꼭 맞춰 잘라줘요.
-            </p>
-          </div>
           <button
             type="button"
             onClick={handleCrop}
@@ -172,12 +160,6 @@ function EditorSection() {
         </article>
 
         <article className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold text-ellie-text">배경제거 + 크롭</h3>
-            <p className="text-sm text-ellie-text/70">
-              배경제거 후 곧바로 크롭까지 자동으로 이어서 진행해요.
-            </p>
-          </div>
           <button
             type="button"
             onClick={handleBackgroundAndCrop}
