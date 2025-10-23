@@ -6,6 +6,7 @@ import ModalLogin from '../components/ModalLogin'
 import ResultSection from '../components/ResultSection'
 import UploadSection from '../components/UploadSection'
 import UtilityPanel from '../components/UtilityPanel'
+import Toast from '../components/Toast'
 
 function Home() {
   const [isLoginOpen, setIsLoginOpen] = useState(false)
@@ -23,6 +24,7 @@ function Home() {
         <UtilityPanel />
       </main>
       <Footer />
+      <Toast />
       <ModalLogin open={isLoginOpen} onClose={() => setIsLoginOpen(false)} />
     </div>
   )
