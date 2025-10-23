@@ -1,5 +1,5 @@
 {
-  "name": "easy-image-editer",
+  "name": "easy-image-editor",
   "type": "module",
   "imports": {
     "openai": "./utils/openai-lite.js",
@@ -7,9 +7,9 @@
   },
   "scripts": {
     "dev": "vite",
+    "build": "vite build",        // 
+    "preview": "vite preview",    // 
     "dev:sandbox": "wrangler pages dev dist --local --ip 0.0.0.0 --port 3000",
-    "build": "vite build",
-    "preview": "wrangler pages dev dist --local",
     "deploy": "npm run build && wrangler pages deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
