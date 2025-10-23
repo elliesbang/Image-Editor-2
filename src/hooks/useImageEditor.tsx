@@ -355,6 +355,39 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     [buildResultImage],
   )
 
+  const nameWithoutExtension = useCallback((filename: string) => {
+    const lastDot = filename.lastIndexOf('.')
+    return lastDot === -1 ? filename : filename.slice(0, lastDot)
+  }, [])
+
+  const findResultForSource = useCallback(
+    (sourceId: string, predicate: (normalizedName: string) => boolean): ResultImage | null => {
+      for (const image of resultImagesRef.current) {
+        if (image.sourceId !== sourceId) {
+          continue
+        }
+        if (predicate(nameWithoutExtension(image.name))) {
+          return image
+        }
+      }
+      return null
+    },
+    [nameWithoutExtension],
+  )
+
+  const findBackgroundRemovedResult = useCallback(
+    (sourceId: string): ResultImage | null =>
+      findResultForSource(sourceId, (normalized) => normalized.endsWith('-bg-removed')),
+    [findResultForSource],
+  )
+
+  const findBackgroundRemovedOrCroppedResult = useCallback(
+    (sourceId: string): ResultImage | null =>
+      findBackgroundRemovedResult(sourceId) ??
+      findResultForSource(sourceId, (normalized) => normalized.endsWith('-bg-removed-cropped')),
+    [findBackgroundRemovedResult, findResultForSource],
+  )
+
   const processSelectedUploads = useCallback(
     async (operation: (image: UploadedImage) => Promise<{ blob: Blob; suffix: string }>) => {
       let targets = getSelectedUploads()
@@ -380,15 +413,45 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     [createResultImageFromBlob, getSelectedUploads, setUploadedImages, withProcessing],
   )
 
-  const tryRemoveBackground = useCallback(async (image: UploadedImage) => {
+  const tryCallImageEditApi = useCallback(async (operation: string, image: UploadedImage) => {
     try {
-      const blob = await removeBackgroundLocally(image.blob)
-      return blob
+      const formData = new FormData()
+      formData.append('operation', operation)
+      formData.append('image', image.blob, image.name || 'image.png')
+      const response = await fetch('/api/image-edit', {
+        method: 'POST',
+        body: formData,
+      })
+      if (!response.ok) {
+        throw new Error('IMAGE_EDIT_REQUEST_FAILED')
+      }
+      const payload = (await response.json()) as { image?: string }
+      if (!payload?.image) {
+        throw new Error('IMAGE_EDIT_INVALID_PAYLOAD')
+      }
+      return base64ToBlob(payload.image, 'image/png')
     } catch (error) {
-      console.error('[ImageEditor] local background removal failed', error)
-      throw new Error('BACKGROUND_REMOVAL_FAILED')
+      console.warn('[ImageEditor] remote image edit failed', operation, error)
+      return null
     }
   }, [])
+
+  const tryRemoveBackground = useCallback(
+    async (image: UploadedImage) => {
+      const remote = await tryCallImageEditApi('remove_background', image)
+      if (remote) {
+        return remote
+      }
+      try {
+        const blob = await removeBackgroundLocally(image.blob)
+        return blob
+      } catch (error) {
+        console.error('[ImageEditor] local background removal failed', error)
+        throw new Error('BACKGROUND_REMOVAL_FAILED')
+      }
+    },
+    [tryCallImageEditApi],
+  )
 
   const tryCropToSubject = useCallback(
     async (image: CropTarget) => {
@@ -424,14 +487,42 @@ export function ImageEditorProvider({ children }: ProviderProps) {
   }, [processSelectedUploads, tryRemoveBackground])
 
   const cropToSubjectBounds = useCallback(async () => {
-    await processSelectedUploads(async (image) => ({
-      blob: await tryCropToSubject(image),
-      suffix: '-cropped',
-    }))
-  }, [processSelectedUploads, tryCropToSubject])
+    await processSelectedUploads(async (image) => {
+      const cachedBackgroundRemoved = findBackgroundRemovedOrCroppedResult(image.id)
+      const backgroundRemovedBlob = cachedBackgroundRemoved?.blob ?? (await tryRemoveBackground(image).catch(() => null))
+
+      if (backgroundRemovedBlob) {
+        try {
+          const cropped = await cropToSubject(backgroundRemovedBlob)
+          return { blob: cropped, suffix: '-bg-removed-cropped' }
+        } catch (cropError) {
+          console.error('[ImageEditor] crop after cached background removal failed', cropError)
+          try {
+            const fallback = await tryCropToSubject(image)
+            return { blob: fallback, suffix: '-cropped' }
+          } catch (fallbackError) {
+            console.error('[ImageEditor] fallback crop failed', fallbackError)
+            return { blob: backgroundRemovedBlob, suffix: '-bg-removed' }
+          }
+        }
+      }
+
+      return { blob: await tryCropToSubject(image), suffix: '-cropped' }
+    })
+  }, [
+    findBackgroundRemovedOrCroppedResult,
+    processSelectedUploads,
+    tryCropToSubject,
+    tryRemoveBackground,
+  ])
 
   const removeBackgroundAndCrop = useCallback(async () => {
     await processSelectedUploads(async (image) => {
+      const remoteCombined = await tryCallImageEditApi('remove_background_and_crop', image)
+      if (remoteCombined) {
+        return { blob: remoteCombined, suffix: '-bg-removed-cropped' }
+      }
+
       const backgroundRemoved = await tryRemoveBackground(image)
       try {
         const cropped = await cropToSubject(backgroundRemoved)
@@ -444,7 +535,7 @@ export function ImageEditorProvider({ children }: ProviderProps) {
         return { blob: backgroundRemoved, suffix: '-bg-removed' }
       }
     })
-  }, [processSelectedUploads, tryRemoveBackground])
+  }, [processSelectedUploads, tryCallImageEditApi, tryRemoveBackground])
 
   const denoiseWithOpenAI = useCallback(
     async (noiseLevel: number) => {
