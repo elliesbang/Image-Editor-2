@@ -1,0 +1,8 @@
+{
+  "functionName": "removeBg",
+  "handler": "index.handler",
+  "runtime": "nodejs18.x",
+  "memorySize": 1024,
+  "timeout": 30,
+  "lambdaLayers": []
+}
