@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useImageEditor } from '../hooks/useImageEditor'
 
 type IconProps = {
@@ -128,6 +128,14 @@ function EditorSection() {
   } = useImageEditor()
   const [noiseLevel, setNoiseLevel] = useState(40)
   const [widthInput, setWidthInput] = useState('')
+  const [backgroundMessage, setBackgroundMessage] = useState<
+    | {
+        message: string
+        status: 'pending' | 'success' | 'error'
+      }
+    | null
+  >(null)
+  const backgroundMessageTimeoutRef = useRef<number | null>(null)
 
   const selectedUploads = useMemo(
     () => uploadedImages.filter((image) => image.selected),
@@ -143,6 +151,27 @@ function EditorSection() {
     return `${firstSelected.width}`
   }, [firstSelected])
 
+  const clearBackgroundMessageTimeout = useCallback(() => {
+    if (backgroundMessageTimeoutRef.current !== null) {
+      window.clearTimeout(backgroundMessageTimeoutRef.current)
+      backgroundMessageTimeoutRef.current = null
+    }
+  }, [])
+
+  const updateBackgroundMessage = useCallback(
+    (message: string, status: 'pending' | 'success' | 'error') => {
+      clearBackgroundMessageTimeout()
+      setBackgroundMessage({ message, status })
+      if (status !== 'pending') {
+        backgroundMessageTimeoutRef.current = window.setTimeout(() => {
+          setBackgroundMessage(null)
+          backgroundMessageTimeoutRef.current = null
+        }, 3000)
+      }
+    },
+    [clearBackgroundMessageTimeout],
+  )
+
   useEffect(() => {
     if (!firstSelected) {
       setWidthInput('')
@@ -151,15 +180,17 @@ function EditorSection() {
     setWidthInput(String(firstSelected.width))
   }, [firstSelected])
 
+  useEffect(() => () => clearBackgroundMessageTimeout(), [clearBackgroundMessageTimeout])
+
   const runWithToast = async (
     action: () => Promise<void>,
     pendingMessage: string,
     successMessage: string,
     errorMessage: string,
-  ) => {
+  ): Promise<boolean> => {
     if (isProcessing) {
       showToast('이전 작업이 끝날 때까지 기다려주세요.', 'info')
-      return
+      return false
     }
 
     const toastId = showToast(pendingMessage, 'info', { duration: 0 })
@@ -167,30 +198,38 @@ function EditorSection() {
       await action()
       dismissToast(toastId)
       showToast(successMessage, 'success')
+      return true
     } catch (error) {
       dismissToast(toastId)
       if (error instanceof Error) {
         if (error.message === 'NO_UPLOADS_SELECTED') {
           showToast('편집할 이미지를 먼저 선택해주세요.', 'error')
-          return
+          return false
         }
         if (error.message === 'PROCESS_ALREADY_RUNNING') {
           showToast('이미 처리가 진행 중이에요. 잠시만 기다려주세요.', 'info')
-          return
+          return false
         }
       }
       console.error('[EditorSection] operation failed', error)
       showToast(errorMessage, 'error')
+      return false
     }
   }
 
   const handleBackgroundRemoval = async () => {
-    await runWithToast(
+    updateBackgroundMessage('배경제거 진행 중입니다...', 'pending')
+    const success = await runWithToast(
       removeBackground,
       '선택한 이미지의 배경을 제거하는 중이에요...',
-      '배경제거가 완료되었어요!',
-      '배경제거에 실패했어요. 잠시 후 다시 시도해주세요.',
+      '배경이 제거된 이미지가 처리결과에 추가되었습니다.',
+      '배경제거 실패. 다시 시도해주세요.',
     )
+    if (success) {
+      updateBackgroundMessage('배경제거 완료!', 'success')
+    } else {
+      updateBackgroundMessage('배경제거 실패. 다시 시도해주세요.', 'error')
+    }
   }
 
   const handleCrop = async () => {
@@ -259,6 +298,19 @@ function EditorSection() {
               <span>배경제거</span>
             </span>
           </button>
+          {backgroundMessage && (
+            <p
+              className={`text-center text-sm font-medium ${
+                backgroundMessage.status === 'success'
+                  ? 'text-green-600'
+                  : backgroundMessage.status === 'error'
+                  ? 'text-red-600'
+                  : 'text-yellow-600'
+              }`}
+            >
+              {backgroundMessage.message}
+            </p>
+          )}
         </article>
 
         <article className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
