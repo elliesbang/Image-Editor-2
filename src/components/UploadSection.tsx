@@ -10,6 +10,7 @@ const MAX_FILES = 50;
 const UploadSection: React.FC = () => {
   const [files, setFiles] = useState<PreviewFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedUrls, setSelectedUrls] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const revokeUrl = useCallback((url: string) => {
@@ -90,6 +91,13 @@ const UploadSection: React.FC = () => {
         }
         return prev.filter((_, i) => i !== index);
       });
+      setSelectedUrls((prev) => {
+        const targetUrl = filesRef.current[index]?.url;
+        if (!targetUrl) {
+          return prev;
+        }
+        return prev.filter((url) => url !== targetUrl);
+      });
     },
     [revokeUrl]
   );
@@ -99,10 +107,21 @@ const UploadSection: React.FC = () => {
       prev.forEach((item) => revokeUrl(item.url));
       return [];
     });
+    setSelectedUrls([]);
     if (inputRef.current) {
       inputRef.current.value = "";
     }
   }, [revokeUrl]);
+
+  const handleSelectAll = useCallback(() => {
+    setSelectedUrls((prev) => {
+      const isAllSelected = filesRef.current.length > 0 && prev.length === filesRef.current.length;
+      if (isAllSelected) {
+        return [];
+      }
+      return filesRef.current.map((item) => item.url);
+    });
+  }, []);
 
   const filesRef = useRef<PreviewFile[]>([]);
 
@@ -115,6 +134,14 @@ const UploadSection: React.FC = () => {
       filesRef.current.forEach((item) => revokeUrl(item.url));
     };
   }, [revokeUrl]);
+
+  useEffect(() => {
+    setSelectedUrls((prev) =>
+      prev.filter((url) => files.some((file) => file.url === url))
+    );
+  }, [files]);
+
+  const isAllSelected = files.length > 0 && selectedUrls.length === files.length;
 
   return (
     <section
@@ -157,7 +184,13 @@ const UploadSection: React.FC = () => {
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
-          className="rounded-lg border border-[#e6dccc] bg-white px-4 py-2 text-sm font-medium text-[#404040] transition hover:bg-[#ffec8b] hover:shadow-md"
+          onClick={handleSelectAll}
+          aria-pressed={isAllSelected}
+          className={`rounded-lg border px-4 py-2 text-sm font-medium transition hover:bg-[#ffec8b] hover:shadow-md ${
+            isAllSelected
+              ? "border-[#ffd331] bg-[#fff3b0] text-[#404040]"
+              : "border-[#e6dccc] bg-white text-[#404040]"
+          }`}
         >
           전체 선택
         </button>
@@ -175,7 +208,11 @@ const UploadSection: React.FC = () => {
           {files.map((item, index) => (
             <div
               key={item.url}
-              className="group relative h-[60px] w-[60px] overflow-hidden rounded-lg border border-[#e6dccc] bg-white transition hover:shadow-md"
+              className={`group relative h-[60px] w-[60px] overflow-hidden rounded-lg border bg-white transition hover:shadow-md ${
+                selectedUrls.includes(item.url)
+                  ? "border-2 border-[#ffd331] shadow-md"
+                  : "border-[#e6dccc]"
+              }`}
             >
               <img
                 src={item.url}
