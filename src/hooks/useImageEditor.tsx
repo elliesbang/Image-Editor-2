@@ -380,32 +380,15 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     [createResultImageFromBlob, getSelectedUploads, setUploadedImages, withProcessing],
   )
 
-  const tryRemoveBackground = useCallback(
-    async (image: UploadedImage) => {
-      try {
-        const formData = new FormData()
-        formData.append('operation', 'remove_background')
-        formData.append('image', image.blob, image.name || 'image.png')
-        const response = await fetch('/api/image-edit', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!response.ok) {
-          throw new Error('BACKGROUND_REMOVAL_FAILED')
-        }
-        const payload = (await response.json()) as { image?: string }
-        if (!payload?.image) {
-          throw new Error('BACKGROUND_REMOVAL_INVALID_PAYLOAD')
-        }
-        const blob = base64ToBlob(payload.image, 'image/png')
-        return blob
-      } catch (error) {
-        console.warn('[ImageEditor] background removal failed, using canvas fallback', error)
-        return removeBackgroundLocally(image.blob)
-      }
-    },
-    [],
-  )
+  const tryRemoveBackground = useCallback(async (image: UploadedImage) => {
+    try {
+      const blob = await removeBackgroundLocally(image.blob)
+      return blob
+    } catch (error) {
+      console.error('[ImageEditor] local background removal failed', error)
+      throw new Error('BACKGROUND_REMOVAL_FAILED')
+    }
+  }, [])
 
   const tryCropToSubject = useCallback(
     async (image: CropTarget) => {
@@ -449,38 +432,19 @@ export function ImageEditorProvider({ children }: ProviderProps) {
 
   const removeBackgroundAndCrop = useCallback(async () => {
     await processSelectedUploads(async (image) => {
+      const backgroundRemoved = await tryRemoveBackground(image)
       try {
-        const formData = new FormData()
-        formData.append('operation', 'remove_background_and_crop')
-        formData.append('image', image.blob, image.name || 'image.png')
-        const response = await fetch('/api/image-edit', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!response.ok) {
-          throw new Error('BACKGROUND_AND_CROP_FAILED')
-        }
-        const payload = (await response.json()) as { image?: string }
-        if (!payload?.image) {
-          throw new Error('BACKGROUND_AND_CROP_INVALID_PAYLOAD')
-        }
-        return { blob: base64ToBlob(payload.image, 'image/png'), suffix: '-bg-removed-cropped' }
-      } catch (error) {
-        console.warn('[ImageEditor] combined background removal + crop failed, using local pipeline', error)
-        const backgroundRemoved = await tryRemoveBackground(image)
-        try {
-          const cropped = await tryCropToSubject({ blob: backgroundRemoved, name: image.name })
-          return { blob: cropped, suffix: '-bg-removed-cropped' }
-        } catch (cropError) {
-          console.error(
-            '[ImageEditor] crop after background removal failed, returning background-only result',
-            cropError,
-          )
-          return { blob: backgroundRemoved, suffix: '-bg-removed' }
-        }
+        const cropped = await cropToSubject(backgroundRemoved)
+        return { blob: cropped, suffix: '-bg-removed-cropped' }
+      } catch (cropError) {
+        console.error(
+          '[ImageEditor] crop after background removal failed, returning background-only result',
+          cropError,
+        )
+        return { blob: backgroundRemoved, suffix: '-bg-removed' }
       }
     })
-  }, [processSelectedUploads, tryCropToSubject, tryRemoveBackground])
+  }, [processSelectedUploads, tryRemoveBackground])
 
   const denoiseWithOpenAI = useCallback(
     async (noiseLevel: number) => {
