@@ -227,7 +227,7 @@ function EditorSection() {
     }
   }
 
-  const handleBackgroundRemoval = async () => {
+  const handleRemoveBackground = async () => {
     console.log('배경제거 버튼 클릭됨')
     if (uploadedImages.length === 0) {
       alert('이미지를 먼저 업로드해주세요.')
@@ -293,6 +293,8 @@ function EditorSection() {
     )
   }
 
+  const isBackgroundRemovalPending = isProcessing && backgroundMessage?.status === 'pending'
+
   return (
     <section aria-labelledby="editor-heading" className="space-y-6">
       <div className="space-y-1">
@@ -308,8 +310,8 @@ function EditorSection() {
         <article className="flex flex-col gap-4 rounded-2xl border border-ellie-border bg-white p-5 shadow-sm">
           <button
             type="button"
-            onClick={handleBackgroundRemoval}
-            disabled={isProcessing}
+            onClick={handleRemoveBackground}
+            disabled={isBackgroundRemovalPending}
             className="min-h-[44px] rounded-full bg-ellie-yellow px-6 text-sm font-semibold text-ellie-text transition hover:bg-[#ffe35d] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <span className="flex items-center justify-center gap-2">
