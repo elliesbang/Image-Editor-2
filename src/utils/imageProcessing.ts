@@ -1,3 +1,73 @@
+import { ready as ensureTfReady } from '@tensorflow/tfjs'
+import type { BodyPix, SemanticPersonSegmentation } from '@tensorflow-models/body-pix'
+import * as bodyPix from '@tensorflow-models/body-pix'
+
+let bodyPixModelPromise: Promise<BodyPix> | null = null
+
+async function loadBodyPixModel(): Promise<BodyPix> {
+  if (!bodyPixModelPromise) {
+    bodyPixModelPromise = ensureTfReady()
+      .then(() =>
+        bodyPix.load({
+          architecture: 'MobileNetV1',
+          outputStride: 16,
+          multiplier: 1,
+          quantBytes: 2,
+        }),
+      )
+      .catch((error) => {
+        bodyPixModelPromise = null
+        throw error
+      })
+  }
+
+  return bodyPixModelPromise
+}
+
+function buildMaskCanvas(segmentation: SemanticPersonSegmentation): HTMLCanvasElement {
+  const { width, height, data } = segmentation
+  const maskCanvas = document.createElement('canvas')
+  maskCanvas.width = width
+  maskCanvas.height = height
+  const maskCtx = maskCanvas.getContext('2d')
+  if (!maskCtx) {
+    throw new Error('MASK_CONTEXT_UNAVAILABLE')
+  }
+
+  const imageData = maskCtx.createImageData(width, height)
+  const { data: pixels } = imageData
+
+  for (let index = 0; index < data.length; index += 1) {
+    const offset = index * 4
+    const isForeground = data[index] > 0
+    pixels[offset] = 0
+    pixels[offset + 1] = 0
+    pixels[offset + 2] = 0
+    pixels[offset + 3] = isForeground ? 255 : 0
+  }
+
+  maskCtx.putImageData(imageData, 0, 0)
+  return maskCanvas
+}
+
+function blurMask(maskCanvas: HTMLCanvasElement, blurRadius = 6): HTMLCanvasElement {
+  if (blurRadius <= 0) {
+    return maskCanvas
+  }
+
+  const blurredCanvas = document.createElement('canvas')
+  blurredCanvas.width = maskCanvas.width
+  blurredCanvas.height = maskCanvas.height
+  const blurredCtx = blurredCanvas.getContext('2d')
+  if (!blurredCtx) {
+    throw new Error('MASK_CONTEXT_UNAVAILABLE')
+  }
+  blurredCtx.filter = `blur(${blurRadius}px)`
+  blurredCtx.drawImage(maskCanvas, 0, 0)
+  blurredCtx.filter = 'none'
+  return blurredCanvas
+}
+
 async function loadImageElement(blob: Blob): Promise<{ image: HTMLImageElement; revoke: () => void }> {
   const url = URL.createObjectURL(blob)
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -172,117 +242,48 @@ export async function resizeImage(blob: Blob, width: number): Promise<Blob> {
   }
 }
 
-type BackgroundRemovalOptions = {
-  tolerance?: number
-  softness?: number
-}
-
-export async function removeBackgroundLocally(
-  blob: Blob,
-  { tolerance = 45, softness = 20 }: BackgroundRemovalOptions = {},
-): Promise<Blob> {
-  const { canvas, ctx, width, height, cleanup } = await createCanvasFromBlob(blob)
+export async function removeBackgroundLocally(blob: Blob): Promise<Blob> {
+  const { image, revoke } = await loadImageElement(blob)
   try {
-    const imageData = ctx.getImageData(0, 0, width, height)
-    const { data } = imageData
+    const width = image.naturalWidth || image.width
+    const height = image.naturalHeight || image.height
 
-    if (width === 0 || height === 0) {
+    if (!width || !height) {
       return blob
     }
 
-    const samplePoints: Array<[number, number]> = [
-      [0, 0],
-      [Math.max(width - 1, 0), 0],
-      [0, Math.max(height - 1, 0)],
-      [Math.max(width - 1, 0), Math.max(height - 1, 0)],
-      [Math.floor(width / 2), 0],
-      [Math.floor(width / 2), Math.max(height - 1, 0)],
-      [0, Math.floor(height / 2)],
-      [Math.max(width - 1, 0), Math.floor(height / 2)],
-    ]
+    const model = await loadBodyPixModel()
+    const segmentation = await model.segmentPerson(image, {
+      internalResolution: 'medium',
+      segmentationThreshold: 0.6,
+      maxDetections: 1,
+      scoreThreshold: 0.3,
+      nmsRadius: 20,
+      flipHorizontal: false,
+    })
 
-    let baseR = 0
-    let baseG = 0
-    let baseB = 0
-
-    for (const [x, y] of samplePoints) {
-      const index = (y * width + x) * 4
-      baseR += data[index]
-      baseG += data[index + 1]
-      baseB += data[index + 2]
+    if (!segmentation?.data?.length || !segmentation.data.some((value) => value > 0)) {
+      return blob
     }
 
-    const sampleCount = samplePoints.length || 1
-    baseR /= sampleCount
-    baseG /= sampleCount
-    baseB /= sampleCount
+    const maskCanvas = buildMaskCanvas(segmentation)
+    const blurredMaskCanvas = blurMask(maskCanvas, 6)
 
-    const softThreshold = tolerance + softness
-    const visited = new Uint8Array(width * height)
-    const queue: number[] = []
-
-    const enqueue = (x: number, y: number) => {
-      if (x < 0 || x >= width || y < 0 || y >= height) {
-        return
-      }
-      const index = y * width + x
-      if (visited[index]) {
-        return
-      }
-      visited[index] = 1
-      queue.push(index)
+    const outputCanvas = document.createElement('canvas')
+    outputCanvas.width = width
+    outputCanvas.height = height
+    const outputCtx = outputCanvas.getContext('2d')
+    if (!outputCtx) {
+      throw new Error('CANVAS_CONTEXT_UNAVAILABLE')
     }
 
-    for (let x = 0; x < width; x += 1) {
-      enqueue(x, 0)
-      enqueue(x, height - 1)
-    }
-    for (let y = 0; y < height; y += 1) {
-      enqueue(0, y)
-      enqueue(width - 1, y)
-    }
-
-    let head = 0
-    while (head < queue.length) {
-      const flatIndex = queue[head]
-      head += 1
-
-      const x = flatIndex % width
-      const y = Math.floor(flatIndex / width)
-      const dataIndex = flatIndex * 4
-      const r = data[dataIndex]
-      const g = data[dataIndex + 1]
-      const b = data[dataIndex + 2]
-      const a = data[dataIndex + 3]
-
-      const diff = Math.sqrt((r - baseR) ** 2 + (g - baseG) ** 2 + (b - baseB) ** 2)
-
-      if (diff <= tolerance) {
-        data[dataIndex + 3] = 0
-      } else if (diff < softThreshold) {
-        const ratio = (diff - tolerance) / Math.max(1, softThreshold - tolerance)
-        data[dataIndex + 3] = Math.min(255, Math.round(a * ratio))
-      } else {
-        // Stop flood fill propagation when the pixel differs greatly from the sampled background.
-        continue
-      }
-
-      enqueue(x - 1, y)
-      enqueue(x + 1, y)
-      enqueue(x, y - 1)
-      enqueue(x, y + 1)
-    }
-
-    for (let index = 3; index < data.length; index += 4) {
-      if (data[index] < 16) {
-        data[index] = 0
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0)
+    outputCtx.drawImage(image, 0, 0, width, height)
+    outputCtx.globalCompositeOperation = 'destination-in'
+    outputCtx.drawImage(blurredMaskCanvas, 0, 0, width, height)
+    outputCtx.globalCompositeOperation = 'source-over'
 
     const processedBlob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((result) => {
+      outputCanvas.toBlob((result) => {
         if (result) {
           resolve(result)
         } else {
@@ -293,6 +294,6 @@ export async function removeBackgroundLocally(
 
     return processedBlob
   } finally {
-    cleanup()
+    revoke()
   }
 }

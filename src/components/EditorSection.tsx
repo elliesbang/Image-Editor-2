@@ -168,10 +168,11 @@ function EditorSection() {
       clearBackgroundMessageTimeout()
       setBackgroundMessage({ message, status })
       if (status !== 'pending') {
+        const duration = status === 'success' ? 2000 : 3000
         backgroundMessageTimeoutRef.current = window.setTimeout(() => {
           setBackgroundMessage(null)
           backgroundMessageTimeoutRef.current = null
-        }, 3000)
+        }, duration)
       }
     },
     [clearBackgroundMessageTimeout],
@@ -227,7 +228,7 @@ function EditorSection() {
   }
 
   const handleBackgroundRemoval = async () => {
-    updateBackgroundMessage('배경제거 진행 중입니다...', 'pending')
+    updateBackgroundMessage('배경제거 중입니다...', 'pending')
     const result = await runWithToast(
       removeBackground,
       '선택한 이미지의 배경을 제거하는 중이에요...',
@@ -235,11 +236,7 @@ function EditorSection() {
       '배경제거 중 오류가 발생했습니다.',
     )
     if (result.success) {
-      if (result.data.usedFallback) {
-        updateBackgroundMessage('배경제거 중 오류가 발생했습니다.', 'error')
-      } else {
-        updateBackgroundMessage('배경제거 완료!', 'success')
-      }
+      updateBackgroundMessage('배경제거가 완료되었습니다!', 'success')
     } else if (result.aborted) {
       clearBackgroundMessage()
     } else {
@@ -315,13 +312,16 @@ function EditorSection() {
           </button>
           {backgroundMessage && (
             <p
-              className={`text-center text-sm font-medium ${
-                backgroundMessage.status === 'success'
-                  ? 'text-green-600'
-                  : backgroundMessage.status === 'error'
-                  ? 'text-red-600'
-                  : 'text-yellow-600'
-              }`}
+              className="rounded-full px-4 py-2 text-center text-sm font-semibold"
+              style={{
+                backgroundColor:
+                  backgroundMessage.status === 'pending'
+                    ? '#fef568'
+                    : backgroundMessage.status === 'success'
+                    ? '#2ecc71'
+                    : '#f87171',
+                color: '#000000',
+              }}
             >
               {backgroundMessage.message}
             </p>
