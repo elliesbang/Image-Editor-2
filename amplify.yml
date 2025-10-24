@@ -5,15 +5,15 @@ frontend:
       commands:
         - nvm install 18
         - nvm use 18
-        - npm ci
+        - rm -rf node_modules package-lock.json
+        - npm install
+        - npm install esbuild@0.25.4 --save-dev
     build:
       commands:
-        - npm ci || npm install
+        - npm install
         - npm run build
   artifacts:
     baseDirectory: dist
     files:
       - '**/*'
-  cache:
-    paths:
-      - node_modules/**/*
+  cache: {}
