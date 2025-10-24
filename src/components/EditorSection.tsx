@@ -228,6 +228,13 @@ function EditorSection() {
   }
 
   const handleBackgroundRemoval = async () => {
+    console.log('배경제거 버튼 클릭됨')
+    if (uploadedImages.length === 0) {
+      alert('이미지를 먼저 업로드해주세요.')
+      clearBackgroundMessage()
+      return
+    }
+
     updateBackgroundMessage('배경제거 중입니다...', 'pending')
     const result = await runWithToast(
       removeBackground,
