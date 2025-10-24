@@ -293,7 +293,9 @@ function EditorSection() {
     )
   }
 
-  const isBackgroundRemovalPending = isProcessing && backgroundMessage?.status === 'pending'
+  const isBackgroundRemovalPending =
+    backgroundMessage?.status === 'pending' &&
+    backgroundMessage?.message === '배경제거 중입니다...'
 
   return (
     <section aria-labelledby="editor-heading" className="space-y-6">
