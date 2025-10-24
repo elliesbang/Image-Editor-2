@@ -8,14 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import {
-  base64ToBlob,
-  blobToBase64,
-  cropToSubject,
-  loadImageDimensions,
-  removeBackgroundLocally,
-  resizeImage,
-} from '../utils/imageProcessing'
+import { base64ToBlob, cropToSubject, loadImageDimensions, removeBackgroundLocally, resizeImage } from '../utils/imageProcessing'
 
 type ToastStatus = 'info' | 'success' | 'error'
 
@@ -73,7 +66,7 @@ type ImageEditorContextValue = {
   readonly clearResultSelection: () => void
   readonly removeResult: (id: string) => void
   readonly removeAllResults: () => void
-  readonly removeBackground: () => Promise<{ usedFallback: boolean }>
+  readonly removeBackground: () => Promise<void>
   readonly cropToSubjectBounds: () => Promise<void>
   readonly removeBackgroundAndCrop: () => Promise<void>
   readonly denoiseWithOpenAI: (noiseLevel: number) => Promise<void>
@@ -112,34 +105,6 @@ export function ImageEditorProvider({ children }: ProviderProps) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const timeoutRef = useRef<number | null>(null)
-  const backgroundRemovalFallbackRef = useRef(false)
-
-  const removeBackgroundEndpoint = useMemo(() => {
-    const env = (import.meta.env ?? {}) as Record<string, string | undefined>
-    const candidates = [
-      'VITE_AMPLIFY_REMOVE_BG_ENDPOINT',
-      'AMPLIFY_REMOVE_BG_ENDPOINT',
-      'VITE_REMOVE_BG_ENDPOINT',
-      'REMOVE_BG_ENDPOINT',
-    ]
-
-    for (const key of candidates) {
-      const value = env?.[key]
-      if (typeof value === 'string' && value.trim().length > 0) {
-        return value.trim()
-      }
-    }
-
-    if (typeof window !== 'undefined') {
-      const globalValue = (window as typeof window & { __AMPLIFY_REMOVE_BG_ENDPOINT__?: string })
-        .__AMPLIFY_REMOVE_BG_ENDPOINT__
-      if (typeof globalValue === 'string' && globalValue.trim().length > 0) {
-        return globalValue.trim()
-      }
-    }
-
-    return null
-  }, [])
 
   const clearToastTimeout = useCallback(() => {
     if (timeoutRef.current !== null) {
@@ -465,72 +430,8 @@ export function ImageEditorProvider({ children }: ProviderProps) {
     }
   }, [])
 
-  const callAmplifyRemoveBackground = useCallback(
-    async (image: UploadedImage) => {
-      if (!removeBackgroundEndpoint) {
-        throw new Error('BACKGROUND_REMOVAL_ENDPOINT_MISSING')
-      }
-
-      const base64Image = await blobToBase64(image.blob)
-      const response = await fetch(removeBackgroundEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ image: base64Image }),
-      })
-
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '')
-        console.error('[ImageEditor] amplify background removal failed', response.status, detail)
-        throw new Error('BACKGROUND_REMOVAL_REMOTE_FAILED')
-      }
-
-      const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? ''
-      if (contentType.startsWith('application/json')) {
-        const payload = await response.json().catch(() => null)
-        const candidate =
-          typeof payload === 'string'
-            ? payload
-            : payload && typeof payload === 'object'
-            ? typeof payload.body === 'string' && payload.body.length > 0
-              ? payload.body
-              : typeof payload.image === 'string'
-              ? payload.image
-              : ''
-            : ''
-
-        if (!candidate) {
-          throw new Error('BACKGROUND_REMOVAL_REMOTE_INVALID_PAYLOAD')
-        }
-
-        return base64ToBlob(candidate, 'image/png')
-      }
-
-      const arrayBuffer = await response.arrayBuffer()
-      const type = contentType && !contentType.startsWith('application/json') ? contentType : 'image/png'
-      return new Blob([arrayBuffer], { type })
-    },
-    [removeBackgroundEndpoint],
-  )
-
   const tryRemoveBackground = useCallback(
     async (image: UploadedImage) => {
-      if (removeBackgroundEndpoint) {
-        try {
-          const remoteBlob = await callAmplifyRemoveBackground(image)
-          return remoteBlob
-        } catch (error) {
-          backgroundRemovalFallbackRef.current = true
-          console.warn('[ImageEditor] amplify background removal failed, using local fallback', error)
-        }
-      } else {
-        const remote = await tryCallImageEditApi('remove_background', image)
-        if (remote) {
-          return remote
-        }
-        backgroundRemovalFallbackRef.current = true
-      }
       try {
         const blob = await removeBackgroundLocally(image.blob)
         return blob
@@ -539,7 +440,7 @@ export function ImageEditorProvider({ children }: ProviderProps) {
         throw new Error('BACKGROUND_REMOVAL_FAILED')
       }
     },
-    [callAmplifyRemoveBackground, removeBackgroundEndpoint, tryCallImageEditApi],
+    [],
   )
 
   const tryCropToSubject = useCallback(
@@ -569,17 +470,10 @@ export function ImageEditorProvider({ children }: ProviderProps) {
   )
 
   const removeBackground = useCallback(async () => {
-    backgroundRemovalFallbackRef.current = false
-    try {
-      await processSelectedUploads(async (image) => ({
-        blob: await tryRemoveBackground(image),
-        suffix: '-bg-removed',
-      }))
-      const usedFallback = backgroundRemovalFallbackRef.current
-      return { usedFallback }
-    } finally {
-      backgroundRemovalFallbackRef.current = false
-    }
+    await processSelectedUploads(async (image) => ({
+      blob: await tryRemoveBackground(image),
+      suffix: '-bg-removed',
+    }))
   }, [processSelectedUploads, tryRemoveBackground])
 
   const cropToSubjectBounds = useCallback(async () => {
@@ -614,11 +508,6 @@ export function ImageEditorProvider({ children }: ProviderProps) {
 
   const removeBackgroundAndCrop = useCallback(async () => {
     await processSelectedUploads(async (image) => {
-      const remoteCombined = await tryCallImageEditApi('remove_background_and_crop', image)
-      if (remoteCombined) {
-        return { blob: remoteCombined, suffix: '-bg-removed-cropped' }
-      }
-
       const backgroundRemoved = await tryRemoveBackground(image)
       try {
         const cropped = await cropToSubject(backgroundRemoved)
@@ -631,7 +520,7 @@ export function ImageEditorProvider({ children }: ProviderProps) {
         return { blob: backgroundRemoved, suffix: '-bg-removed' }
       }
     })
-  }, [processSelectedUploads, tryCallImageEditApi, tryRemoveBackground])
+  }, [processSelectedUploads, tryRemoveBackground])
 
   const denoiseWithOpenAI = useCallback(
     async (noiseLevel: number) => {
